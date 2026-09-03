@@ -12,13 +12,37 @@ CONF_MAX_DRIVE_HOURS: Final = "max_drive_hours"
 CONF_ALERT_SCORE: Final = "alert_score"
 CONF_SUNSET_SCORE: Final = "sunset_score"
 CONF_EBIRD_API_KEY: Final = "ebird_api_key"
-CONF_ROUTING_API_KEY: Final = "routing_api_key"
+CONF_GOOGLE_API_KEY: Final = "google_api_key"
+CONF_ROUTING_MODE: Final = "routing_mode"
+CONF_ENABLE_FIELD_REPORTS: Final = "enable_field_reports"
 CONF_ENABLED_CATEGORIES: Final = "enabled_categories"
 
 DEFAULT_MAX_DRIVE_HOURS: Final = 6.0
 DEFAULT_ALERT_SCORE: Final = 75
 DEFAULT_SUNSET_SCORE: Final = 85
+
+# The coordinator cycle. Every network source carries its own minimum interval
+# on top of this, so raising the cadence here cannot make any single service be
+# polled harder than its own limit allows.
 DEFAULT_UPDATE_MINUTES: Final = 60
+
+# Minimum minutes between calls to each service, enforced per source.
+# Open-Meteo, eBird and iNaturalist are all free and all rate limited; the
+# hotlines are small volunteer sites that update weekly at best.
+MIN_INTERVAL_WEATHER: Final = 60
+MIN_INTERVAL_EBIRD: Final = 60
+MIN_INTERVAL_INATURALIST: Final = 60
+MIN_INTERVAL_ROUTING: Final = 30
+MIN_INTERVAL_FIELD_REPORTS: Final = 60 * 24
+
+# Google routing strategy. "auto" tries the current Routes API first and falls
+# back to the legacy Distance Matrix API, which is the only combination that
+# works across both old and new Google Cloud projects.
+ROUTING_AUTO: Final = "auto"
+ROUTING_ROUTES: Final = "routes"
+ROUTING_LEGACY: Final = "distance_matrix"
+ROUTING_OFF: Final = "off"
+ROUTING_MODES: Final = (ROUTING_AUTO, ROUTING_ROUTES, ROUTING_LEGACY, ROUTING_OFF)
 
 # Vandenberg Space Force Base, the default origin for drive-time gating.
 DEFAULT_HOME: Final = (34.7420, -120.5724)

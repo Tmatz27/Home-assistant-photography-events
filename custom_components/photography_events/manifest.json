@@ -1,12 +1,16 @@
 {
   "domain": "photography_events",
   "name": "Photography Events",
-  "codeowners": ["@Tmatz27"],
+  "codeowners": [
+    "@Tmatz27"
+  ],
   "config_flow": true,
   "documentation": "https://github.com/Tmatz27/Home-assistant-photography-events",
   "integration_type": "service",
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/Tmatz27/Home-assistant-photography-events/issues",
-  "requirements": [],
-  "version": "0.3.0"
+  "requirements": [
+    "beautifulsoup4>=4.12.0"
+  ],
+  "version": "0.4.0"
 }

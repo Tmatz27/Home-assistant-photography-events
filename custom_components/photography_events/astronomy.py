@@ -5,12 +5,21 @@ card: low-precision solar and lunar series, a shared numeric altitude-crossing
 finder for every rise/set/twilight time, and two-body Keplerian propagation for
 the naked-eye planets.
 
-Deliberately pure standard library. astropy and skyfield are far more accurate
-than anything here needs to be, but they pull in numpy/scipy or download
-ephemeris kernels at runtime, which is a poor trade for a Home Assistant
-integration expected to run on a Raspberry Pi. Accuracy here is a few
-arcminutes for planets and a minute or two for rise/set times - the difference
-between "Jupiter is up tonight" and "Jupiter is up tonight" either way.
+Deliberately pure standard library, and not for want of CPU: astropy and
+skyfield pull in numpy and scipy or download ephemeris kernels into the config
+directory at runtime, which is a heavy thing to ask of a HACS install and a new
+way for it to break offline. The cost of avoiding them is bounded and known.
+
+Where that cost actually lands:
+
+- Rise, set, and twilight times are good to a minute or two, which is finer
+  than the weather forecast driving the decision.
+- Planetary positions are good to a few arcminutes, verified against published
+  opposition and elongation dates, which it reproduces to the day.
+- The lunar series is the weak link at roughly a third of a degree. That is
+  invisible in moonrise timing and in illumination percentage, but it is the
+  one figure here not precise enough to quote a Moon-planet conjunction
+  separation to better than about half a degree.
 """
 
 from __future__ import annotations

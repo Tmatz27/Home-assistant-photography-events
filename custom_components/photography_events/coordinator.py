@@ -1,44 +1,111 @@
-"""Fetches forecasts and assembles scored opportunities on a schedule."""
+"""Fetches every source on its own schedule and assembles scored opportunities.
+
+Five external services feed this: Open-Meteo for layered cloud, eBird for rare
+birds, iNaturalist for marine mammals, three hotline pages for blooms and
+autumn colour, and optionally the Google Maps platform for real drive times.
+Their appetites differ wildly - Open-Meteo is a CDN-backed forecast API that
+will happily serve twelve requests a minute, while the Theodore Payne hotline
+is a volunteer-run page that changes once a week.
+
+So the coordinator's cycle is not the polling rate. Each service carries its own
+minimum interval and its own cache in a ``Source``, and a cycle refreshes only
+what is actually due. Three consequences worth knowing:
+
+- **A restart cannot cause a stampede.** Sources are fetched in priority groups
+  with a pause between them, concurrency inside a group is capped, and the
+  hotline scrapers are pushed to a background task so Home Assistant's setup
+  never waits on three page loads.
+- **A failure costs freshness, not data.** The last good payload is kept and
+  reused, and a failed source retries on a short backoff rather than waiting
+  out its whole interval.
+- **Nothing is fetched for a category that is switched off.**
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable
 
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.util import dt as dt_util
 
 from . import events as event_builder
+from . import field_reports as reports_module
+from . import routing as routing_module
+from . import wildlife as wildlife_module
 from .const import (
     ALL_CATEGORIES,
     CATEGORY_ASTRO,
+    CATEGORY_BIRDS,
+    CATEGORY_BLOOMS,
+    CATEGORY_FOLIAGE,
+    CATEGORY_MARINE,
     CATEGORY_SUNSET,
     CONF_ALERT_SCORE,
+    CONF_EBIRD_API_KEY,
+    CONF_ENABLE_FIELD_REPORTS,
     CONF_ENABLED_CATEGORIES,
+    CONF_GOOGLE_API_KEY,
+    CONF_HOME_LATITUDE,
+    CONF_HOME_LONGITUDE,
     CONF_MAX_DRIVE_HOURS,
+    CONF_ROUTING_MODE,
     CONF_SUNSET_SCORE,
     DEFAULT_ALERT_SCORE,
+    DEFAULT_HOME,
     DEFAULT_MAX_DRIVE_HOURS,
     DEFAULT_SUNSET_SCORE,
     DEFAULT_UPDATE_MINUTES,
     DOMAIN,
+    EBIRD_REGIONS,
+    INATURALIST_URL,
+    MARINE_TAXA,
+    MIN_INTERVAL_EBIRD,
+    MIN_INTERVAL_FIELD_REPORTS,
+    MIN_INTERVAL_INATURALIST,
+    MIN_INTERVAL_ROUTING,
+    MIN_INTERVAL_WEATHER,
     OPEN_METEO_URL,
+    ROUTING_AUTO,
+    ROUTING_LEGACY,
+    ROUTING_OFF,
+    ROUTING_ROUTES,
     TARGET_ZONES,
 )
+from .throttle import Source
 from .weather_scoring import build_open_meteo_params
 
 _LOGGER = logging.getLogger(__name__)
 
 CALENDAR_HORIZON_DAYS = 365
 ASTRO_HORIZON_DAYS = 30
+MILKY_WAY_HORIZON_DAYS = 14
 REQUEST_TIMEOUT = 30
+
+# Open-Meteo sits behind a CDN and tolerates parallelism well; the others do
+# not, so they are held to one request at a time.
+WEATHER_CONCURRENCY = 4
+
+# iNaturalist asks for no more than roughly one request a second sustained.
+INATURALIST_SPACING_SECONDS = 1.1
+
+# Breathing room between priority groups, so a restart does not open a dozen
+# connections in the same tick.
+GROUP_STAGGER_SECONDS = 2.0
+
+# Routing is only asked about opportunities this close, and only about ones not
+# already far outside the drive limit.
+ROUTING_HORIZON_HOURS = 48
+ROUTING_SLACK = 1.5
 
 
 class PhotographyEventsCoordinator(DataUpdateCoordinator):
-    """Polls weather per zone and rebuilds the opportunity list."""
+    """Polls every source on its own cadence and rebuilds the opportunity list."""
 
     def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
         super().__init__(
@@ -48,6 +115,18 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             update_interval=timedelta(minutes=DEFAULT_UPDATE_MINUTES),
         )
         self.entry = entry
+        self._sources: dict[str, Source] = {
+            "weather": Source("Open-Meteo", MIN_INTERVAL_WEATHER),
+            "ebird": Source("eBird", MIN_INTERVAL_EBIRD),
+            "inaturalist": Source("iNaturalist", MIN_INTERVAL_INATURALIST),
+            "field_reports": Source("Wildflower and colour hotlines", MIN_INTERVAL_FIELD_REPORTS),
+            "routing": Source("Google routing", MIN_INTERVAL_ROUTING),
+        }
+        self._routing_cache: dict[tuple[float, float], routing_module.DriveTime] = {}
+        self._routing_endpoint: str | None = None
+        self._cold_start = True
+
+    # --- Configuration ------------------------------------------------------
 
     @property
     def _options(self) -> dict:
@@ -70,57 +149,74 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
     def sunset_score(self) -> int:
         return int(self._options.get(CONF_SUNSET_SCORE, DEFAULT_SUNSET_SCORE))
 
+    @property
+    def home(self) -> tuple[float, float]:
+        options = self._options
+        latitude = options.get(CONF_HOME_LATITUDE)
+        longitude = options.get(CONF_HOME_LONGITUDE)
+        if latitude is not None and longitude is not None:
+            return float(latitude), float(longitude)
+        # Home Assistant's own configured location beats the packaged default.
+        if self.hass.config.latitude and self.hass.config.longitude:
+            return float(self.hass.config.latitude), float(self.hass.config.longitude)
+        return DEFAULT_HOME
+
+    @property
+    def ebird_key(self) -> str:
+        return (self._options.get(CONF_EBIRD_API_KEY) or "").strip()
+
+    @property
+    def google_key(self) -> str:
+        return (self._options.get(CONF_GOOGLE_API_KEY) or "").strip()
+
+    @property
+    def routing_mode(self) -> str:
+        return self._options.get(CONF_ROUTING_MODE, ROUTING_AUTO)
+
+    @property
+    def field_reports_enabled(self) -> bool:
+        return bool(self._options.get(CONF_ENABLE_FIELD_REPORTS, True))
+
+    # --- Update cycle -------------------------------------------------------
+
     async def _async_update_data(self) -> dict:
-        now = datetime.now(timezone.utc)
+        now = dt_util.utcnow()
         categories = self.enabled_categories
         zones = [zone for zone in TARGET_ZONES if zone["drive_hours"] <= self.max_drive_hours]
+        session = async_get_clientsession(self.hass)
 
-        forecasts = await self._async_fetch_forecasts(zones)
-        opportunities: list[event_builder.Opportunity] = []
+        # Group 1: weather. Everything that can raise a drop-everything alert in
+        # the next 48 hours depends on it, so it goes first and alone.
+        if categories & {CATEGORY_SUNSET, CATEGORY_ASTRO}:
+            await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, zones))
+        forecasts = self._sources["weather"].value or {}
 
-        for zone in zones:
-            forecast = forecasts.get(zone["id"])
-            cloud_lookup = _make_cloud_lookup(forecast)
+        # Group 2: the wildlife APIs, spaced away from the weather burst.
+        if categories & {CATEGORY_BIRDS, CATEGORY_MARINE}:
+            await asyncio.sleep(GROUP_STAGGER_SECONDS)
+        if CATEGORY_BIRDS in categories and self.ebird_key:
+            await self._refresh(self._sources["ebird"], now, lambda: self._fetch_ebird(session))
+        if CATEGORY_MARINE in categories:
+            await self._refresh(self._sources["inaturalist"], now, lambda: self._fetch_inaturalist(session, now))
 
-            if CATEGORY_SUNSET in categories and forecast:
-                opportunities.extend(
-                    await self.hass.async_add_executor_job(
-                        event_builder.build_sunset_opportunities,
-                        zone,
-                        forecast,
-                        now,
-                        self.sunset_score,
-                    )
+        # Group 3: the hotline scrapers. On a cold start they are deferred to a
+        # background task, so setup never blocks on three page loads for data
+        # that only changes once a week.
+        if self.field_reports_enabled and categories & {CATEGORY_BLOOMS, CATEGORY_FOLIAGE}:
+            if self._cold_start:
+                self.hass.async_create_task(self._async_deferred_field_reports())
+            else:
+                await self._refresh(
+                    self._sources["field_reports"], now, lambda: self._fetch_field_reports(session, now)
                 )
 
-            if CATEGORY_ASTRO in categories:
-                opportunities.extend(
-                    await self.hass.async_add_executor_job(
-                        event_builder.build_meteor_opportunities,
-                        zone,
-                        now,
-                        ASTRO_HORIZON_DAYS,
-                        cloud_lookup,
-                    )
-                )
-                opportunities.extend(
-                    await self.hass.async_add_executor_job(
-                        event_builder.build_milky_way_opportunities,
-                        zone,
-                        now,
-                        14,
-                        cloud_lookup,
-                    )
-                )
-
-        seasonal = await self.hass.async_add_executor_job(
-            event_builder.build_seasonal_opportunities, now, CALENDAR_HORIZON_DAYS
-        )
-        opportunities.extend(item for item in seasonal if item.category in categories)
+        opportunities = await self._build(now, zones, forecasts, categories)
+        opportunities = await self._apply_routing(session, now, opportunities)
 
         opportunities = event_builder.within_drive(opportunities, self.max_drive_hours)
         action = event_builder.action_window(opportunities, now)
         top = next((item for item in action if item.score >= self.alert_score), None)
+        self._cold_start = False
 
         return {
             "generated": now,
@@ -129,36 +225,308 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "top_action": top,
             "zone_count": len(zones),
             "forecast_zones": sorted(forecasts),
+            "sources": {key: source.status() for key, source in self._sources.items()},
+            "routing_endpoint": self._routing_endpoint,
         }
 
-    async def _async_fetch_forecasts(self, zones: list[dict]) -> dict[str, dict]:
-        """Fetch Open-Meteo hourly data per zone, tolerating individual failures.
+    async def _build(self, now, zones, forecasts, categories) -> list:
+        """Assemble opportunities. All pure CPU, so it runs off the event loop."""
+        opportunities: list = []
 
-        Open-Meteo needs no key and no account. One zone failing must not take
-        down the rest of the integration, so every request is isolated.
-        """
+        for zone in zones:
+            forecast = forecasts.get(zone["id"])
+            cloud_lookup = _make_cloud_lookup(forecast)
+
+            if CATEGORY_SUNSET in categories and forecast:
+                opportunities.extend(
+                    await self.hass.async_add_executor_job(
+                        event_builder.build_sunset_opportunities, zone, forecast, now, self.sunset_score
+                    )
+                )
+
+            if CATEGORY_ASTRO in categories:
+                opportunities.extend(
+                    await self.hass.async_add_executor_job(
+                        event_builder.build_meteor_opportunities, zone, now, ASTRO_HORIZON_DAYS, cloud_lookup
+                    )
+                )
+                opportunities.extend(
+                    await self.hass.async_add_executor_job(
+                        event_builder.build_milky_way_opportunities,
+                        zone,
+                        now,
+                        MILKY_WAY_HORIZON_DAYS,
+                        cloud_lookup,
+                    )
+                )
+
+        sightings = list(self._sources["ebird"].value or []) + list(self._sources["inaturalist"].value or [])
+        if sightings:
+            digested = await self.hass.async_add_executor_job(wildlife_module.digest, sightings, now)
+            opportunities.extend(
+                await self.hass.async_add_executor_job(
+                    event_builder.build_wildlife_opportunities, digested, now, self.home
+                )
+            )
+
+        reports = self._sources["field_reports"].value or []
+        if reports:
+            opportunities.extend(
+                await self.hass.async_add_executor_job(
+                    event_builder.build_field_report_opportunities, reports, now
+                )
+            )
+
+        seasonal = await self.hass.async_add_executor_job(
+            event_builder.build_seasonal_opportunities, now, CALENDAR_HORIZON_DAYS
+        )
+        opportunities.extend(seasonal)
+
+        return [item for item in opportunities if item.category in categories]
+
+    async def _refresh(self, source: Source, now: datetime, fetcher: Callable[[], Awaitable[Any]]) -> None:
+        """Run a fetch if it is due, recording the outcome either way."""
+        if not source.due(now):
+            return
+        try:
+            source.succeed(now, await fetcher())
+        except Exception as err:  # noqa: BLE001 - one dead service must not stop the rest
+            source.fail(now, f"{type(err).__name__}: {err}")
+            _LOGGER.warning("%s update failed (%s); keeping last known data", source.name, err)
+
+    async def _async_deferred_field_reports(self) -> None:
+        """Scrape the hotlines after setup has finished, then publish."""
+        await asyncio.sleep(GROUP_STAGGER_SECONDS * 5)
         session = async_get_clientsession(self.hass)
+        now = dt_util.utcnow()
+        await self._refresh(self._sources["field_reports"], now, lambda: self._fetch_field_reports(session, now))
+        if self._sources["field_reports"].value:
+            await self.async_request_refresh()
+
+    # --- Fetchers -----------------------------------------------------------
+
+    async def _fetch_forecasts(self, session, zones: list[dict]) -> dict[str, dict]:
+        """Hourly layered-cloud forecasts per zone, tolerating single failures."""
+        semaphore = asyncio.Semaphore(WEATHER_CONCURRENCY)
 
         async def fetch(zone: dict) -> tuple[str, dict | None]:
             params = build_open_meteo_params(zone["latitude"], zone["longitude"])
-            try:
-                async with asyncio.timeout(REQUEST_TIMEOUT):
-                    response = await session.get(OPEN_METEO_URL, params=params)
-                    if response.status != 200:
-                        _LOGGER.warning(
-                            "Open-Meteo returned %s for %s", response.status, zone["name"]
-                        )
-                        return zone["id"], None
-                    return zone["id"], await response.json()
-            except (TimeoutError, asyncio.CancelledError):
-                _LOGGER.warning("Open-Meteo timed out for %s", zone["name"])
-                return zone["id"], None
-            except Exception:  # noqa: BLE001 - never let one zone break the update
-                _LOGGER.exception("Open-Meteo request failed for %s", zone["name"])
-                return zone["id"], None
+            async with semaphore:
+                payload = await self._get_json(session, OPEN_METEO_URL, params=params, label=zone["name"])
+            return zone["id"], payload
 
         results = await asyncio.gather(*(fetch(zone) for zone in zones))
-        return {zone_id: payload for zone_id, payload in results if payload}
+        found = {zone_id: payload for zone_id, payload in results if payload}
+        if not found:
+            # Every zone failing is a real outage, not a blip, and should show
+            # up as a failed source rather than as an empty forecast set.
+            raise RuntimeError("no zone returned a forecast")
+        return found
+
+    async def _fetch_ebird(self, session) -> list:
+        """Notable observations across the covered counties, one region at a time."""
+        headers = wildlife_module.build_ebird_headers(self.ebird_key)
+        params = wildlife_module.build_ebird_params()
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+
+        sightings: list = []
+        for index, region in enumerate(EBIRD_REGIONS):
+            if index:
+                await asyncio.sleep(0.5)
+            payload = await self._get_json(
+                session,
+                wildlife_module.build_ebird_url(region),
+                params=params,
+                headers=headers,
+                label=f"eBird {region}",
+            )
+            if payload:
+                sightings.extend(wildlife_module.parse_ebird(payload, local_tz))
+        return sightings
+
+    async def _fetch_inaturalist(self, session, now: datetime) -> list:
+        """Recent whale observations, one taxon at a time and deliberately slowly."""
+        headers = wildlife_module.build_inaturalist_headers()
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+
+        sightings: list = []
+        for index, taxon in enumerate(MARINE_TAXA):
+            if index:
+                await asyncio.sleep(INATURALIST_SPACING_SECONDS)
+            payload = await self._get_json(
+                session,
+                INATURALIST_URL,
+                params=wildlife_module.build_inaturalist_params(taxon, now),
+                headers=headers,
+                label=f"iNaturalist {taxon}",
+            )
+            if payload:
+                sightings.extend(wildlife_module.parse_inaturalist(payload, local_tz))
+        return sightings
+
+    async def _fetch_field_reports(self, session, now: datetime) -> list:
+        """Scrape the three hotlines, one at a time, once a day."""
+        found: list = []
+        for index, source in enumerate(reports_module.REPORT_SOURCES):
+            if index:
+                await asyncio.sleep(GROUP_STAGGER_SECONDS)
+            markup = await self._get_text(session, source["url"], label=source["name"])
+            if not markup:
+                continue
+            try:
+                found.extend(
+                    await self.hass.async_add_executor_job(reports_module.parse_report, markup, source, now)
+                )
+            except Exception:  # noqa: BLE001 - a layout change must not break the update
+                _LOGGER.warning("Could not parse %s; skipping it this cycle", source["name"], exc_info=True)
+        return found
+
+    # --- Google routing -----------------------------------------------------
+
+    async def _apply_routing(self, session, now: datetime, opportunities: list) -> list:
+        """Replace estimated drive times with routed ones where it matters."""
+        key = self.google_key
+        if not key or self.routing_mode == ROUTING_OFF or not opportunities:
+            return opportunities
+
+        horizon = now + timedelta(hours=ROUTING_HORIZON_HOURS)
+        candidates = [
+            item
+            for item in opportunities
+            if item.start <= horizon
+            and item.drive_hours <= self.max_drive_hours * ROUTING_SLACK
+            and _point(item) is not None
+        ]
+        if not candidates:
+            return opportunities
+
+        # Deduplicate before spending quota: a dozen opportunities at one zone
+        # is one billable element, not a dozen.
+        wanted = list(dict.fromkeys(_point(item) for item in candidates))
+        unknown = [point for point in wanted if point not in self._routing_cache]
+        if unknown:
+            await self._refresh(
+                self._sources["routing"], now, lambda: self._fetch_routing(session, unknown, key)
+            )
+
+        for item in candidates:
+            routed = self._routing_cache.get(_point(item))
+            if routed is None:
+                continue
+            item.drive_hours = round(routed.hours, 2)
+            note = f"{routed.minutes} min by road" + (" in current traffic" if routed.in_traffic else "")
+            if note not in item.reasons:
+                item.reasons.append(note)
+        return opportunities
+
+    async def _fetch_routing(self, session, points: list[tuple[float, float]], key: str) -> int:
+        """Fill the routing cache, trying the modern endpoint before the legacy one.
+
+        Which endpoint a key can call is a property of the Google Cloud project,
+        not of this code: Distance Matrix cannot be enabled on projects created
+        after March 2025, and Routes may never have been enabled on older ones.
+        Rather than make you discover that by reading an error, both are tried
+        and whichever answers is remembered for next time.
+        """
+        origin = self.home
+        order = {
+            ROUTING_AUTO: (ROUTING_ROUTES, ROUTING_LEGACY),
+            ROUTING_ROUTES: (ROUTING_ROUTES,),
+            ROUTING_LEGACY: (ROUTING_LEGACY,),
+        }.get(self.routing_mode, (ROUTING_ROUTES, ROUTING_LEGACY))
+        if self._routing_endpoint in order:
+            order = (self._routing_endpoint,) + tuple(e for e in order if e != self._routing_endpoint)
+
+        filled = 0
+        for batch in routing_module.chunk_destinations(points):
+            for endpoint in order:
+                results = await self._route_batch(session, endpoint, origin, batch, key)
+                if not results:
+                    continue
+                self._routing_endpoint = endpoint
+                for index, drive in results.items():
+                    if 0 <= index < len(batch):
+                        self._routing_cache[batch[index]] = drive
+                        filled += 1
+                break
+
+        if not filled:
+            raise RuntimeError(
+                "Google returned no usable routes - check the key and that either "
+                "the Routes API or the Distance Matrix API is enabled for it"
+            )
+        return filled
+
+    async def _route_batch(self, session, endpoint: str, origin, batch: list, key: str) -> dict:
+        if endpoint == ROUTING_ROUTES:
+            url, headers, body = routing_module.build_routes_request(origin, batch, key)
+            payload = await self._post_json(session, url, headers=headers, json_body=body, label="Routes API")
+            return routing_module.parse_routes_response(payload) if payload is not None else {}
+
+        url, params = routing_module.build_legacy_request(origin, batch, key)
+        payload = await self._get_json(session, url, params=params, label="Distance Matrix")
+        return routing_module.parse_legacy_response(payload) if payload is not None else {}
+
+    # --- HTTP helpers -------------------------------------------------------
+
+    async def _get_json(self, session, url: str, *, params=None, headers=None, label: str = "") -> Any:
+        return await self._request(session, "get", url, params=params, headers=headers, label=label, as_json=True)
+
+    async def _get_text(self, session, url: str, *, label: str = "") -> str | None:
+        return await self._request(session, "get", url, label=label, as_json=False)
+
+    async def _post_json(self, session, url: str, *, headers=None, json_body=None, label: str = "") -> Any:
+        return await self._request(
+            session, "post", url, headers=headers, json_body=json_body, label=label, as_json=True
+        )
+
+    async def _request(
+        self,
+        session,
+        method: str,
+        url: str,
+        *,
+        params=None,
+        headers=None,
+        json_body=None,
+        label: str = "",
+        as_json: bool = True,
+    ) -> Any:
+        """One request, returning None on any failure rather than raising.
+
+        Individual requests fail quietly on purpose: one dead region or one
+        unreachable hotline should cost that one result, and the enclosing
+        ``Source`` decides whether the service as a whole counts as failed.
+        """
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                response = await session.request(method, url, params=params, headers=headers, json=json_body)
+                if response.status != 200:
+                    _LOGGER.debug("%s returned HTTP %s", label or url, response.status)
+                    return None
+                if as_json:
+                    # Several of these answer with a JSON body under a
+                    # text/plain content type, so the check is waived.
+                    return await response.json(content_type=None)
+                return await response.text()
+        except (TimeoutError, asyncio.CancelledError):
+            _LOGGER.debug("%s timed out", label or url)
+            return None
+        except Exception:  # noqa: BLE001 - never let one request break a cycle
+            _LOGGER.debug("%s request failed", label or url, exc_info=True)
+            return None
+
+
+def _point(item) -> tuple[float, float] | None:
+    """Routing key for an opportunity: its coordinates, rounded.
+
+    Three decimal places is about 100 m - finer than any drive time is
+    meaningful at, and coarse enough that everything happening at one zone
+    collapses into a single billable element.
+    """
+    if item.latitude is None or item.longitude is None:
+        return None
+    return round(float(item.latitude), 3), round(float(item.longitude), 3)
 
 
 def _make_cloud_lookup(forecast: dict | None):

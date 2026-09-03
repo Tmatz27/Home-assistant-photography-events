@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.4.0
+
+Adds the live data sources - the ones that answer "is it happening *right now*",
+which no amount of ephemeris can.
+
+- **Rare birds from the eBird API v2.** Notable observations across Santa
+  Barbara, San Luis Obispo, Monterey and Kern counties, grouped per species and
+  location. Scoring rewards recency, repeat reports from separate observers, and
+  reviewer confirmation, because a bird four people saw this morning is a
+  different proposition from one unreviewed report on Tuesday
+- **Whales from the iNaturalist API.** Orca, blue, fin and humpback reports
+  inside a coastal bounding box derived from the zone table. Marine scores decay
+  more slowly than bird scores - whales stay while the food does, vagrants leave
+- **Real bloom and autumn-colour scrapers**, with BeautifulSoup, against the
+  Theodore Payne Wildflower Hotline, DesertUSA and California Fall Color. Bloom
+  timing depends on winter rainfall and cannot be computed, so these are the
+  authority on blooms; the curated seasonal windows stay in the 365-day view as
+  planning context only. Per-source CSS selectors live in one table at the top
+  of the module so a site redesign is a small edit. The parser reads negation,
+  so "the poppies are past peak" is not filed as good news
+- **Traffic-aware drive times from Google.** Distance Matrix cannot be enabled
+  on Google Cloud projects created after March 2025 and the Routes API is its
+  replacement, so both are implemented: `auto` tries Routes, falls back to
+  Distance Matrix, and remembers which one answered. Add the key in the
+  integration's options
+- **Sightings are placed by their own coordinates, not by zone.** A vagrant
+  turns up wherever it likes, and the most actionable report this can produce is
+  the one twenty minutes away that no target zone covers. Without a Google key
+  those drive times are estimated from distance divided by an effective road
+  speed calibrated against the zone table's own measured times
+- **Per-service rate limiting.** Every source carries its own minimum interval
+  independent of the coordinator cycle - hourly for Open-Meteo, eBird and
+  iNaturalist, daily for the scrapers - so raising the update frequency cannot
+  make any one service be polled harder than it allows. Sources are fetched in
+  staggered groups so a restart cannot stampede, the daily scrapers are deferred
+  to a background task so setup never waits on them, and a failed source keeps
+  serving its last good payload while it retries on a backoff
+- 68 Python tests alongside the 41 JavaScript ones
+
+Not yet implemented: the card's dedicated hero and calendar display modes. The
+card still computes its own view client-side rather than reading the new backend
+entities.
+
 ## 0.3.0
 
 Splits the project into a Python backend plus the card, because a Lovelace card

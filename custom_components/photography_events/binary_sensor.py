@@ -57,10 +57,15 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
                 "event_name": None,
                 "confidence_score": 0,
                 "candidates_48h": len(upcoming),
+                "sources": (self.coordinator.data or {}).get("sources", {}),
             }
 
         gear = top.gear
         return {
+            # The checklist or observation this came from, when there is one.
+            # A rare-bird alert is worth very little without a way to check
+            # whether it is still being seen.
+            "source_url": top.source_url,
             "event_name": top.title,
             "confidence_score": top.score,
             "category": top.category,
@@ -76,4 +81,5 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
             "gear_glass": gear.get("glass"),
             "gear_support": gear.get("support"),
             "gear_settings": gear.get("settings"),
+            "sources": (self.coordinator.data or {}).get("sources", {}),
         }

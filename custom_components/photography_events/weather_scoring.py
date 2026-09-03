@@ -21,7 +21,7 @@ network access.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # Hours either side of the event that describe the sky during the show.
 SAMPLE_OFFSETS_HOURS = (-1, 0, 1)

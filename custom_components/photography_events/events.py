@@ -13,13 +13,16 @@ from datetime import datetime, timedelta
 from . import astronomy as astro
 from .const import (
     CATEGORY_ASTRO,
+    CATEGORY_MARINE,
     CATEGORY_SUNSET,
+    DEFAULT_HOME,
     GEAR_PROFILES,
     TARGET_ZONES,
     ZONES_BY_ID,
 )
 from .seasonal import active_windows
 from .weather_scoring import score_sky
+from .wildlife import describe_drive, estimate_drive_hours, nearest_zone
 
 # Only showers worth a drive; the spec's ZHR floor.
 MIN_METEOR_ZHR = 60
@@ -41,6 +44,13 @@ MIN_RADIANT_ALTITUDE = 30.0
 MAX_ASTRO_CLOUD = 25.0
 MIN_CORE_ALTITUDE = 15.0
 
+# How long a sighting stays worth acting on after the last report.
+SIGHTING_WINDOW_HOURS = 36
+# Scraped reports describe the past, so they inform a plan and never an alert.
+# This sits deliberately below the default alert threshold.
+FIELD_REPORT_MAX_SCORE = 65
+FIELD_REPORT_WINDOW_DAYS = 10
+
 
 @dataclass
 class Opportunity:
@@ -58,6 +68,12 @@ class Opportunity:
     drive_hours: float
     reasons: list[str] = field(default_factory=list)
     gear: dict[str, str] = field(default_factory=dict)
+    source_url: str | None = None
+    # Where to actually point a router at. Sightings are not at their nearest
+    # zone, so without these the one drive time most worth resolving - the
+    # vagrant at some lagoon down the road - is the one that cannot be.
+    latitude: float | None = None
+    longitude: float | None = None
 
     def as_dict(self) -> dict:
         data = asdict(self)
@@ -108,6 +124,8 @@ def build_sunset_opportunities(
                     drive_hours=zone["drive_hours"],
                     reasons=scored.reasons,
                     gear=_gear_for(CATEGORY_SUNSET),
+                    latitude=zone["latitude"],
+                    longitude=zone["longitude"],
                 )
             )
     return found
@@ -180,6 +198,8 @@ def build_meteor_opportunities(
                     drive_hours=zone["drive_hours"],
                     reasons=reasons,
                     gear=_gear_for(CATEGORY_ASTRO),
+                    latitude=zone["latitude"],
+                    longitude=zone["longitude"],
                 )
             )
     return found
@@ -243,6 +263,8 @@ def build_milky_way_opportunities(
                 drive_hours=zone["drive_hours"],
                 reasons=reasons,
                 gear=_gear_for(CATEGORY_ASTRO),
+                latitude=zone["latitude"],
+                longitude=zone["longitude"],
             )
         )
     return found
@@ -276,6 +298,8 @@ def build_seasonal_opportunities(now: datetime, horizon_days: int) -> list[Oppor
                 drive_hours=zone["drive_hours"],
                 reasons=["underway now"] if window["underway"] else ["upcoming season"],
                 gear=_gear_for(window["category"]),
+                latitude=zone["latitude"],
+                longitude=zone["longitude"],
             )
         )
     return found
@@ -296,3 +320,170 @@ def action_window(opportunities: list[Opportunity], now: datetime, hours: int = 
 
 def zones_for_category(category: str) -> list[dict]:
     return [zone for zone in TARGET_ZONES if category in zone["specialties"]]
+
+
+# --- Live sightings ---------------------------------------------------------
+
+# Marine draw ranking. Humpbacks are abundant off this coast in season, so a
+# report of one is not news; blue whales and orcas are the reason you cancel
+# your afternoon.
+MARINE_DRAW = {
+    "Orcinus orca": 10,
+    "Balaenoptera musculus": 10,
+    "Balaenoptera physalus": 6,
+    "Megaptera novaeangliae": 0,
+}
+
+
+def build_wildlife_opportunities(
+    sightings: list,
+    now: datetime,
+    home: tuple[float, float] | None = None,
+) -> list[Opportunity]:
+    """Score clustered live sightings, placing each by its own coordinates.
+
+    Birds and whales decay differently and the scoring says so. A vagrant that
+    has not been reported since the day before yesterday has almost certainly
+    moved on, while whales stay as long as the food does - so the bird score
+    falls off a cliff and the marine score slopes.
+
+    Drive time comes from the sighting's position rather than from a zone. A
+    rarity is far more likely to appear at some lagoon nobody listed than at one
+    of the twelve destinations, and gating those out would throw away the
+    closest, most actionable reports this integration receives.
+    """
+    origin = home or DEFAULT_HOME
+    found: list[Opportunity] = []
+    for sighting in sightings:
+        drive_hours = estimate_drive_hours(sighting.latitude, sighting.longitude, origin)
+        match = nearest_zone(sighting.latitude, sighting.longitude)
+        zone_id = match[0]["id"] if match else f"sighting-{_slug(sighting.place)}"
+        zone_name = sighting.place or (match[0]["name"] if match else "Reported location")
+
+        age_hours = max(0.0, (now - sighting.latest).total_seconds() / 3600)
+        observers = max(sighting.reports, len(sighting.observers))
+        reasons: list[str] = []
+
+        if sighting.category == CATEGORY_MARINE:
+            score = 55
+            if age_hours <= 24:
+                score += 22
+                reasons.append("reported in the last 24 hours")
+            elif age_hours <= 48:
+                score += 15
+                reasons.append("reported in the last two days")
+            elif age_hours <= 72:
+                score += 5
+                reasons.append("reported in the last three days")
+            else:
+                score -= 10
+                reasons.append(f"last reported {round(age_hours / 24)} days ago")
+            draw = MARINE_DRAW.get(sighting.scientific_name, 4)
+            score += draw
+            if draw >= 10:
+                reasons.append("one of the species worth dropping everything for")
+        else:
+            score = 50
+            if age_hours <= 12:
+                score += 25
+                reasons.append("seen this morning")
+            elif age_hours <= 24:
+                score += 18
+                reasons.append("seen in the last 24 hours")
+            elif age_hours <= 48:
+                score += 8
+                reasons.append("seen in the last two days")
+            else:
+                score -= 10
+                reasons.append(f"not reported for {round(age_hours / 24)} days")
+
+        if observers >= 3:
+            score += 12
+            reasons.append(f"{observers} separate reports - it is staying put")
+        elif observers == 2:
+            score += 6
+            reasons.append("two separate reports")
+
+        if sighting.confirmed:
+            score += 8
+            reasons.append("confirmed by a reviewer")
+        elif observers < 2:
+            # One unreviewed report is where misidentification lives. Worth
+            # surfacing, not worth a two-hour drive on its own.
+            score -= 5
+            reasons.append("single unconfirmed report")
+
+        if sighting.count and sighting.count > 1:
+            reasons.append(f"{sighting.count} individuals")
+
+        near = f" near {match[0]['name']}" if match else ""
+        detail = (
+            f"{sighting.species} at {sighting.place}{near},"
+            f" {describe_drive(drive_hours)}, via {sighting.source}."
+            " " + ", ".join(reasons) + "."
+        )
+
+        found.append(
+            Opportunity(
+                key=f"sighting-{sighting.source.lower()}-{_slug(sighting.scientific_name or sighting.species)}-{_slug(sighting.place)}",
+                title=f"{sighting.species} at {sighting.place}",
+                category=sighting.category,
+                zone_id=zone_id,
+                zone_name=zone_name,
+                # A sighting is not an appointment. The window is "while it is
+                # still there", so it opens now and runs out with the evidence.
+                start=max(now, sighting.latest),
+                end=sighting.latest + timedelta(hours=SIGHTING_WINDOW_HOURS),
+                score=int(max(0, min(100, score))),
+                detail=detail,
+                drive_hours=round(drive_hours, 2),
+                reasons=reasons,
+                gear=_gear_for(sighting.category),
+                source_url=sighting.url,
+                latitude=sighting.latitude,
+                longitude=sighting.longitude,
+            )
+        )
+    return found
+
+
+def build_field_report_opportunities(reports: list, now: datetime) -> list[Opportunity]:
+    """Bloom and colour reports scraped from the hotlines.
+
+    These are leads, not forecasts: somebody drove somewhere and wrote down what
+    they saw, days ago. The score is capped below the alert threshold so a
+    scraped sentence can never on its own tell you to get in the car.
+    """
+    found: list[Opportunity] = []
+    for report in reports:
+        zone = ZONES_BY_ID.get(report.zone_id)
+        if zone is None:
+            continue
+        score = min(FIELD_REPORT_MAX_SCORE, 45 + report.strength)
+        detail = f"{report.source_name}: \"{report.snippet}\" Reported {report.age_label(now)}."
+
+        found.append(
+            Opportunity(
+                key=f"report-{report.source_id}-{report.zone_id}",
+                title=f"{report.headline} - {zone['name']}",
+                category=report.category,
+                zone_id=zone["id"],
+                zone_name=zone["name"],
+                start=now,
+                end=now + timedelta(days=FIELD_REPORT_WINDOW_DAYS),
+                score=score,
+                detail=detail,
+                drive_hours=zone["drive_hours"],
+                reasons=[f"{report.source_name} report", "confirm before driving"],
+                gear=_gear_for(report.category),
+                source_url=report.url,
+                latitude=zone["latitude"],
+                longitude=zone["longitude"],
+            )
+        )
+    return found
+
+
+def _slug(text: str) -> str:
+    cleaned = "".join(char.lower() if char.isalnum() else "-" for char in text)
+    return "-".join(part for part in cleaned.split("-") if part)[:60]

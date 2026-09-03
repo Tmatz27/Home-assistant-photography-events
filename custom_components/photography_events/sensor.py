@@ -69,6 +69,7 @@ class NextOpportunitySensor(_BaseSensor):
             "target_zone": nxt.zone_name,
             "drive_hours": nxt.drive_hours,
             "detail": nxt.detail,
+            "source_url": nxt.source_url,
         }
 
 

@@ -13,13 +13,18 @@ from .const import (
     ALL_CATEGORIES,
     CONF_ALERT_SCORE,
     CONF_EBIRD_API_KEY,
+    CONF_ENABLE_FIELD_REPORTS,
     CONF_ENABLED_CATEGORIES,
+    CONF_GOOGLE_API_KEY,
     CONF_MAX_DRIVE_HOURS,
+    CONF_ROUTING_MODE,
     CONF_SUNSET_SCORE,
     DEFAULT_ALERT_SCORE,
     DEFAULT_MAX_DRIVE_HOURS,
     DEFAULT_SUNSET_SCORE,
     DOMAIN,
+    ROUTING_AUTO,
+    ROUTING_MODES,
 )
 
 
@@ -42,10 +47,26 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_ALERT_SCORE,
                 default=defaults.get(CONF_ALERT_SCORE, DEFAULT_ALERT_SCORE),
             ): vol.All(vol.Coerce(int), vol.Range(min=50, max=100)),
+            # Free from ebird.org/api/keygen. Without it the bird category
+            # produces nothing rather than failing.
             vol.Optional(
                 CONF_EBIRD_API_KEY,
                 description={"suggested_value": defaults.get(CONF_EBIRD_API_KEY, "")},
             ): str,
+            # Optional. Drive times fall back to a distance estimate calibrated
+            # against the zone table when this is empty.
+            vol.Optional(
+                CONF_GOOGLE_API_KEY,
+                description={"suggested_value": defaults.get(CONF_GOOGLE_API_KEY, "")},
+            ): str,
+            vol.Required(
+                CONF_ROUTING_MODE,
+                default=defaults.get(CONF_ROUTING_MODE, ROUTING_AUTO),
+            ): vol.In(ROUTING_MODES),
+            vol.Required(
+                CONF_ENABLE_FIELD_REPORTS,
+                default=defaults.get(CONF_ENABLE_FIELD_REPORTS, True),
+            ): bool,
         }
     )
 
@@ -71,7 +92,7 @@ class PhotographyEventsConfigFlow(ConfigFlow, domain=DOMAIN):
 
 
 class PhotographyEventsOptionsFlow(OptionsFlow):
-    """Lets categories, thresholds, and the drive limit be changed after setup."""
+    """Lets keys, categories, thresholds, and the drive limit change after setup."""
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:

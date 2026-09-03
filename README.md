@@ -15,7 +15,7 @@ that works for "tell me to get in the car." So the work is split:
 
 | | Runs | Does |
 | --- | --- | --- |
-| **`photography_events` integration** | Home Assistant, in the background | Polls Open-Meteo per zone, computes ephemeris, scores opportunities, gates on drive time, publishes entities |
+| **`photography_events` integration** | Home Assistant, in the background | Polls Open-Meteo, eBird, iNaturalist and the wildflower hotlines, computes ephemeris, scores opportunities, gates on real drive time, publishes entities |
 | **`photography-events-card`** | The browser | Renders the timeline, alerts, and planning view |
 
 Because the integration publishes real entities
@@ -27,14 +27,57 @@ is the whole point.
 
 ### What the backend needs from you
 
-- **Nothing, to start.** Open-Meteo needs no key and no account, so sunset
-  scoring, meteor showers, and Milky Way windows work the moment it is
+- **Nothing, to start.** Open-Meteo, iNaturalist and the three hotline pages
+  need no key and no account, so sunset scoring, meteor showers, Milky Way
+  windows, whale sightings and bloom reports all work the moment it is
   installed.
-- **An eBird API key** (free) only if you want rare-bird alerts.
-- **No Google Maps key.** Drive times to fixed zones from a fixed home barely
-  change, so they are baselined per zone and gated at your configured limit.
-  A live routing API would only add traffic, at the cost of a billing account -
-  it is an opt-in refinement, not a requirement.
+- **An eBird API key** ([free, instant](https://ebird.org/api/keygen)) for
+  rare-bird alerts. Without it the bird category simply produces nothing.
+- **A Google Maps API key** (optional) for real, traffic-aware drive times.
+  Without one, drive times come from the per-zone baselines and, for sightings
+  that are not at a zone, from a distance estimate calibrated against those
+  baselines. See [Drive times](#drive-times).
+
+### Live data sources
+
+| Source | Key | Polled | Feeds |
+| --- | --- | --- | --- |
+| [Open-Meteo](https://open-meteo.com/) | none | hourly | Layered-cloud sunset scoring, astro cloud checks |
+| [eBird API v2](https://documenter.getpostman.com/view/664302/S1ENwy59) | free | hourly | Locally rare birds across four counties |
+| [iNaturalist API v1](https://api.inaturalist.org/v1/docs/) | none | hourly | Orca, blue, fin and humpback whale reports |
+| Theodore Payne Wildflower Hotline | none | daily | Bloom reports |
+| DesertUSA Wildflower Reports | none | daily | Desert bloom reports |
+| California Fall Color | none | daily | Autumn colour reports |
+| [Google Routes / Distance Matrix](https://developers.google.com/maps/documentation/routes) | yours | on demand, ≤2×/hour | Traffic-aware drive times |
+
+Every service carries its own minimum interval, independent of the coordinator
+cycle, so raising the update frequency cannot make any one of them be polled
+harder than it allows. On a restart the sources are fetched in staggered groups
+rather than all at once, and the daily scrapers are deferred to a background
+task so setup never waits on them. A service that fails keeps serving its last
+good payload and retries on a short backoff.
+
+### Drive times
+
+Two paths, and you can use either:
+
+- **Default, no key.** The twelve zones carry measured baseline drive times.
+  Sightings do not land on zones - a vagrant turns up at whatever lagoon it
+  likes - so those are estimated from straight-line distance divided by an
+  effective road speed *calibrated against the zone table itself*. Across the
+  twelve known zones that estimator lands within about half an hour, worst case
+  an hour and a half (Lake Tahoe). Displayed times are rounded coarsely so they
+  cannot be mistaken for routed ones.
+- **With a Google Maps API key.** Real routed, traffic-aware times replace both.
+  Only opportunities inside the 48-hour action window are routed, deduplicated
+  by location, so a dozen events at one zone cost one billable element.
+
+Google split this API in half mid-life: **Distance Matrix cannot be enabled on
+any Google Cloud project created after 1 March 2025**, and the current
+replacement is the Routes API. Which one your key can call is a property of
+your project, not of this integration, so both are implemented. Leave the
+routing mode on `auto` and it tries Routes first, falls back to Distance
+Matrix, and remembers which one answered.
 
 A Home Assistant Lovelace card that looks out from your location (or an
 overridden one) for photography-worthy sky and nature events: golden and blue
@@ -160,15 +203,14 @@ work than a dashboard card; say the word and it can be built.
 
 ## Requirements
 
-1. Home Assistant 2024.6 or newer (for the `weather/get_forecasts` websocket
-   command used for optional sky-quality scoring)
+1. Home Assistant 2024.6 or newer
 2. HACS
-3. Nothing else - no external API keys, no companion integration
+3. No API keys are required to start. An eBird key unlocks rare-bird alerts and
+   a Google Maps key unlocks traffic-aware drive times; both are optional.
 
-The card does not store credentials and does not call any external service.
-The only network request it makes is to your own Home Assistant instance
-(the `weather/get_forecasts` websocket command, and only if you configure a
-`weather_entity`).
+The integration installs one Python dependency, `beautifulsoup4`, used to parse
+the three hotline pages. The card itself still stores no credentials, and its
+only network request is to your own Home Assistant instance.
 
 ## Install with HACS
 
@@ -406,10 +448,31 @@ tracked as a future enhancement.
   where to point a camera. As a check, it reproduces published opposition dates
   (Mars 2027-02-19, Jupiter 2026-01-10 and 2027-02-11, Saturn 2026-10-04) to
   the exact day
-- **Sky-quality scoring is a heuristic, not a forecast model.** It is inferring
-  cloud structure from a single aggregate percentage, so it will miss things a
-  layered cloud model would catch. Treat "epic" as "worth looking outside",
-  not a guarantee
+- **Sky-quality scoring is a heuristic, not a forecast model.** The backend
+  reads Open-Meteo's low, mid and high cloud decks separately and scores the
+  actual mechanism - high cloud as the canvas, low cloud as the blocker,
+  humidity as the mute. The card, used standalone against a `weather_entity`,
+  still only sees a single aggregate percentage and is correspondingly
+  blunter. Treat "epic" as "worth looking outside", not a guarantee
+- **Rare-bird alerts are eBird's "notable" feed**, which flags anything locally
+  unusual - that includes genuinely out-of-range vagrants and merely
+  out-of-season regulars. Reports are grouped per species and location, and the
+  score rewards recent, repeated and reviewer-confirmed reports, because a bird
+  seen by four people this morning is a very different proposition from one
+  person's unreviewed report on Tuesday. It cannot tell you the bird is still
+  there
+- **Whale sightings come from iNaturalist**, which is presence-only data from
+  whoever happened to be looking. No reports does not mean no whales; it often
+  means nobody was on the headland with a phone
+- **Bloom and autumn-colour reports are scraped from prose.** The parser reads
+  the phrases these hotlines actually use, checks for negation ("past peak"
+  contains "peak"), and attaches each to the nearest recognised place name.
+  It is capped below the alert threshold on purpose: somebody wrote that
+  sentence days ago, and it can never on its own tell you to get in the car.
+  If a site is redesigned, the CSS selectors are collected in one table at the
+  top of `field_reports.py`
+- **Drive times are estimates unless you supply a Google Maps key** - see
+  [Drive times](#drive-times) for the error bars
 - **Meteor shower peak dates recur annually** and are hardcoded to their
   well-known average calendar date, which can drift by about a day year to
   year
@@ -428,11 +491,19 @@ tracked as a future enhancement.
 
 ## Privacy and security
 
-- **No telemetry, no third-party requests.** All astronomy is computed in the
-  browser. The only network activity is the `weather/get_forecasts` websocket
-  call to your own Home Assistant instance, and only if you configure
-  `weather_entity`
-- **No credentials of any kind** are stored or required
+- **No telemetry.** Nothing here reports back to the author or anyone else.
+- **The card** makes no third-party requests at all. All its astronomy is
+  computed in the browser, and its only network activity is the
+  `weather/get_forecasts` websocket call to your own Home Assistant instance.
+- **The integration does make third-party requests**, which is the point of it.
+  It sends the target zones' coordinates to Open-Meteo, county codes to eBird,
+  a coastal bounding box to iNaturalist, and plain GETs to the three hotline
+  pages. If you configure a Google Maps key it also sends your home coordinates
+  and the destinations being scored. Nothing else leaves your instance, and
+  every source can be switched off by disabling its category.
+- **API keys are stored by Home Assistant** in its config entry storage, the
+  same place every other integration keeps them, and are never written to logs
+  or entity attributes.
 - Card-editor text inputs are escaped before rendering
 - **No inline event handlers**, which keeps the card compatible with strict
   Content-Security-Policy setups

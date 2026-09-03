@@ -37,7 +37,18 @@ which no amount of ephemeris can.
   staggered groups so a restart cannot stampede, the daily scrapers are deferred
   to a background task so setup never waits on them, and a failed source keeps
   serving its last good payload while it retries on a backoff
-- 68 Python tests alongside the 41 JavaScript ones
+- **A far more accurate Moon.** The single-term lunar series is replaced by the
+  Meeus chapter 47 truncated ELP series (sixty periodic terms), and the Sun by
+  the chapter 25 apparent longitude. Measured against published full-moon
+  instants the old series was 124 minutes early on 2026-01-03; the new one is
+  within a minute there and within two on 2026-03-03
+- **Corrected an overstated accuracy claim.** The planet test was passing on a
+  coarse proxy - the maximum Sun-planet angular separation sampled daily, which
+  is neither the definition of opposition nor precise. Measured properly, in
+  right ascension, Jupiter lands on the published instant but Mars and Saturn
+  run about a day late, because the perturbations between the giant planets are
+  not modelled. The README said "a few arcminutes"; it now says what is true
+- 70 Python tests alongside the 41 JavaScript ones
 
 Not yet implemented: the card's dedicated hero and calendar display modes. The
 card still computes its own view client-side rather than reading the new backend

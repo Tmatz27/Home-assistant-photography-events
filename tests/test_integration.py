@@ -74,37 +74,103 @@ class TestAstronomy(unittest.TestCase):
         self.assertAlmostEqual(dec_at("2026-12-21T18:00:00+00:00"), -23.44, delta=0.3)
         self.assertAlmostEqual(dec_at("2026-09-22T18:00:00+00:00"), 0.0, delta=1.0)
 
-    def test_planet_oppositions_match_published_dates(self):
-        """The sharpest check available on the elements and Kepler solver.
+    def test_planet_oppositions_match_published_times(self):
+        """Checked against published opposition instants, not derived values.
 
-        These dates are published astronomical fact, not values derived from
-        this code.
+        Opposition is defined in right ascension - the planet's geocentric RA
+        twelve hours from the Sun's - so that is what is measured here. An
+        earlier version of this test took the maximum of the Sun-planet angular
+        separation on daily samples, which is neither the definition nor
+        precise: separation peaks below 180 degrees whenever the planet has any
+        ecliptic latitude, and at a different moment.
+
+        The tolerance is the honest accuracy of two-body Keplerian propagation
+        from mean elements, which is what this integration uses. Jupiter lands
+        on the published instant; Mars and Saturn run about a day late because
+        their mutual perturbations are not modelled. For deciding which nights
+        a planet is worth photographing that is immaterial - a planet is
+        equally well placed for weeks either side of opposition - but it is not
+        the arcminute precision a full perturbation theory would give.
         """
-        expected = {
-            "Mars": {"2027-02-19"},
-            "Jupiter": {"2026-01-10", "2027-02-11"},
-            "Saturn": {"2026-10-04"},
-        }
-        start = datetime(2026, 1, 1, 12, tzinfo=timezone.utc)
+        published = [
+            ("Jupiter", datetime(2027, 2, 11, 0, 44, tzinfo=timezone.utc), 6),
+            ("Jupiter", datetime(2026, 1, 10, 1, 44, tzinfo=timezone.utc), 6),
+            ("Mars", datetime(2027, 2, 19, 15, 45, tzinfo=timezone.utc), 30),
+            ("Saturn", datetime(2026, 10, 4, 12, 21, tzinfo=timezone.utc), 30),
+        ]
 
-        for planet in astronomy.PLANETS:
-            if planet["inner"]:
-                continue
-            series = [
-                (start + timedelta(days=i), astronomy.planet_elongation_deg(planet, start + timedelta(days=i)))
-                for i in range(801)
-            ]
-            found = {
-                series[i][0].date().isoformat()
-                for i in range(1, len(series) - 1)
-                if series[i][1] >= series[i - 1][1]
-                and series[i][1] >= series[i + 1][1]
-                and series[i][1] > 170
-            }
-            self.assertTrue(
-                expected[planet["name"]] <= found,
-                f"{planet['name']}: expected {expected[planet['name']]}, found {found}",
+        def opposition_offset(planet, moment):
+            days = astronomy.days_since_j2000(moment)
+            sun_ra, _ = astronomy.sun_equatorial(days)
+            planet_ra, _, _ = astronomy.planet_geocentric(planet, moment)
+            return (math.degrees(planet_ra - sun_ra) % 360) - 180
+
+        for name, moment, tolerance_hours in published:
+            planet = next(item for item in astronomy.PLANETS if item["name"] == name)
+            low, high = moment - timedelta(days=4), moment + timedelta(days=4)
+            for _ in range(60):
+                middle = low + (high - low) / 2
+                if opposition_offset(planet, low) * opposition_offset(planet, middle) <= 0:
+                    high = middle
+                else:
+                    low = middle
+            found = low + (high - low) / 2
+            error_hours = abs((found - moment).total_seconds()) / 3600
+            self.assertLess(
+                error_hours,
+                tolerance_hours,
+                f"{name}: computed {found:%Y-%m-%d %H:%M} against a published "
+                f"{moment:%Y-%m-%d %H:%M}, off by {error_hours:.1f} h",
             )
+
+    def test_lunar_series_reproduces_published_full_moons(self):
+        """The check that justifies carrying sixty periodic terms.
+
+        A full moon is when the Moon's apparent ecliptic longitude is 180
+        degrees from the Sun's, so the moment is acutely sensitive to lunar
+        longitude error - roughly two minutes of timing per arcminute of
+        position. The single-term series this replaced put the January 2026
+        full moon 124 minutes early. These are published times, not values
+        produced by this code.
+        """
+        published = [
+            datetime(2026, 1, 3, 10, 4, tzinfo=timezone.utc),
+            datetime(2026, 3, 3, 11, 38, tzinfo=timezone.utc),
+        ]
+
+        def opposition_offset(moment):
+            days = astronomy.days_since_j2000(moment)
+            separation = math.degrees(
+                astronomy.moon_ecliptic(days)[0] - astronomy.sun_ecliptic_longitude(days)
+            )
+            return (separation % 360) - 180
+
+        for moment in published:
+            low, high = moment - timedelta(hours=12), moment + timedelta(hours=12)
+            for _ in range(60):
+                middle = low + (high - low) / 2
+                if opposition_offset(low) * opposition_offset(middle) <= 0:
+                    high = middle
+                else:
+                    low = middle
+            found = low + (high - low) / 2
+            error_minutes = abs((found - moment).total_seconds()) / 60
+            self.assertLess(
+                error_minutes,
+                10,
+                f"full moon computed {found:%Y-%m-%d %H:%M} against a published "
+                f"{moment:%Y-%m-%d %H:%M}, off by {error_minutes:.1f} min",
+            )
+
+    def test_lunar_distance_stays_inside_the_real_orbit(self):
+        """Perigee and apogee bracket every distance the series can produce."""
+        start = datetime(2026, 1, 1, tzinfo=timezone.utc)
+        for hours in range(0, 24 * 400, 6):
+            distance = astronomy.moon_ecliptic(
+                astronomy.days_since_j2000(start + timedelta(hours=hours))
+            )[2]
+            self.assertGreater(distance, 356000)
+            self.assertLess(distance, 407000)
 
     def test_inner_planets_never_exceed_their_elongation_limit(self):
         limits = {"Mercury": 29.0, "Venus": 48.0}

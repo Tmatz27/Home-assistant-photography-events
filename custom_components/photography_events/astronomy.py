@@ -10,16 +10,23 @@ skyfield pull in numpy and scipy or download ephemeris kernels into the config
 directory at runtime, which is a heavy thing to ask of a HACS install and a new
 way for it to break offline. The cost of avoiding them is bounded and known.
 
-Where that cost actually lands:
+Where that cost actually lands, each figure measured against published values
+rather than against this code:
 
-- Rise, set, and twilight times are good to a minute or two, which is finer
-  than the weather forecast driving the decision.
-- Planetary positions are good to a few arcminutes, verified against published
-  opposition and elongation dates, which it reproduces to the day.
-- The lunar series is the weak link at roughly a third of a degree. That is
-  invisible in moonrise timing and in illumination percentage, but it is the
-  one figure here not precise enough to quote a Moon-planet conjunction
-  separation to better than about half a degree.
+- **Sun**: Meeus chapter 25 apparent longitude, better than a hundredth of a
+  degree. Rise, set, and twilight times land within a minute or two, finer than
+  the weather forecast driving the decision.
+- **Moon**: the Meeus chapter 47 truncated ELP series, sixty periodic terms.
+  It reproduces the January 2026 full moon to within a minute and the March
+  2026 one to within two. The single-term series it replaced was 124 minutes
+  early on the first of those.
+- **Planets**: two-body Keplerian propagation from mean elements. Jupiter's
+  2026 and 2027 oppositions land on the published instant; Mars and Saturn run
+  about a day late, because their mutual perturbations are not modelled. For
+  choosing a night to photograph a planet that is immaterial - a planet is
+  equally well placed for weeks either side of opposition - but it is not the
+  arcminute accuracy a full perturbation theory would give, and a Moon-planet
+  conjunction separation should be read as approximate for those two.
 """
 
 from __future__ import annotations
@@ -47,15 +54,18 @@ def days_since_j2000(moment: datetime) -> float:
     return moment.timestamp() / MS_PER_DAY - 0.5 + J1970 - J2000
 
 
-def _ecliptic_to_equatorial(ecl_lon: float, ecl_lat: float) -> tuple[float, float]:
+def _ecliptic_to_equatorial(
+    ecl_lon: float, ecl_lat: float, obliquity: float | None = None
+) -> tuple[float, float]:
+    eps = OBLIQUITY if obliquity is None else obliquity
     ra = math.atan2(
-        math.sin(ecl_lon) * math.cos(OBLIQUITY) - math.tan(ecl_lat) * math.sin(OBLIQUITY),
+        math.sin(ecl_lon) * math.cos(eps) - math.tan(ecl_lat) * math.sin(eps),
         math.cos(ecl_lon),
     )
     dec = math.asin(
         _clamp(
-            math.sin(ecl_lat) * math.cos(OBLIQUITY)
-            + math.cos(ecl_lat) * math.sin(OBLIQUITY) * math.sin(ecl_lon),
+            math.sin(ecl_lat) * math.cos(eps)
+            + math.cos(ecl_lat) * math.sin(eps) * math.sin(ecl_lon),
             -1.0,
             1.0,
         )
@@ -63,27 +73,163 @@ def _ecliptic_to_equatorial(ecl_lon: float, ecl_lat: float) -> tuple[float, floa
     return ra, dec
 
 
+def mean_obliquity(d: float) -> float:
+    """Obliquity of the ecliptic in radians, drifting with time."""
+    t = d / 36525.0
+    return math.radians(23.439291 - 0.0130042 * t - 1.64e-7 * t * t + 5.04e-7 * t * t * t)
+
+
+def sun_ecliptic_longitude(d: float) -> float:
+    """Apparent geocentric ecliptic longitude of the Sun, in radians.
+
+    Meeus chapter 25, including the aberration and nutation correction. Good to
+    better than a hundredth of a degree, which keeps the Sun from being the
+    limiting term in any Sun-relative quantity computed here.
+    """
+    t = d / 36525.0
+    mean_longitude = 280.46646 + 36000.76983 * t + 0.0003032 * t * t
+    mean_anomaly = math.radians(357.52911 + 35999.05029 * t - 0.0001537 * t * t)
+    centre = (
+        (1.914602 - 0.004817 * t - 0.000014 * t * t) * math.sin(mean_anomaly)
+        + (0.019993 - 0.000101 * t) * math.sin(2 * mean_anomaly)
+        + 0.000289 * math.sin(3 * mean_anomaly)
+    )
+    node = math.radians(125.04 - 1934.136 * t)
+    apparent = mean_longitude + centre - 0.00569 - 0.00478 * math.sin(node)
+    return math.radians(apparent % 360)
+
+
 def sun_equatorial(d: float) -> tuple[float, float]:
     """Geocentric right ascension and declination of the Sun, in radians."""
-    mean_anomaly = math.radians(357.5291 + 0.98560028 * d)
-    centre = math.radians(
-        1.9148 * math.sin(mean_anomaly)
-        + 0.02 * math.sin(2 * mean_anomaly)
-        + 0.0003 * math.sin(3 * mean_anomaly)
+    return _ecliptic_to_equatorial(sun_ecliptic_longitude(d), 0.0, mean_obliquity(d))
+
+
+# Meeus chapter 47, tables 47.A and 47.B: the truncated ELP-2000/82 series.
+# Each row is (D, M, M', F, coefficient). The longitude and radius terms share
+# arguments so they share a table; latitude has its own.
+#
+# This is the difference between "the Moon is up" and a usable conjunction
+# separation. The one-term series this replaced put the January 2026 full moon
+# two hours off its published time; these terms put it within a minute.
+_MOON_LON_RADIUS: tuple[tuple[int, int, int, int, int, int], ...] = (
+    (0, 0, 1, 0, 6288774, -20905355), (2, 0, -1, 0, 1274027, -3699111),
+    (2, 0, 0, 0, 658314, -2955968), (0, 0, 2, 0, 213618, -569925),
+    (0, 1, 0, 0, -185116, 48888), (0, 0, 0, 2, -114332, -3149),
+    (2, 0, -2, 0, 58793, 246158), (2, -1, -1, 0, 57066, -152138),
+    (2, 0, 1, 0, 53322, -170733), (2, -1, 0, 0, 45758, -204586),
+    (0, 1, -1, 0, -40923, -129620), (1, 0, 0, 0, -34720, 108743),
+    (0, 1, 1, 0, -30383, 104755), (2, 0, 0, -2, 15327, 10321),
+    (0, 0, 1, 2, -12528, 0), (0, 0, 1, -2, 10980, 79661),
+    (4, 0, -1, 0, 10675, -34782), (0, 0, 3, 0, 10034, -23210),
+    (4, 0, -2, 0, 8548, -21636), (2, 1, -1, 0, -7888, 24208),
+    (2, 1, 0, 0, -6766, 30824), (1, 0, -1, 0, -5163, -8379),
+    (1, 1, 0, 0, 4987, -16675), (2, -1, 1, 0, 4036, -12831),
+    (2, 0, 2, 0, 3994, -10445), (4, 0, 0, 0, 3861, -11650),
+    (2, 0, -3, 0, 3665, 14403), (0, 1, -2, 0, -2689, -7003),
+    (2, 0, -1, 2, -2602, 0), (2, -1, -2, 0, 2390, 10056),
+    (1, 0, 1, 0, -2348, 6322), (2, -2, 0, 0, 2236, -9884),
+    (0, 1, 2, 0, -2120, 5751), (0, 2, 0, 0, -2069, 0),
+    (2, -2, -1, 0, 2048, -4950), (2, 0, 1, -2, -1773, 4130),
+    (2, 0, 0, 2, -1595, 0), (4, -1, -1, 0, 1215, -3958),
+    (0, 0, 2, 2, -1110, 0), (3, 0, -1, 0, -892, 3258),
+    (2, 1, 1, 0, -810, 2616), (4, -1, -2, 0, 759, -1897),
+    (0, 2, -1, 0, -713, -2117), (2, 2, -1, 0, -700, 2354),
+    (2, 1, -2, 0, 691, 0), (2, -1, 0, -2, 596, 0),
+    (4, 0, 1, 0, 549, -1423), (0, 0, 4, 0, 537, -1117),
+    (4, -1, 0, 0, 520, -1571), (1, 0, -2, 0, -487, -1739),
+    (2, 1, 0, -2, -399, 0), (0, 0, 2, -2, -381, -4421),
+    (1, 1, 1, 0, 351, 0), (3, 0, -2, 0, -340, 0),
+    (4, 0, -3, 0, 330, 0), (2, -1, 2, 0, 327, 0),
+    (0, 2, 1, 0, -323, 1165), (1, 1, -1, 0, 299, 0),
+    (2, 0, 3, 0, 294, 0), (2, 0, -1, -2, 0, 8752),
+)
+
+_MOON_LATITUDE: tuple[tuple[int, int, int, int, int], ...] = (
+    (0, 0, 0, 1, 5128122), (0, 0, 1, 1, 280602), (0, 0, 1, -1, 277693),
+    (2, 0, 0, -1, 173237), (2, 0, -1, 1, 55413), (2, 0, -1, -1, 46271),
+    (2, 0, 0, 1, 32573), (0, 0, 2, 1, 17198), (2, 0, 1, -1, 9266),
+    (0, 0, 2, -1, 8822), (2, -1, 0, -1, 8216), (2, 0, -2, -1, 4324),
+    (2, 0, 1, 1, 4200), (2, 1, 0, -1, -3359), (2, -1, -1, 1, 2463),
+    (2, -1, 0, 1, 2211), (2, -1, -1, -1, 2065), (0, 1, -1, -1, -1870),
+    (4, 0, -1, -1, 1828), (0, 1, 0, 1, -1794), (0, 0, 0, 3, -1749),
+    (0, 1, -1, 1, -1565), (1, 0, 0, 1, -1491), (0, 1, 1, 1, -1475),
+    (0, 1, 1, -1, -1410), (0, 1, 0, -1, -1344), (1, 0, 0, -1, -1335),
+    (0, 0, 3, 1, 1107), (4, 0, 0, -1, 1021), (4, 0, -1, 1, 833),
+    (0, 0, 1, -3, 777), (4, 0, -2, 1, 671), (2, 0, 0, -3, 607),
+    (2, 0, 2, -1, 596), (2, -1, 1, -1, 491), (2, 0, -2, 1, -451),
+    (0, 0, 3, -1, 439), (2, 0, 2, 1, 422), (2, 0, -3, -1, 421),
+    (2, 1, -1, 1, -366), (2, 1, 0, 1, -351), (4, 0, 0, 1, 331),
+    (2, -1, 1, 1, 315), (2, -2, 0, -1, 302), (0, 0, 1, 3, -283),
+    (2, 1, 1, -1, -229), (1, 1, 0, -1, 223), (1, 1, 0, 1, 223),
+    (0, 1, -2, -1, -220), (2, 1, -1, -1, -220), (1, 0, 1, 1, -185),
+    (2, -1, -2, -1, 181), (0, 1, 2, 1, -177), (4, 0, -2, -1, 176),
+    (4, -1, -1, -1, 166), (1, 0, 1, -1, -164), (4, 0, 1, -1, 132),
+    (1, 0, -1, -1, -119), (4, -1, 0, -1, 115), (2, -2, 0, 1, 107),
+)
+
+
+def moon_ecliptic(d: float) -> tuple[float, float, float]:
+    """Geocentric ecliptic longitude and latitude in radians, distance in km."""
+    t = d / 36525.0
+    mean_longitude = (
+        218.3164477 + 481267.88123421 * t - 0.0015786 * t * t + t**3 / 538841 - t**4 / 65194000
     )
-    perihelion = math.radians(102.9372)
-    return _ecliptic_to_equatorial(mean_anomaly + centre + perihelion + math.pi, 0.0)
+    elongation = (
+        297.8501921 + 445267.1114034 * t - 0.0018819 * t * t + t**3 / 545868 - t**4 / 113065000
+    )
+    sun_anomaly = 357.5291092 + 35999.0502909 * t - 0.0001536 * t * t + t**3 / 24490000
+    moon_anomaly = (
+        134.9633964 + 477198.8675055 * t + 0.0087414 * t * t + t**3 / 69699 - t**4 / 14712000
+    )
+    latitude_argument = (
+        93.2720950 + 483202.0175233 * t - 0.0036539 * t * t - t**3 / 3526000 + t**4 / 863310000
+    )
+    venus_term = 119.75 + 131.849 * t
+    jupiter_term = 53.09 + 479264.290 * t
+    flattening_term = 313.45 + 481266.484 * t
+    # Corrects the terms involving the Sun's anomaly for Earth's slowly
+    # changing orbital eccentricity.
+    eccentricity = 1 - 0.002516 * t - 0.0000074 * t * t
+
+    sum_lon = sum_radius = sum_lat = 0.0
+    for c_d, c_m, c_mp, c_f, coeff_l, coeff_r in _MOON_LON_RADIUS:
+        argument = math.radians(
+            c_d * elongation + c_m * sun_anomaly + c_mp * moon_anomaly + c_f * latitude_argument
+        )
+        scale = eccentricity ** abs(c_m)
+        sum_lon += coeff_l * scale * math.sin(argument)
+        sum_radius += coeff_r * scale * math.cos(argument)
+    for c_d, c_m, c_mp, c_f, coeff_b in _MOON_LATITUDE:
+        argument = math.radians(
+            c_d * elongation + c_m * sun_anomaly + c_mp * moon_anomaly + c_f * latitude_argument
+        )
+        sum_lat += coeff_b * (eccentricity ** abs(c_m)) * math.sin(argument)
+
+    sum_lon += (
+        3958 * math.sin(math.radians(venus_term))
+        + 1962 * math.sin(math.radians(mean_longitude - latitude_argument))
+        + 318 * math.sin(math.radians(jupiter_term))
+    )
+    sum_lat += (
+        -2235 * math.sin(math.radians(mean_longitude))
+        + 382 * math.sin(math.radians(flattening_term))
+        + 175 * math.sin(math.radians(venus_term - latitude_argument))
+        + 175 * math.sin(math.radians(venus_term + latitude_argument))
+        + 127 * math.sin(math.radians(mean_longitude - moon_anomaly))
+        - 115 * math.sin(math.radians(mean_longitude + moon_anomaly))
+    )
+
+    return (
+        math.radians((mean_longitude + sum_lon / 1e6) % 360),
+        math.radians(sum_lat / 1e6),
+        385000.56 + sum_radius / 1000.0,
+    )
 
 
 def moon_equatorial(d: float) -> tuple[float, float, float]:
     """Right ascension, declination, and distance in km of the Moon."""
-    lon = math.radians(218.316 + 13.176396 * d)
-    anomaly = math.radians(134.963 + 13.064993 * d)
-    node = math.radians(93.272 + 13.22935 * d)
-    ecl_lon = lon + math.radians(6.289) * math.sin(anomaly)
-    ecl_lat = math.radians(5.128) * math.sin(node)
-    distance = 385001 - 20905 * math.cos(anomaly)
-    ra, dec = _ecliptic_to_equatorial(ecl_lon, ecl_lat)
+    ecl_lon, ecl_lat, distance = moon_ecliptic(d)
+    ra, dec = _ecliptic_to_equatorial(ecl_lon, ecl_lat, mean_obliquity(d))
     return ra, dec, distance
 
 

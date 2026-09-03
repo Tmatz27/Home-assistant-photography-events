@@ -438,16 +438,20 @@ tracked as a future enhancement.
 
 ## Data accuracy and limitations
 
-- **Sun/moon positions are computed locally** with well-known low-precision
-  formulas (the same family described on public references like aa.quae.nl's
-  "Position of the Sun/Moon" pages), not read from an external ephemeris
-  service. Expect rise/set and twilight times to be accurate to within a
-  minute or two - reliable enough for planning a shoot, not survey-grade
-- **Planet positions are computed** from mean Keplerian elements with a
-  two-body solver, accurate to a few arcminutes - far finer than needed to say
-  where to point a camera. As a check, it reproduces published opposition dates
-  (Mars 2027-02-19, Jupiter 2026-01-10 and 2027-02-11, Saturn 2026-10-04) to
-  the exact day
+- **Sun and Moon are computed locally**, not read from an external ephemeris
+  service. The Sun uses Meeus chapter 25 apparent longitude (better than a
+  hundredth of a degree) and the Moon the chapter 47 truncated ELP series with
+  sixty periodic terms. Checked against published full-moon instants, the Moon
+  lands within a minute on 2026-01-03 and two minutes on 2026-03-03. Rise, set
+  and twilight times are good to a minute or two - reliable for planning a
+  shoot, not survey-grade
+- **Planet positions use two-body Keplerian propagation** from mean elements.
+  Jupiter's 2026-01-10 and 2027-02-11 oppositions come out on the published
+  instant; **Mars and Saturn run about a day late** (2027-02-19 and 2026-10-04
+  respectively), because the mutual perturbations between the giant planets are
+  not modelled. That is immaterial for deciding which nights to shoot - a
+  planet is equally well placed for weeks either side of opposition - but read
+  a quoted Moon-planet conjunction separation as approximate for those two
 - **Sky-quality scoring is a heuristic, not a forecast model.** The backend
   reads Open-Meteo's low, mid and high cloud decks separately and scores the
   actual mechanism - high cloud as the canvas, low cloud as the blocker,

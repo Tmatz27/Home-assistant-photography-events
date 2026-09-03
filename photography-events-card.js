@@ -1,6 +1,6 @@
 /**
  * Photography Events Card for Home Assistant
- * Version 0.1.0
+ * Version 0.2.0
  *
  * Surfaces upcoming photography-worthy sky and nature events near your Home
  * Assistant location: golden/blue hour and sunset/sunrise quality, moon
@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-const CARD_VERSION = "0.1.0";
+const CARD_VERSION = "0.2.0";
 
 /* ---------------------------------------------------------------------- *
  * Astronomy core
@@ -184,6 +184,150 @@ const MOON_PHASES = [
 
 function moonPhaseInfo(phase) {
   return MOON_PHASES.find((entry) => phase <= entry.max) || MOON_PHASES[MOON_PHASES.length - 1];
+}
+
+function angularSeparation(ra1, dec1, ra2, dec2) {
+  return Math.acos(
+    clamp(Math.sin(dec1) * Math.sin(dec2) + Math.cos(dec1) * Math.cos(dec2) * Math.cos(ra1 - ra2), -1, 1),
+  );
+}
+
+/* ---------------------------------------------------------------------- *
+ * Planets
+ *
+ * Mean Keplerian elements at J2000 with per-century rates (the standard
+ * low-precision set used for approximate positions of the major planets,
+ * good to a few arcminutes over 1800-2050 - far finer than "is Jupiter up
+ * tonight, and how close is it to the Moon"). Each planet is propagated as a
+ * plain two-body orbit and differenced against Earth's to get a geocentric
+ * direction, which then feeds the same altitude machinery as the Sun and Moon.
+ * ---------------------------------------------------------------------- */
+
+const EARTH_ELEMENTS = {
+  name: "Earth",
+  a: [1.00000261, 0.00000562],
+  e: [0.01671123, -0.00004392],
+  i: [-0.00001531, -0.01294668],
+  meanLongitude: [100.46457166, 35999.37244981],
+  perihelion: [102.93768193, 0.32327364],
+  node: [0, 0],
+};
+
+const PLANETS = [
+  {
+    name: "Mercury",
+    inner: true,
+    a: [0.38709927, 0.00000037],
+    e: [0.20563593, 0.00001906],
+    i: [7.00497902, -0.00594749],
+    meanLongitude: [252.2503235, 149472.67411175],
+    perihelion: [77.45779628, 0.16047689],
+    node: [48.33076593, -0.12534081],
+  },
+  {
+    name: "Venus",
+    inner: true,
+    a: [0.72333566, 0.0000039],
+    e: [0.00677672, -0.00004107],
+    i: [3.39467605, -0.0007889],
+    meanLongitude: [181.9790995, 58517.81538729],
+    perihelion: [131.60246718, 0.00268329],
+    node: [76.67984255, -0.27769418],
+  },
+  {
+    name: "Mars",
+    inner: false,
+    a: [1.52371034, 0.00001847],
+    e: [0.0933941, 0.00007882],
+    i: [1.84969142, -0.00813131],
+    meanLongitude: [-4.55343205, 19140.30268499],
+    perihelion: [-23.94362959, 0.44441088],
+    node: [49.55953891, -0.29257343],
+  },
+  {
+    name: "Jupiter",
+    inner: false,
+    a: [5.202887, -0.00011607],
+    e: [0.04838624, -0.00013253],
+    i: [1.30439695, -0.00183714],
+    meanLongitude: [34.39644051, 3034.74612775],
+    perihelion: [14.72847983, 0.21252668],
+    node: [100.47390909, 0.20469106],
+  },
+  {
+    name: "Saturn",
+    inner: false,
+    a: [9.53667594, -0.0012506],
+    e: [0.05386179, -0.00050991],
+    i: [2.48599187, 0.00193609],
+    meanLongitude: [49.95424423, 1222.49362201],
+    perihelion: [92.59887831, -0.41897216],
+    node: [113.66242448, -0.28867794],
+  },
+];
+
+const atCentury = ([value, rate], centuries) => value + rate * centuries;
+
+/** Newton iteration on Kepler's equation; these eccentricities converge in a few passes. */
+function eccentricAnomaly(meanAnomalyRad, e) {
+  let E = meanAnomalyRad + e * Math.sin(meanAnomalyRad);
+  for (let i = 0; i < 8; i += 1) {
+    const delta = (E - e * Math.sin(E) - meanAnomalyRad) / (1 - e * Math.cos(E));
+    E -= delta;
+    if (Math.abs(delta) < 1e-10) break;
+  }
+  return E;
+}
+
+function heliocentricEcliptic(elements, centuries) {
+  const a = atCentury(elements.a, centuries);
+  const e = atCentury(elements.e, centuries);
+  const inclination = atCentury(elements.i, centuries) * RAD;
+  const meanLongitude = atCentury(elements.meanLongitude, centuries) * RAD;
+  const perihelion = atCentury(elements.perihelion, centuries) * RAD;
+  const node = atCentury(elements.node, centuries) * RAD;
+
+  const argPerihelion = perihelion - node;
+  const meanAnomaly = meanLongitude - perihelion;
+  const E = eccentricAnomaly(meanAnomaly, e);
+
+  const xOrbit = a * (Math.cos(E) - e);
+  const yOrbit = a * Math.sqrt(1 - e * e) * Math.sin(E);
+
+  const cosArg = Math.cos(argPerihelion);
+  const sinArg = Math.sin(argPerihelion);
+  const cosNode = Math.cos(node);
+  const sinNode = Math.sin(node);
+  const cosInc = Math.cos(inclination);
+  const sinInc = Math.sin(inclination);
+
+  return {
+    x: (cosArg * cosNode - sinArg * sinNode * cosInc) * xOrbit + (-sinArg * cosNode - cosArg * sinNode * cosInc) * yOrbit,
+    y: (cosArg * sinNode + sinArg * cosNode * cosInc) * xOrbit + (-sinArg * sinNode + cosArg * cosNode * cosInc) * yOrbit,
+    z: sinArg * sinInc * xOrbit + cosArg * sinInc * yOrbit,
+  };
+}
+
+function planetGeocentric(planet, date) {
+  const centuries = daysSinceJ2000(date) / 36525;
+  const body = heliocentricEcliptic(planet, centuries);
+  const earth = heliocentricEcliptic(EARTH_ELEMENTS, centuries);
+  const x = body.x - earth.x;
+  const y = body.y - earth.y;
+  const z = body.z - earth.z;
+  const eclLon = Math.atan2(y, x);
+  const eclLat = Math.atan2(z, Math.sqrt(x * x + y * y));
+  return {
+    ...eclipticToEquatorial(eclLon, eclLat),
+    distanceAu: Math.sqrt(x * x + y * y + z * z),
+  };
+}
+
+/** Angular distance from the Sun as seen from Earth; ~180 deg at opposition. */
+function planetElongationDeg(planet, date) {
+  const sun = sunEquatorial(daysSinceJ2000(date));
+  const body = planetGeocentric(planet, date);
+  return angularSeparation(sun.ra, sun.dec, body.ra, body.dec) * DEG;
 }
 
 /* ---------------------------------------------------------------------- *
@@ -386,14 +530,29 @@ function annotateMoonPhases(days) {
 }
 
 /* ---------------------------------------------------------------------- *
- * Weather-based sky quality
+ * Sky colour quality
+ *
+ * Grounded in how vivid sunsets actually form (NOAA/SPC, "The Colors of
+ * Twilight and Sunset"): the low sun's light has to reach cloud from
+ * underneath without first crossing the hazy boundary layer, and there has to
+ * be mid/high cloud up there to catch it. So the ingredients are a clear path
+ * to the horizon, broken rather than flat cloud, no rain-bearing deck, and
+ * clean rather than hazy air - haze and smoke mute colour, they do not
+ * enhance it.
+ *
+ * Almost every Home Assistant weather integration exposes a single aggregate
+ * cloud_coverage rather than per-layer cloud, so "broken vs flat" is inferred
+ * from how much that number moves across the hours either side of the event.
+ * A sky that reads 20/55/35/60 over two hours is structured and dynamic; one
+ * that reads 95/96/94 is a lid, and 3/2/4 is empty.
  * ---------------------------------------------------------------------- */
 
-const SUN_QUALITY_LABELS = {
-  excellent: "Good potential for vivid color",
-  good: "Decent conditions",
-  fair: "Variable - could go either way",
-  poor: "Unlikely to produce a colorful sky",
+const SKY_TIER_LABELS = {
+  epic: "Could be a big one - worth dropping everything for",
+  excellent: "Strong potential for vivid colour",
+  good: "Decent chance of colour",
+  fair: "Probably a plain sky",
+  poor: "Unlikely to light up",
 };
 
 const CONDITION_TIER = {
@@ -413,7 +572,9 @@ const CONDITION_TIER = {
   hail: "poor",
 };
 
-function nearestForecast(forecast, targetDate) {
+const SKY_SAMPLE_OFFSETS_MINUTES = [-120, -90, -60, -30, 0, 30];
+
+function forecastAt(forecast, targetDate, toleranceMinutes = 75) {
   if (!Array.isArray(forecast) || !forecast.length || !targetDate) return null;
   let best = null;
   let bestDiff = Infinity;
@@ -426,22 +587,132 @@ function nearestForecast(forecast, targetDate) {
       best = entry;
     }
   }
-  return bestDiff <= 90 * 60000 ? best : null;
+  return bestDiff <= toleranceMinutes * 60000 ? best : null;
 }
 
-function sunsetQuality(forecastEntry) {
-  if (!forecastEntry) return null;
-  const cloud = Number(forecastEntry.cloud_coverage);
-  let tier;
-  if (Number.isFinite(cloud)) {
-    if (cloud > 85) tier = "poor";
-    else if (cloud > 65) tier = "good";
-    else if (cloud >= 15) tier = "excellent";
-    else tier = "fair";
-  } else {
-    tier = CONDITION_TIER[forecastEntry.condition] || null;
+function collectSkySamples(forecast, eventTime) {
+  const seen = new Set();
+  const samples = [];
+  for (const offset of SKY_SAMPLE_OFFSETS_MINUTES) {
+    const entry = forecastAt(forecast, new Date(eventTime.getTime() + offset * 60000));
+    if (!entry || seen.has(entry.datetime)) continue;
+    seen.add(entry.datetime);
+    samples.push(entry);
   }
-  return tier ? { tier, label: SUN_QUALITY_LABELS[tier] } : null;
+  return samples;
+}
+
+const finiteNumbers = (values) => values.map(Number).filter(Number.isFinite);
+const average = (values) => values.reduce((sum, value) => sum + value, 0) / values.length;
+
+/** Peaks in the broken-cloud sweet spot; falls away toward empty and overcast skies. */
+function cloudBaseScore(meanCloud) {
+  if (meanCloud < 10) return 30;
+  if (meanCloud < 25) return 55;
+  if (meanCloud <= 65) return 75;
+  if (meanCloud <= 80) return 55;
+  if (meanCloud <= 92) return 30;
+  return 12;
+}
+
+/**
+ * The classic setup for a sky that actually catches fire: an unsettled few
+ * hours that clears right as the sun gets low, leaving broken mid/high cloud
+ * behind. Detected from the same hourly forecast rather than from history.
+ */
+function hasClearingTrend(forecast, eventTime, precipNow) {
+  const earlier = [];
+  for (let hours = 3; hours <= 9; hours += 1) {
+    const entry = forecastAt(forecast, new Date(eventTime.getTime() - hours * 3600000), 45);
+    if (entry) earlier.push(entry);
+  }
+  if (!earlier.length) return false;
+  const earlierPrecip = finiteNumbers(earlier.map((entry) => entry.precipitation_probability));
+  const earlierCloud = finiteNumbers(earlier.map((entry) => entry.cloud_coverage));
+  const wasUnsettled = (earlierPrecip.length && Math.max(...earlierPrecip) >= 30) ||
+    (earlierCloud.length && Math.max(...earlierCloud) >= 85);
+  return wasUnsettled && precipNow < 20;
+}
+
+function tierForScore(score) {
+  if (score >= 88) return "epic";
+  if (score >= 70) return "excellent";
+  if (score >= 50) return "good";
+  if (score >= 30) return "fair";
+  return "poor";
+}
+
+/**
+ * Scores the colour potential of the sky around one sunrise/sunset, returning
+ * a tier plus the plain-language reasons behind it so the pattern is legible
+ * rather than a black-box number.
+ */
+function skyColorQuality(forecast, eventTime) {
+  const samples = collectSkySamples(forecast, eventTime);
+  if (!samples.length) return null;
+
+  const clouds = finiteNumbers(samples.map((entry) => entry.cloud_coverage));
+  if (!clouds.length) {
+    const tier = CONDITION_TIER[samples[0].condition] || null;
+    return tier ? { tier, label: SKY_TIER_LABELS[tier], reasons: [] } : null;
+  }
+
+  const meanCloud = average(clouds);
+  const spread = Math.max(...clouds) - Math.min(...clouds);
+  const precipValues = finiteNumbers(samples.map((entry) => entry.precipitation_probability));
+  const precip = precipValues.length ? Math.max(...precipValues) : 0;
+  const humidityValues = finiteNumbers(samples.map((entry) => entry.humidity));
+  const humidity = humidityValues.length ? average(humidityValues) : null;
+
+  let score = cloudBaseScore(meanCloud);
+  const reasons = [];
+
+  if (meanCloud < 10) reasons.push("nearly empty sky");
+  else if (meanCloud > 92) reasons.push("solid overcast");
+  else reasons.push(`${Math.round(meanCloud)}% cloud`);
+
+  if (clouds.length >= 2) {
+    if (spread >= 35) {
+      score += 18;
+      reasons.push("broken, fast-changing cloud");
+    } else if (spread >= 20) {
+      score += 12;
+      reasons.push("some structure in the cloud");
+    } else if (spread >= 10) {
+      score += 6;
+    } else if (meanCloud > 25 && meanCloud < 92) {
+      score -= 6;
+      reasons.push("flat, featureless deck");
+    }
+  }
+
+  if (precip >= 70) {
+    score -= 35;
+    reasons.push("rain likely");
+  } else if (precip >= 45) {
+    score -= 20;
+    reasons.push("showers around");
+  } else if (precip >= 25) {
+    score -= 8;
+  }
+
+  if (hasClearingTrend(forecast, eventTime, precip)) {
+    score += 15;
+    reasons.push("clearing after an unsettled afternoon");
+  }
+
+  // Haze and heavy moisture mute colour rather than enhancing it.
+  if (humidity !== null) {
+    if (humidity >= 90) {
+      score -= 10;
+      reasons.push("hazy, humid air");
+    } else if (humidity >= 80) {
+      score -= 5;
+    }
+  }
+
+  const tier = tierForScore(clamp(score, 0, 100));
+  return { tier, label: SKY_TIER_LABELS[tier], reasons, score: Math.round(clamp(score, 0, 100)) };
 }
 
 function meteorQuality(maxAltitudeDeg, moonFraction) {
@@ -481,7 +752,7 @@ function solarEclipseVisibility(eclipseDate, latRad, lonRad) {
  * Event assembly
  * ---------------------------------------------------------------------- */
 
-const QUALITY_RANK = { excellent: 3, good: 2, fair: 1, poor: 0 };
+const QUALITY_RANK = { epic: 4, excellent: 3, good: 2, fair: 1, poor: 0 };
 
 function numberOrNull(value) {
   if (value === null || value === undefined || value === "") return null;
@@ -494,47 +765,59 @@ function fmtTime(date) {
   return date.toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" });
 }
 
+function fmtDate(date) {
+  if (!date) return "—";
+  return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+}
+
+function skyBadge(quality) {
+  if (!quality) return null;
+  return quality.reasons?.length ? `${quality.label} - ${quality.reasons.join(", ")}` : quality.label;
+}
+
 function eveningLightEvent(day, forecast) {
   if (!day.sunset) return null;
-  const quality = sunsetQuality(nearestForecast(forecast, day.sunset));
+  const quality = skyColorQuality(forecast, day.sunset);
   const parts = [];
   if (day.goldenHourEveningStart) parts.push(`Golden hour from ${fmtTime(day.goldenHourEveningStart)}`);
   parts.push(`Sunset ${fmtTime(day.sunset)}`);
   if (day.blueHourEveningStart && day.civilDusk) {
     parts.push(`blue hour ${fmtTime(day.blueHourEveningStart)}-${fmtTime(day.civilDusk)}`);
   }
+  const epic = quality?.tier === "epic";
   return {
     id: `evening-${day.date.toDateString()}`,
     category: "sun",
     time: day.goldenHourEveningStart || day.sunset,
     relevantUntil: day.civilDusk || day.sunset,
-    title: "Evening golden hour",
+    title: epic ? "Sunset could go off tonight" : "Evening golden hour",
     detail: parts.join(" · "),
     quality: quality?.tier ?? null,
-    badge: quality?.label ?? null,
-    icon: "mdi:weather-sunset-down",
+    badge: skyBadge(quality),
+    icon: epic ? "mdi:fire" : "mdi:weather-sunset-down",
   };
 }
 
 function morningLightEvent(day, forecast) {
   if (!day.sunrise) return null;
-  const quality = sunsetQuality(nearestForecast(forecast, day.sunrise));
+  const quality = skyColorQuality(forecast, day.sunrise);
   const parts = [];
   if (day.civilDawn && day.blueHourMorningEnd) {
     parts.push(`Blue hour ${fmtTime(day.civilDawn)}-${fmtTime(day.blueHourMorningEnd)}`);
   }
   parts.push(`Sunrise ${fmtTime(day.sunrise)}`);
   if (day.goldenHourMorningEnd) parts.push(`golden hour until ${fmtTime(day.goldenHourMorningEnd)}`);
+  const epic = quality?.tier === "epic";
   return {
     id: `morning-${day.date.toDateString()}`,
     category: "sun",
     time: day.civilDawn || day.sunrise,
     relevantUntil: day.goldenHourMorningEnd || day.sunrise,
-    title: "Morning golden hour",
+    title: epic ? "Sunrise could go off" : "Morning golden hour",
     detail: parts.join(" · "),
     quality: quality?.tier ?? null,
-    badge: quality?.label ?? null,
-    icon: "mdi:weather-sunset-up",
+    badge: skyBadge(quality),
+    icon: epic ? "mdi:fire" : "mdi:weather-sunset-up",
   };
 }
 
@@ -591,15 +874,15 @@ function meteorShowerEvents(days, latRad, lonRad, rangeStart, rangeEnd) {
       if (peak < rangeStart || peak > rangeEnd) continue;
       const dayIndex = days.findIndex((d) => d.date.toDateString() === peak.toDateString());
       const day = days[dayIndex];
-      const nextDay = days[dayIndex + 1];
-      if (!day?.astroDusk || !nextDay?.astroDawn) continue;
-      const maxAlt = maxAltitudeInWindow(shower.raDeg, shower.decDeg, day.astroDusk, nextDay.astroDawn, latRad, lonRad, 20);
+      const darkHours = darkWindow(days, dayIndex);
+      if (!day || !darkHours) continue;
+      const maxAlt = maxAltitudeInWindow(shower.raDeg, shower.decDeg, darkHours.start, darkHours.end, latRad, lonRad, 20);
       const quality = meteorQuality(maxAlt, day.moon.fraction);
       events.push({
         id: `meteor-${shower.name}-${year}`,
         category: "meteor",
         time: day.astroDusk,
-        relevantUntil: nextDay.astroDawn,
+        relevantUntil: darkHours.end,
         title: `${shower.name} meteor shower peak`,
         detail: `Up to ~${shower.zhr}/hr under ideal dark skies. Best after midnight, looking toward the radiant.`,
         quality: quality.tier,
@@ -611,31 +894,260 @@ function meteorShowerEvents(days, latRad, lonRad, rangeStart, rangeEnd) {
   return events;
 }
 
-function milkyWayEvent(day, nextDay, latRad, lonRad) {
-  if (!day.astroDusk || !nextDay?.astroDawn || nextDay.astroDawn <= day.astroDusk) return null;
+function milkyWayNight(days, index, latRad, lonRad) {
+  const day = days[index];
+  const darkHours = darkWindow(days, index);
+  if (!darkHours) return null;
   const maxAlt = maxAltitudeInWindow(
     GALACTIC_CORE_RA_DEG,
     GALACTIC_CORE_DEC_DEG,
-    day.astroDusk,
-    nextDay.astroDawn,
+    darkHours.start,
+    darkHours.end,
     latRad,
     lonRad,
     30,
   );
   if (maxAlt < 15 || day.moon.fraction >= 0.4) return null;
-  const tier = maxAlt >= 35 ? "excellent" : "good";
-  return {
-    id: `milkyway-${day.date.toDateString()}`,
-    category: "milkyway",
-    time: day.astroDusk,
-    relevantUntil: nextDay.astroDawn,
-    title: "Milky Way core visible",
-    detail: `Galactic core reaches ~${Math.round(maxAlt)}° with a ${Math.round(day.moon.fraction * 100)}%-lit moon. ` +
-      `Look south after ${fmtTime(day.astroDusk)}, away from light pollution.`,
-    quality: tier,
-    badge: tier === "excellent" ? "Great dark-sky night" : "Worth a look",
-    icon: "mdi:telescope",
+  return { day, darkHours, maxAlt };
+}
+
+/**
+ * The core is well placed on runs of consecutive moonless nights, so a row per
+ * night would bury everything else in the timeline. Collapse each run into one
+ * entry that names the window and the single best night in it.
+ */
+function milkyWayEvents(days, latRad, lonRad, todayStart, outlookEnd) {
+  const events = [];
+  let run = [];
+
+  const flush = () => {
+    if (!run.length) return;
+    const best = run.reduce((top, night) => (night.maxAlt > top.maxAlt ? night : top), run[0]);
+    const first = run[0];
+    const last = run[run.length - 1];
+    const tier = best.maxAlt >= 35 ? "excellent" : "good";
+    const multiNight = run.length > 1;
+    events.push({
+      id: `milkyway-${first.day.date.toDateString()}`,
+      category: "milkyway",
+      time: first.darkHours.start,
+      relevantUntil: last.darkHours.end,
+      title: multiNight ? `Milky Way window: ${run.length} dark nights` : "Milky Way core visible",
+      detail: `${multiNight ? `${fmtDate(first.day.date)} to ${fmtDate(last.day.date)}, best on ${fmtDate(best.day.date)} - core ` : "Core "}` +
+        `reaches ~${Math.round(best.maxAlt)}° with a ${Math.round(best.day.moon.fraction * 100)}%-lit moon. ` +
+        `Look south after ${fmtTime(best.darkHours.start)}, away from light pollution.`,
+      quality: tier,
+      badge: tier === "excellent" ? "Great dark-sky window" : "Worth a look",
+      icon: "mdi:telescope",
+    });
+    run = [];
   };
+
+  for (let i = 0; i < days.length; i += 1) {
+    const inRange = days[i].date >= todayStart && days[i].date <= outlookEnd;
+    const night = inRange ? milkyWayNight(days, i, latRad, lonRad) : null;
+    if (night) run.push(night);
+    else flush();
+  }
+  flush();
+
+  return events;
+}
+
+const PLANET_CONJUNCTION_MAX_DEG = 3;
+const MOON_CONJUNCTION_MAX_DEG = 4;
+const PHOTOGENIC_PLANETS = new Set(["Venus", "Jupiter", "Saturn", "Mars"]);
+const PLANET_VISIBLE_MIN_ALT_DEG = 12;
+
+function isLocalMax(values, i) {
+  return i > 0 && i < values.length - 1 && values[i] >= values[i - 1] && values[i] >= values[i + 1];
+}
+
+function isLocalMin(values, i) {
+  return i > 0 && i < values.length - 1 && values[i] <= values[i - 1] && values[i] <= values[i + 1];
+}
+
+/**
+ * The span of true darkness that starts with this day's dusk.
+ *
+ * Pairs a dusk with the next dawn that actually follows it rather than
+ * assuming "tomorrow's" row holds it. Which calendar day a dusk lands on
+ * depends on the offset between the browser's timezone and the configured
+ * coordinates, and when those disagree - a location override in another
+ * timezone - the naive pairing silently produces a 30-hour "night" that spans
+ * a whole daylight period.
+ */
+function darkWindow(days, index) {
+  const start = days[index]?.astroDusk;
+  if (!start) return null;
+  for (let i = index; i < days.length; i += 1) {
+    const dawn = days[i].astroDawn;
+    if (dawn && dawn > start) return { start, end: dawn };
+  }
+  return null;
+}
+
+/**
+ * Oppositions, greatest elongations, close conjunctions, and - for the next
+ * few nights only - a single consolidated "what's up tonight" row. One row per
+ * night rather than one per planet, so the timeline stays readable.
+ */
+function planetEvents(days, latRad, lonRad, todayStart, outlookEnd, nearTermEnd) {
+  const events = [];
+  const samples = days.map((day) => {
+    const noon = new Date(day.date.getFullYear(), day.date.getMonth(), day.date.getDate(), 12);
+    const positions = new Map();
+    for (const planet of PLANETS) {
+      positions.set(planet.name, {
+        ...planetGeocentric(planet, noon),
+        elongation: planetElongationDeg(planet, noon),
+      });
+    }
+    return { day, noon, positions, moon: moonEquatorial(daysSinceJ2000(noon)) };
+  });
+
+  const inRange = (day) => day.date >= todayStart && day.date <= outlookEnd;
+
+  for (const planet of PLANETS) {
+    const elongations = samples.map((sample) => sample.positions.get(planet.name).elongation);
+    for (let i = 0; i < samples.length; i += 1) {
+      if (!isLocalMax(elongations, i) || !inRange(samples[i].day)) continue;
+      const elongation = elongations[i];
+      const darkHours = darkWindow(days, i);
+      const position = samples[i].positions.get(planet.name);
+
+      if (!planet.inner && elongation > 170) {
+        events.push({
+          id: `opposition-${planet.name}-${samples[i].day.date.toDateString()}`,
+          category: "planet",
+          time: samples[i].day.astroDusk || samples[i].noon,
+          relevantUntil: darkHours ? darkHours.end : null,
+          title: `${planet.name} at opposition`,
+          detail: `Closest and brightest of the year at ${position.distanceAu.toFixed(2)} AU, and above the horizon ` +
+            "essentially all night - the best window to shoot it.",
+          quality: "excellent",
+          badge: "Up all night",
+          icon: "mdi:circle-slice-8",
+        });
+      } else if (planet.inner && elongation > (planet.name === "Venus" ? 40 : 16)) {
+        const eastern = isEasternElongation(planet, samples[i].noon);
+        events.push({
+          id: `elongation-${planet.name}-${samples[i].day.date.toDateString()}`,
+          category: "planet",
+          time: eastern ? samples[i].day.civilDusk || samples[i].noon : samples[i].day.civilDawn || samples[i].noon,
+          relevantUntil: eastern ? samples[i].day.astroDusk : samples[i].day.sunrise,
+          title: `${planet.name} at greatest elongation`,
+          detail: `${Math.round(elongation)}° from the Sun - its highest, easiest apparition of this cycle, ` +
+            `low in the ${eastern ? "west just after sunset" : "east before sunrise"}.`,
+          quality: planet.name === "Venus" ? "excellent" : "good",
+          badge: eastern ? "Evening star" : "Morning star",
+          icon: "mdi:star-four-points",
+        });
+      }
+    }
+  }
+
+  const pairs = [];
+  for (let a = 0; a < PLANETS.length; a += 1) {
+    for (let b = a + 1; b < PLANETS.length; b += 1) pairs.push([PLANETS[a], PLANETS[b]]);
+  }
+
+  for (const [first, second] of pairs) {
+    const separations = samples.map((sample) => {
+      const p1 = sample.positions.get(first.name);
+      const p2 = sample.positions.get(second.name);
+      return angularSeparation(p1.ra, p1.dec, p2.ra, p2.dec) * DEG;
+    });
+    for (let i = 0; i < samples.length; i += 1) {
+      if (!isLocalMin(separations, i) || separations[i] > PLANET_CONJUNCTION_MAX_DEG || !inRange(samples[i].day)) continue;
+      const placement = twilightPlacement(samples[i].positions.get(first.name).ra, samples[i].day);
+      events.push({
+        id: `conjunction-${first.name}-${second.name}-${samples[i].day.date.toDateString()}`,
+        category: "planet",
+        time: placement.time || samples[i].noon,
+        relevantUntil: placement.until || null,
+        title: `${first.name} and ${second.name} in conjunction`,
+        detail: `Just ${separations[i].toFixed(1)}° apart ${placement.where} - close enough to frame together with a long lens.`,
+        quality: "excellent",
+        badge: "Planetary pairing",
+        icon: "mdi:star-four-points",
+      });
+    }
+  }
+
+  for (const planet of PLANETS) {
+    if (!PHOTOGENIC_PLANETS.has(planet.name)) continue;
+    const separations = samples.map((sample) => {
+      const position = sample.positions.get(planet.name);
+      return angularSeparation(position.ra, position.dec, sample.moon.ra, sample.moon.dec) * DEG;
+    });
+    for (let i = 0; i < samples.length; i += 1) {
+      if (!isLocalMin(separations, i) || separations[i] > MOON_CONJUNCTION_MAX_DEG || !inRange(samples[i].day)) continue;
+      const phase = moonPhaseInfo(samples[i].day.moon.phase);
+      const placement = twilightPlacement(samples[i].positions.get(planet.name).ra, samples[i].day);
+      events.push({
+        id: `moon-conjunction-${planet.name}-${samples[i].day.date.toDateString()}`,
+        category: "planet",
+        time: placement.time || samples[i].noon,
+        relevantUntil: placement.until || null,
+        title: `Moon meets ${planet.name}`,
+        detail: `${separations[i].toFixed(1)}° apart ${placement.where}, with a ${phase.label.toLowerCase()} ` +
+          `(${Math.round(samples[i].day.moon.fraction * 100)}% lit) - a classic wide-or-long-lens pairing.`,
+        quality: "good",
+        badge: "Moon pairing",
+        icon: "mdi:star-four-points",
+      });
+    }
+  }
+
+  for (let i = 0; i < samples.length - 1; i += 1) {
+    const { day } = samples[i];
+    if (!inRange(day) || !day.astroDusk || day.astroDusk > nearTermEnd) continue;
+    const darkHours = darkWindow(days, i);
+    if (!darkHours) continue;
+    const visible = [];
+    for (const planet of PLANETS) {
+      const position = samples[i].positions.get(planet.name);
+      const maxAlt = maxAltitudeInWindow(position.ra * DEG, position.dec * DEG, darkHours.start, darkHours.end, latRad, lonRad, 30);
+      if (maxAlt >= PLANET_VISIBLE_MIN_ALT_DEG) visible.push(`${planet.name} (peaks ~${Math.round(maxAlt)}°)`);
+    }
+    if (!visible.length) continue;
+    events.push({
+      id: `planets-${day.date.toDateString()}`,
+      category: "planet",
+      time: day.astroDusk,
+      relevantUntil: darkHours.end,
+      title: `Planets tonight: ${visible.length === 1 ? visible[0].split(" ")[0] : `${visible.length} visible`}`,
+      detail: visible.join(" · "),
+      quality: null,
+      badge: null,
+      icon: "mdi:star-four-points-outline",
+    });
+  }
+
+  return events;
+}
+
+/** True when the body trails the Sun (visible after sunset) rather than leading it. */
+function isEastOfSun(raRad, date) {
+  const sun = sunEquatorial(daysSinceJ2000(date));
+  return ((raRad - sun.ra) * DEG + 540) % 360 - 180 > 0;
+}
+
+function isEasternElongation(planet, date) {
+  return isEastOfSun(planetGeocentric(planet, date).ra, date);
+}
+
+/**
+ * Anything close to the Sun is a twilight subject, and which twilight depends
+ * on which side of the Sun it sits - telling someone to look west after sunset
+ * for a dawn pairing would be worse than saying nothing.
+ */
+function twilightPlacement(raRad, day) {
+  const evening = isEastOfSun(raRad, day.date);
+  return evening
+    ? { evening: true, where: "in the west after sunset", time: day.civilDusk, until: day.astroDusk }
+    : { evening: false, where: "in the east before dawn", time: day.civilDawn, until: day.sunrise };
 }
 
 function eclipseEvents(now) {
@@ -673,20 +1185,79 @@ function buildEclipseEvent(eclipse, date, latRad, lonRad) {
   };
 }
 
+/**
+ * Comets, novae, and anything else that gets announced rather than predicted.
+ *
+ * Unlike meteor showers (which recur annually) or eclipses (which are computed
+ * centuries ahead), a bright comet is usually only known to be worth chasing a
+ * few months out, so a hardcoded comet table would be stale or wrong more
+ * often than right. Instead the user adds an entry when one is announced and
+ * this runs it through the same visibility and moonlight scoring as everything
+ * else: how high it gets during true darkness, and whether the Moon will wash
+ * it out.
+ */
+function customSkyEvents(config, days, latRad, lonRad, todayStart, outlookEnd) {
+  const entries = Array.isArray(config.custom_events) ? config.custom_events : [];
+  const events = [];
+
+  for (const entry of entries) {
+    const raDeg = numberOrNull(entry?.ra_deg ?? entry?.ra);
+    const decDeg = numberOrNull(entry?.dec_deg ?? entry?.dec);
+    const name = typeof entry?.name === "string" ? entry.name.trim() : "";
+    if (!name || raDeg === null || decDeg === null) continue;
+
+    const start = entry.start ? new Date(entry.start) : todayStart;
+    const end = entry.end ? new Date(entry.end) : outlookEnd;
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime())) continue;
+    if (end < todayStart || start > outlookEnd) continue;
+
+    // Score the best night inside the visible window rather than the first,
+    // so a comet that only clears the horizon later still reads accurately.
+    let best = null;
+    for (let i = 0; i < days.length - 1; i += 1) {
+      const day = days[i];
+      if (day.date < todayStart || day.date > outlookEnd || day.date < startOfDay(start) || day.date > end) continue;
+      const darkHours = darkWindow(days, i);
+      if (!darkHours) continue;
+      const maxAlt = maxAltitudeInWindow(raDeg, decDeg, darkHours.start, darkHours.end, latRad, lonRad, 30);
+      if (!best || maxAlt > best.maxAlt) best = { day, darkHours, maxAlt };
+    }
+    if (!best || best.maxAlt < 5) continue;
+
+    const moonFraction = best.day.moon.fraction;
+    const quality = meteorQuality(best.maxAlt, moonFraction);
+    const note = typeof entry?.note === "string" && entry.note.trim() ? ` ${entry.note.trim()}` : "";
+    events.push({
+      id: `custom-${name}-${best.day.date.toDateString()}`,
+      category: "custom",
+      time: best.day.astroDusk,
+      relevantUntil: end < best.darkHours.end ? end : best.darkHours.end,
+      title: name,
+      detail: `Reaches ~${Math.round(best.maxAlt)}° during full darkness on the best night in range, with a ` +
+        `${Math.round(moonFraction * 100)}%-lit moon.${note}`,
+      quality: quality.tier,
+      badge: quality.label,
+      icon: "mdi:comet",
+    });
+  }
+
+  return events;
+}
+
 function birdMigrationEvents(latRad, now, rangeStart, rangeEnd) {
   const hemisphere = latRad >= 0 ? "north" : "south";
   const events = [];
   for (const year of new Set([rangeStart.getFullYear(), rangeEnd.getFullYear()])) {
-    for (const window of BIRD_MIGRATION_WINDOWS[hemisphere]) {
-      const start = new Date(year, window.startMonth - 1, window.startDay);
-      const end = new Date(year, window.endMonth - 1, window.endDay, 23, 59, 59);
+    for (const season of BIRD_MIGRATION_WINDOWS[hemisphere]) {
+      const start = new Date(year, season.startMonth - 1, season.startDay);
+      const end = new Date(year, season.endMonth - 1, season.endDay, 23, 59, 59);
       if (end < rangeStart || start > rangeEnd) continue;
       events.push({
-        id: `birds-${window.label}-${year}`,
+        id: `birds-${season.label}-${year}`,
         category: "birds",
         time: start < now ? now : start,
         relevantUntil: end,
-        title: window.label,
+        title: season.label,
         detail: "General seasonal pattern for your latitude, not live migration radar. For real-time nocturnal " +
           "migration intensity, check Cornell Lab's BirdCast.",
         quality: null,
@@ -727,9 +1298,11 @@ function buildEvents(hass, config, forecast, now) {
       const morning = morningLightEvent(day, forecast);
       // Compare each event's own time, not the calendar day, to the near-term
       // cutoff - otherwise a day that merely starts within 72h would show its
-      // late-evening event unconditionally too.
+      // late-evening event unconditionally too. Past the near term, only a
+      // genuinely promising sky is worth a row.
       for (const event of [morning, evening]) {
-        if (event && (event.time <= nearTermEnd || event.quality === "excellent")) events.push(event);
+        const promising = event?.quality === "excellent" || event?.quality === "epic";
+        if (event && (event.time <= nearTermEnd || promising)) events.push(event);
       }
     }
   }
@@ -741,16 +1314,18 @@ function buildEvents(hass, config, forecast, now) {
     }
   }
 
+  if (config.show_planets !== false) {
+    events.push(...planetEvents(days, latRad, lonRad, todayStart, outlookEnd, nearTermEnd));
+  }
+
   if (config.show_meteor_showers !== false) {
     events.push(...meteorShowerEvents(days, latRad, lonRad, todayStart, outlookEnd));
   }
 
+  events.push(...customSkyEvents(config, days, latRad, lonRad, todayStart, outlookEnd));
+
   if (config.show_milky_way !== false) {
-    for (let i = 0; i < days.length - 1; i += 1) {
-      if (days[i].date < todayStart || days[i].date > outlookEnd) continue;
-      const event = milkyWayEvent(days[i], days[i + 1], latRad, lonRad);
-      if (event) events.push(event);
-    }
+    events.push(...milkyWayEvents(days, latRad, lonRad, todayStart, outlookEnd));
   }
 
   if (config.show_bird_migration !== false) {
@@ -810,6 +1385,7 @@ function relativeLabel(now, date) {
 const CATEGORY_TOGGLE_KEYS = [
   "show_sun_events",
   "show_moon_events",
+  "show_planets",
   "show_meteor_showers",
   "show_eclipses",
   "show_milky_way",
@@ -830,10 +1406,12 @@ const DEFAULT_CONFIG = Object.freeze({
   outlook_days: 21,
   show_sun_events: true,
   show_moon_events: true,
+  show_planets: true,
   show_meteor_showers: true,
   show_eclipses: true,
   show_milky_way: true,
   show_bird_migration: true,
+  custom_events: [],
 });
 
 const sameConfig = (left, right) => {
@@ -955,6 +1533,7 @@ class PhotographyEventsCardEditor extends HTMLElement {
         <div class="title">Event types</div>
         ${this._toggleRow("show_sun_events", "Golden/blue hour and sunrise/sunset")}
         ${this._toggleRow("show_moon_events", "Moon phases, moonrise/moonset")}
+        ${this._toggleRow("show_planets", "Planets, oppositions, conjunctions")}
         ${this._toggleRow("show_meteor_showers", "Meteor shower peaks")}
         ${this._toggleRow("show_eclipses", "Solar and lunar eclipses")}
         ${this._toggleRow("show_milky_way", "Milky Way core season")}
@@ -1197,9 +1776,38 @@ class PhotographyEventsCard extends HTMLElement {
         <div class="header-title">${escapeHtml(this._config.title)}</div>
         <div class="header-subtitle">${subtitle}</div>
       </div>
+      ${this._alertHtml(now)}
       ${this._snapshotHtml(now)}
       ${this._events.length ? this._timelineHtml(now) : this._emptyTimelineHtml()}
       ${this._footerHtml()}
+    `;
+  }
+
+  /**
+   * A top-of-card callout for the rare stuff worth reorganising an evening
+   * around: a sky forecast to actually catch fire, or a headline sky event
+   * happening imminently. Deliberately capped at one banner - if everything
+   * shouts, nothing does.
+   */
+  _alertHtml(now) {
+    const horizon = new Date(now.getTime() + 36 * 3600000);
+    const candidates = this._events.filter((event) => event.time <= horizon &&
+      (event.quality === "epic" || (event.category === "eclipse" && event.quality === "excellent")));
+    if (!candidates.length) return "";
+
+    const alert = candidates.reduce((best, event) => {
+      const rank = QUALITY_RANK[event.quality] ?? -1;
+      return !best || rank > (QUALITY_RANK[best.quality] ?? -1) ? event : best;
+    }, null);
+
+    return `
+      <div class="alert">
+        <ha-icon icon="${alert.icon}"></ha-icon>
+        <div class="alert-body">
+          <div class="alert-title">${escapeHtml(alert.title)} · ${relativeLabel(now, alert.time)}</div>
+          <div class="alert-detail">${escapeHtml(alert.badge || alert.detail)}</div>
+        </div>
+      </div>
     `;
   }
 
@@ -1297,6 +1905,7 @@ class PhotographyEventsCard extends HTMLElement {
         --pe-text: var(--primary-text-color, #f5f5f7);
         --pe-muted: var(--secondary-text-color, rgba(235, 235, 245, .60));
         --pe-border: var(--divider-color, rgba(255, 255, 255, .18));
+        --pe-epic: #ff8a3d;
         --pe-excellent: #85d481;
         --pe-good: #66a7ff;
         --pe-fair: #e8b15e;
@@ -1320,6 +1929,15 @@ class PhotographyEventsCard extends HTMLElement {
       .header { margin-bottom: 14px; }
       .header-title { font-size: 19px; font-weight: 800; }
       .header-subtitle { color: var(--pe-muted); font-size: 12px; }
+      .alert {
+        display: flex; align-items: center; gap: 12px; margin-bottom: 14px; padding: 12px 14px;
+        border: 1px solid rgba(255, 138, 61, .45); border-radius: 16px;
+        background: linear-gradient(120deg, rgba(255, 138, 61, .22), rgba(255, 138, 61, .06));
+      }
+      .alert ha-icon { flex: 0 0 auto; color: var(--pe-epic); --mdc-icon-size: 26px; }
+      .alert-body { min-width: 0; }
+      .alert-title { font-size: 15px; font-weight: 800; }
+      .alert-detail { margin-top: 2px; color: var(--pe-muted); font-size: 12px; line-height: 1.4; }
       .snapshot-strip { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-bottom: 16px; }
       .snapshot-tile {
         min-width: 0; padding: 10px 11px; border: 1px solid var(--pe-border); border-radius: 14px;
@@ -1336,6 +1954,16 @@ class PhotographyEventsCard extends HTMLElement {
       }
       .event-row {
         display: flex; gap: 10px; padding: 9px 3px; border-left: 3px solid transparent;
+      }
+      .event-row.quality-epic {
+        border-left-color: var(--pe-epic);
+        border-radius: 0 12px 12px 0;
+        background: linear-gradient(90deg, rgba(255, 138, 61, .16), transparent 65%);
+      }
+      .event-row.quality-epic .event-icon { color: var(--pe-epic); }
+      .event-row.quality-epic .event-badge {
+        background: rgba(255, 138, 61, .22);
+        color: #ffd7bb;
       }
       .event-row.quality-excellent { border-left-color: var(--pe-excellent); }
       .event-row.quality-good { border-left-color: var(--pe-good); }
@@ -1400,8 +2028,14 @@ PhotographyEventsCard.astro = {
   moonPhaseInfo,
   buildDayTable,
   buildEvents,
-  sunsetQuality,
+  skyColorQuality,
   meteorQuality,
+  planetGeocentric,
+  planetElongationDeg,
+  planetEvents,
+  customSkyEvents,
+  angularSeparation,
+  PLANETS,
   lunarEclipseVisibility,
   solarEclipseVisibility,
   METEOR_SHOWERS,

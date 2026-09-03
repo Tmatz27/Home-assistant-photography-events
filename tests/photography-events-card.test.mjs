@@ -128,6 +128,7 @@ function londonHass(overrides = {}) {
 }
 
 const DEFAULT_TOGGLES = {
+  show_planets: true,
   show_sun_events: true,
   show_moon_events: true,
   show_meteor_showers: true,
@@ -301,15 +302,90 @@ test("solar eclipse visibility correctly rules out the night side of Earth", () 
   assert.match(nightSide.note, /nighttime/i);
 });
 
-test("sunsetQuality bands cloud coverage into tiers, and falls back to condition", () => {
-  assert.equal(astro.sunsetQuality(null), null);
-  assert.equal(astro.sunsetQuality({ cloud_coverage: 40 }).tier, "excellent");
-  assert.equal(astro.sunsetQuality({ cloud_coverage: 5 }).tier, "fair");
-  assert.equal(astro.sunsetQuality({ cloud_coverage: 75 }).tier, "good");
-  assert.equal(astro.sunsetQuality({ cloud_coverage: 95 }).tier, "poor");
-  assert.equal(astro.sunsetQuality({ condition: "partlycloudy" }).tier, "excellent");
-  assert.equal(astro.sunsetQuality({ condition: "rainy" }).tier, "poor");
-  assert.equal(astro.sunsetQuality({ condition: "not-a-real-condition" }), null);
+const SKY_EVENT_TIME = new Date("2026-09-05T19:00:00Z");
+
+/** Hourly forecast entries at the given hour offsets from the scored event. */
+function forecastAround(points) {
+  return points.map(({ h, cloud, precip, humidity }) => ({
+    datetime: new Date(SKY_EVENT_TIME.getTime() + h * 3600000).toISOString(),
+    cloud_coverage: cloud,
+    precipitation_probability: precip,
+    humidity,
+  }));
+}
+
+const flatHours = (cloud, precip, humidity) =>
+  forecastAround([-3, -2, -1, 0, 1].map((h) => ({ h, cloud, precip, humidity })));
+
+test("sky scoring separates a flat sky from a broken, structured one", () => {
+  const overcast = astro.skyColorQuality(flatHours(95, 20, 85), SKY_EVENT_TIME);
+  assert.equal(overcast.tier, "poor");
+
+  const clear = astro.skyColorQuality(flatHours(3, 0, 40), SKY_EVENT_TIME);
+  assert.equal(clear.tier, "fair", "an empty sky is pleasant but not dramatic");
+
+  // Same average cloud as a flat deck, but moving hour to hour - broken cloud
+  // is what actually catches the light.
+  const broken = astro.skyColorQuality(
+    forecastAround([
+      { h: -2, cloud: 20, precip: 5, humidity: 55 },
+      { h: -1, cloud: 55, precip: 5, humidity: 55 },
+      { h: 0, cloud: 35, precip: 5, humidity: 55 },
+      { h: 1, cloud: 62, precip: 5, humidity: 55 },
+    ]),
+    SKY_EVENT_TIME,
+  );
+  const flatMid = astro.skyColorQuality(flatHours(43, 5, 55), SKY_EVENT_TIME);
+  assert.ok(broken.score > flatMid.score, "broken cloud should outscore a flat deck of the same density");
+});
+
+test("the epic tier is reserved for the clearing-after-unsettled setup", () => {
+  const clearing = astro.skyColorQuality(
+    forecastAround([
+      { h: -8, cloud: 95, precip: 80, humidity: 90 },
+      { h: -6, cloud: 90, precip: 70, humidity: 88 },
+      { h: -4, cloud: 80, precip: 45, humidity: 80 },
+      { h: -2, cloud: 55, precip: 15, humidity: 65 },
+      { h: -1, cloud: 40, precip: 10, humidity: 62 },
+      { h: 0, cloud: 45, precip: 5, humidity: 60 },
+      { h: 1, cloud: 30, precip: 5, humidity: 58 },
+    ]),
+    SKY_EVENT_TIME,
+  );
+  assert.equal(clearing.tier, "epic");
+  assert.ok(
+    clearing.reasons.some((reason) => /clearing/i.test(reason)),
+    "expected the clearing trend to be named in the reasons",
+  );
+
+  // Ordinary good conditions must not reach epic, or the alert means nothing.
+  for (const forecast of [flatHours(45, 5, 55), flatHours(30, 0, 50), flatHours(70, 10, 60)]) {
+    assert.notEqual(astro.skyColorQuality(forecast, SKY_EVENT_TIME).tier, "epic");
+  }
+});
+
+test("rain and haze both pull the score down", () => {
+  const raining = astro.skyColorQuality(flatHours(88, 85, 95), SKY_EVENT_TIME);
+  assert.equal(raining.tier, "poor");
+  assert.ok(raining.reasons.some((reason) => /rain/i.test(reason)));
+
+  const hazy = astro.skyColorQuality(flatHours(48, 0, 94), SKY_EVENT_TIME);
+  const clean = astro.skyColorQuality(flatHours(48, 0, 55), SKY_EVENT_TIME);
+  assert.ok(hazy.score < clean.score, "haze mutes colour rather than enhancing it");
+});
+
+test("sky scoring degrades gracefully without cloud data", () => {
+  assert.equal(astro.skyColorQuality(null, SKY_EVENT_TIME), null);
+  assert.equal(astro.skyColorQuality([], SKY_EVENT_TIME), null);
+  const conditionOnly = astro.skyColorQuality(
+    [{ datetime: SKY_EVENT_TIME.toISOString(), condition: "partlycloudy" }],
+    SKY_EVENT_TIME,
+  );
+  assert.equal(conditionOnly.tier, "excellent");
+  assert.equal(
+    astro.skyColorQuality([{ datetime: SKY_EVENT_TIME.toISOString(), condition: "not-real" }], SKY_EVENT_TIME),
+    null,
+  );
 });
 
 test("meteorQuality penalizes a low radiant and a bright moon", () => {
@@ -317,6 +393,135 @@ test("meteorQuality penalizes a low radiant and a bright moon", () => {
   assert.equal(astro.meteorQuality(40, 0.8).tier, "fair");
   assert.equal(astro.meteorQuality(40, 0.1).tier, "excellent");
   assert.equal(astro.meteorQuality(20, 0.35).tier, "good");
+});
+
+test("planet positions reproduce real, independently published opposition dates", () => {
+  // Oppositions are the sharpest available check on the orbital elements and
+  // the Kepler solver: the planet is opposite the Sun to within a fraction of
+  // a degree on exactly one day. These four dates are published astronomical
+  // fact, not values derived from this code.
+  const expected = {
+    Mars: ["2027-02-19"],
+    Jupiter: ["2026-01-10", "2027-02-11"],
+    Saturn: ["2026-10-04"],
+  };
+
+  for (const [name, dates] of Object.entries(expected)) {
+    const planet = astro.PLANETS.find((entry) => entry.name === name);
+    const elongations = [];
+    for (let i = 0; i <= 800; i += 1) {
+      const date = new Date(Date.UTC(2026, 0, 1, 12) + i * 86400000);
+      elongations.push({ date, value: astro.planetElongationDeg(planet, date) });
+    }
+    const oppositions = elongations
+      .filter((entry, i) => i > 0 && i < elongations.length - 1 &&
+        entry.value >= elongations[i - 1].value && entry.value >= elongations[i + 1].value && entry.value > 170)
+      .map((entry) => entry.date.toISOString().slice(0, 10));
+
+    for (const date of dates) {
+      assert.ok(oppositions.includes(date), `expected a ${name} opposition on ${date}, got ${oppositions.join(", ")}`);
+    }
+  }
+});
+
+test("planet distances and elongations stay physically plausible", () => {
+  const bounds = {
+    Mercury: [0.5, 1.5],
+    Venus: [0.25, 1.75],
+    Mars: [0.35, 2.7],
+    Jupiter: [3.9, 6.6],
+    Saturn: [7.9, 11.1],
+  };
+  for (let i = 0; i < 400; i += 7) {
+    const date = new Date(Date.UTC(2026, 0, 1) + i * 86400000);
+    for (const planet of astro.PLANETS) {
+      const { distanceAu } = astro.planetGeocentric(planet, date);
+      const [min, max] = bounds[planet.name];
+      assert.ok(distanceAu >= min && distanceAu <= max, `${planet.name} at ${distanceAu} AU on ${date.toISOString()}`);
+      const elongation = astro.planetElongationDeg(planet, date);
+      assert.ok(elongation >= 0 && elongation <= 180, `${planet.name} elongation ${elongation}`);
+      // Inner planets can never appear opposite the Sun.
+      if (planet.inner) {
+        const limit = planet.name === "Venus" ? 48 : 29;
+        assert.ok(elongation <= limit, `${planet.name} elongation ${elongation} exceeds its geometric limit`);
+      }
+    }
+  }
+});
+
+test("a planet buried in the Sun's glare is not reported as visible tonight", () => {
+  // On this date Mercury sits under 7 degrees from the Sun, so it cannot be
+  // above the horizon during astronomical darkness however the night is sliced.
+  const now = new Date("2026-09-03T15:00:00Z");
+  const { events } = astro.buildEvents(
+    { config: { latitude: 36.9741, longitude: -122.0308, elevation: 30 }, states: {} },
+    { outlook_days: 7, ...DEFAULT_TOGGLES },
+    null,
+    now,
+  );
+  const tonight = events.filter((event) => event.title.startsWith("Planets tonight"));
+  assert.ok(tonight.length > 0, "expected a planets-tonight row");
+  for (const event of tonight) {
+    assert.doesNotMatch(event.detail, /Mercury/, "Mercury is in conjunction with the Sun and cannot be up in darkness");
+  }
+});
+
+test("a dusk is paired with the dawn that follows it, not with tomorrow's row", () => {
+  // Coordinates far from the runtime's timezone push dusk across the calendar
+  // boundary; pairing by date instead of by ordering produced a 30-hour
+  // "night" that spanned a whole day of sunlight.
+  const now = new Date("2026-09-03T15:00:00Z");
+  const { events } = astro.buildEvents(
+    { config: { latitude: 36.9741, longitude: -122.0308, elevation: 30 }, states: {} },
+    { outlook_days: 7, ...DEFAULT_TOGGLES },
+    null,
+    now,
+  );
+  // Milky Way windows, migration seasons and comet apparitions are ranged on
+  // purpose; the single-night categories are the ones that must not blow out.
+  const singleNight = new Set(["sun", "moon", "planet", "meteor"]);
+  for (const event of events.filter((entry) => entry.relevantUntil && singleNight.has(entry.category))) {
+    const hours = (event.relevantUntil - event.time) / 3600000;
+    assert.ok(hours <= 26, `"${event.title}" spans ${hours.toFixed(1)}h, which is longer than any real night`);
+  }
+});
+
+test("consecutive Milky Way nights collapse into a single window", () => {
+  const now = new Date("2026-09-03T15:00:00Z");
+  const { events } = astro.buildEvents(
+    { config: { latitude: 36.9741, longitude: -122.0308, elevation: 30 }, states: {} },
+    { outlook_days: 21, ...DEFAULT_TOGGLES },
+    null,
+    now,
+  );
+  const milkyWay = events.filter((event) => event.category === "milkyway");
+  assert.ok(milkyWay.length >= 1, "expected a Milky Way entry in September at this latitude");
+  assert.ok(milkyWay.length <= 3, `expected grouped windows, got ${milkyWay.length} separate rows`);
+});
+
+test("custom sky events are scored, and unusable entries are skipped", () => {
+  const now = new Date("2026-09-03T15:00:00Z");
+  const config = {
+    outlook_days: 21,
+    ...DEFAULT_TOGGLES,
+    custom_events: [
+      { name: "Comet Test", ra_deg: 250, dec_deg: 20, start: "2026-09-05", end: "2026-09-25", note: "Mag 4." },
+      { name: "No coordinates" },
+      { ra_deg: 10, dec_deg: 10 },
+      { name: "Unparseable dates", ra_deg: 10, dec_deg: 10, start: "not-a-date" },
+    ],
+  };
+  const { events } = astro.buildEvents(
+    { config: { latitude: 36.9741, longitude: -122.0308, elevation: 30 }, states: {} },
+    config,
+    null,
+    now,
+  );
+  const custom = events.filter((event) => event.category === "custom");
+  assert.equal(custom.length, 1, "only the fully specified entry should produce an event");
+  assert.equal(custom[0].title, "Comet Test");
+  assert.match(custom[0].detail, /Mag 4\./);
+  assert.ok(custom[0].quality, "expected the comet to be scored like any other target");
 });
 
 test("buildEvents reports an error instead of throwing when no location is configured", () => {
@@ -374,7 +579,16 @@ test("sun events still render without a configured weather entity", () => {
 
 test("an excellent-quality forecast lets a sun event surface beyond the 72-hour near-term window", () => {
   const now = new Date("2026-09-02T12:00:00Z");
-  const config = { outlook_days: 21, show_sun_events: true, show_moon_events: false, show_meteor_showers: false, show_eclipses: false, show_milky_way: false, show_bird_migration: false };
+  const config = {
+    outlook_days: 21,
+    show_sun_events: true,
+    show_moon_events: false,
+    show_planets: false,
+    show_meteor_showers: false,
+    show_eclipses: false,
+    show_milky_way: false,
+    show_bird_migration: false,
+  };
   const days = astro.buildDayTable(LONDON.latitude * RAD, LONDON.longitude * RAD, new Date("2026-09-01"), new Date("2026-09-10"), LONDON.elevation);
   const farDay = days.find((d) => d.date.toISOString().slice(0, 10) === "2026-09-08");
   const forecast = [

@@ -4,9 +4,13 @@
 
 A Home Assistant Lovelace card that looks out from your location (or an
 overridden one) for photography-worthy sky and nature events: golden and blue
-hour, sunrise/sunset color potential, moon phases, meteor shower peaks, solar
-and lunar eclipses, Milky Way core season, and a coarse bird migration season
-heuristic.
+hour, moon phases, planets and their conjunctions, meteor shower peaks, solar
+and lunar eclipses, Milky Way windows, comets you add as they are announced,
+and a coarse bird migration season heuristic.
+
+Its main job is to tell an ordinary sunset apart from the rare one where the
+whole sky catches fire, and to say so loudly enough to get you out of the
+house - see [Scoring the sky](#scoring-the-sky).
 
 > The banner above is an illustration of the card's layout, not a screenshot.
 
@@ -16,23 +20,109 @@ outlook (21 days by default) in one scrollable timeline, grouped by day.
 ## What this card computes
 
 - **Golden hour, blue hour, sunrise, and sunset** - computed directly, not read
-  from `sun.sun`, so twilight and golden/blue hour boundaries are all available
+  from `sun.sun`, so twilight and golden/blue hour boundaries are all available,
+  each scored for how likely the sky is to actually light up (see
+  [Scoring the sky](#scoring-the-sky))
 - **Moon phase, illumination %, moonrise/moonset** - with New Moon ("dark sky,
   good for stars") and Full Moon ("moonrise-over-the-landscape", flagged as a
   Supermoon when notably close) called out specifically
+- **Planets** - Mercury, Venus, Mars, Jupiter and Saturn, surfacing oppositions,
+  greatest elongations, planet-planet and Moon-planet conjunctions, and a
+  nightly "what's up" summary. Positions are computed, not tabulated
 - **Meteor shower peaks** - the eleven major annual showers, scored by radiant
   altitude and moonlight interference on the peak night
 - **Solar and lunar eclipses** - a curated table of upcoming eclipses (see
   [Data accuracy](#data-accuracy-and-limitations) below) with a local-visibility
   check computed from real moon/sun geometry for your location
-- **Milky Way core season** - nights the galactic core clears a usable altitude
-  during astronomical darkness with a dark enough moon
+- **Milky Way core season** - runs of dark, moonless nights when the galactic
+  core clears a usable altitude, grouped into a window naming the best night
+- **Comets and anything else announced rather than predicted** - via
+  [`custom_events`](#comets-and-other-one-off-events)
 - **Bird migration season** - a general spring/fall seasonal window for your
   hemisphere (see the caveat below - this is not live migration data)
 
-Sunset/sunrise and meteor-shower quality badges only appear once you configure
-a `weather_entity` that reports forecast cloud coverage (see Configuration).
-Without one, the card still shows every event, just without a quality score.
+Sky-quality scoring needs a `weather_entity` with a cloud-coverage forecast
+(see Configuration). Without one, the card still shows every event, just
+without a score.
+
+## Scoring the sky
+
+Most sunsets are pleasant. A few times a year the cloud is exactly right and
+the whole sky goes up in colour. This card tries to tell those apart rather
+than reporting "sunset: 7:14pm" every night.
+
+Vivid sunsets need the low sun's light to reach cloud from underneath without
+first crossing the hazy air near the ground, and they need mid- or high-level
+cloud up there to catch it (NOAA's Storm Prediction Center has a good write-up
+in "The Colors of Twilight and Sunset"). So the ingredients are: a clear path
+to the horizon, **broken** rather than flat cloud, no rain-bearing deck, and
+clean air - haze and smoke mute colour rather than enhancing it, contrary to
+the popular belief.
+
+Almost every Home Assistant weather integration reports a single aggregate
+cloud percentage rather than per-layer cloud, so the card infers structure from
+how much that number *moves* across the hours either side of the event:
+
+| Signal | Effect |
+| --- | --- |
+| Mean cloud cover in the broken sweet spot (~25-65%) | Best base score; empty and overcast skies both score low |
+| Large spread across the sampled hours | Bonus - broken, dynamic cloud is what catches light |
+| Flat, unchanging cloud | Penalty - a uniform deck rarely lights up |
+| High precipitation probability | Penalty - rain-bearing low cloud blocks the show |
+| Unsettled earlier, clearing by sunset | Bonus - the classic "sky on fire" setup |
+| Very high humidity | Penalty - haze mutes saturation |
+
+Scores land in five tiers. The top one, **epic**, needs several signals to line
+up at once, gets its own alert banner at the top of the card, and is meant to
+be rare - if it fired every week it would not be worth acting on. Each score
+also shows its reasoning ("47% cloud, clearing after an unsettled afternoon"),
+so you can start recognising the pattern yourself.
+
+## Get notified when the sky is worth chasing
+
+A Lovelace card only tells you something while you are looking at a dashboard,
+which is no use for a sky that peaks for fifteen minutes. Custom cards cannot
+publish state back into Home Assistant, so the notification has to be a normal
+automation reading your weather entity directly. This one mirrors the card's
+core heuristic in a deliberately simpler form - moderate, broken cloud with low
+rain chance - and fires a couple of hours before sunset:
+
+```yaml
+automation:
+  - alias: Sunset could be worth chasing
+    trigger:
+      - platform: sun
+        event: sunset
+        offset: "-02:00:00"
+    condition:
+      - condition: template
+        value_template: >-
+          {% set f = state_attr('weather.home', 'forecast') or [] %}
+          {% set near = f[:3] | map(attribute='cloud_coverage') | select('is_number') | list %}
+          {% set rain = f[:3] | map(attribute='precipitation_probability')
+                                | select('is_number') | list %}
+          {{ near | length > 1
+             and 25 <= (near | sum / near | length) <= 70
+             and (near | max) - (near | min) >= 20
+             and (rain | length == 0 or (rain | max) < 40) }}
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: Get to the beach
+          message: >-
+            Broken cloud and low rain chance into sunset - this one could go off.
+```
+
+Replace `weather.home` and `notify.mobile_app_your_phone` with your own
+entities. Some integrations expose the hourly forecast through the
+`weather.get_forecasts` action rather than a `forecast` attribute; if the
+template comes back empty, fetch it in the automation with that action first.
+
+This is intentionally a rough approximation - it cannot see the clearing-trend
+or haze signals the card weighs. If you would rather have the card's exact
+scoring available to automations, that needs a companion Home Assistant
+integration publishing real sensor entities, which is a much larger piece of
+work than a dashboard card; say the word and it can be built.
 
 ## Requirements
 
@@ -71,7 +161,7 @@ Work through these in order. Step 1 tells you which half of the problem you have
 dashboard page and look for the version banner:
 
 ```
-Photography Events Card v0.1.0
+Photography Events Card v0.2.0
 ```
 
 - **Banner present** → the card is registered. Skip to step 4.
@@ -140,10 +230,37 @@ show_bird_migration: true
 | `outlook_days` | `21` | How far ahead to look, from 7 to 30 days. The 24/48/72 hour snapshot always shows regardless of this setting |
 | `show_sun_events` | `true` | Golden/blue hour, sunrise/sunset |
 | `show_moon_events` | `true` | Moon phase, moonrise/moonset |
+| `show_planets` | `true` | Oppositions, elongations, conjunctions, nightly planet summary |
 | `show_meteor_showers` | `true` | Meteor shower peaks |
 | `show_eclipses` | `true` | Solar/lunar eclipses |
-| `show_milky_way` | `true` | Milky Way core season |
+| `show_milky_way` | `true` | Milky Way core windows |
 | `show_bird_migration` | `true` | Bird migration season banner |
+| `custom_events` | `[]` | Comets and other one-off targets - see below |
+
+### Comets and other one-off events
+
+Meteor showers recur every year and eclipses are computed centuries ahead, but
+a bright comet is usually only known to be worth chasing a few months out. A
+hardcoded comet list would be stale or wrong more often than right, so instead
+you add one when it is announced and the card runs it through the same
+visibility and moonlight scoring as everything else - how high it gets during
+true darkness, and whether the Moon will wash it out:
+
+```yaml
+custom_events:
+  - name: Comet C/2026 X1
+    ra_deg: 250.4
+    dec_deg: 20.1
+    start: 2026-10-01
+    end: 2026-11-15
+    note: Expected around magnitude 4 near perihelion.
+```
+
+`name`, `ra_deg` and `dec_deg` are required (right ascension and declination in
+degrees, as published in any comet ephemeris); `start`, `end` and `note` are
+optional. Entries missing coordinates are skipped rather than breaking the
+card. Coordinates are treated as fixed, which is fine over a week or two of a
+slow-moving comet - for a fast one, update the entry as it moves.
 
 ### Why there's no "search within a 30 minute drive"
 
@@ -167,6 +284,15 @@ tracked as a future enhancement.
   "Position of the Sun/Moon" pages), not read from an external ephemeris
   service. Expect rise/set and twilight times to be accurate to within a
   minute or two - reliable enough for planning a shoot, not survey-grade
+- **Planet positions are computed** from mean Keplerian elements with a
+  two-body solver, accurate to a few arcminutes - far finer than needed to say
+  where to point a camera. As a check, it reproduces published opposition dates
+  (Mars 2027-02-19, Jupiter 2026-01-10 and 2027-02-11, Saturn 2026-10-04) to
+  the exact day
+- **Sky-quality scoring is a heuristic, not a forecast model.** It is inferring
+  cloud structure from a single aggregate percentage, so it will miss things a
+  layered cloud model would catch. Treat "epic" as "worth looking outside",
+  not a guarantee
 - **Meteor shower peak dates recur annually** and are hardcoded to their
   well-known average calendar date, which can drift by about a day year to
   year

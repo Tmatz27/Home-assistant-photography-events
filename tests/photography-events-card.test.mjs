@@ -17,6 +17,8 @@ class FakeNode {
   set innerHTML(value) {
     this._html = value;
     this.writes += 1;
+    // A fresh DOM write means fresh elements, and therefore fresh listeners.
+    this._queried = new Map();
   }
 
   get innerHTML() {
@@ -37,14 +39,62 @@ class FakeNode {
     return null;
   }
 
-  querySelectorAll() {
-    return [];
+  /**
+   * Enough of a query to exercise the wiring in both the card and the editor:
+   * every `[data-*]` selector returns elements carrying that attribute, with a
+   * `dataset` and a `getAttribute`, so a test can set a value and fire it.
+   */
+  querySelectorAll(selector) {
+    const match = /^\[data-([a-z]+)\]$/.exec(selector);
+    if (!match) return [];
+    const key = match[1];
+    this._queried = this._queried || new Map();
+    // Return the *same* element objects that had listeners bound to them.
+    // Handing back fresh ones each call would make every listener test pass
+    // vacuously, since the event would land on an object nobody wired up.
+    if (this._queried.has(selector)) return this._queried.get(selector);
+
+    // Match the whole tag, not just the one attribute: an element's other
+    // data-* attributes carry real behaviour (the per-input clamp bounds, for
+    // one), and a dataset with a single key would silently test the fallback.
+    const pattern = new RegExp(`<[^>]*\\bdata-${key}="[^"]*"[^>]*>`, "g");
+    const tags = [...this._html.matchAll(pattern)].map((found) => found[0]);
+    const elements = tags.map((tag) => {
+      const dataset = {};
+      for (const [, name, value] of tag.matchAll(/data-([a-z]+)="([^"]*)"/g)) dataset[name] = value;
+      return {
+      _handlers: {},
+      dataset,
+      value: "",
+      checked: false,
+      getAttribute: (name) => {
+        const found = /^data-([a-z]+)$/.exec(name);
+        return found && found[1] in dataset ? dataset[found[1]] : null;
+      },
+      addEventListener(type, handler) {
+        (this._handlers[type] = this._handlers[type] || []).push(handler);
+      },
+      fire(type = "click") {
+        for (const handler of this._handlers[type] || []) handler();
+      },
+      click() {
+        this.fire("click");
+      },
+      };
+    });
+    this._queried.set(selector, elements);
+    return elements;
   }
 
   addEventListener() {}
 }
 
 class FakeHTMLElement {
+  constructor() {
+    // Real elements always have one, and the hero mode hides itself through it.
+    this.style = {};
+  }
+
   attachShadow() {
     this.shadowRoot = new FakeNode("#shadow-root");
     return this.shadowRoot;
@@ -737,4 +787,441 @@ test("card carries no embedded credentials and only reads hass.config/hass.state
     false,
     "found what looks like a hardcoded credential",
   );
+});
+
+
+// --- Backend-driven modes ----------------------------------------------------
+
+const backend = Card.backend;
+
+function heroState(overrides = {}) {
+  return {
+    state: "on",
+    attributes: {
+      event_name: "Sunset could go off at Piedras Blancas",
+      confidence_score: 92,
+      category: "sunset",
+      target_zone: "Piedras Blancas (San Simeon)",
+      drive_hours: 1.5,
+      drive_minutes: 78,
+      drive_source: "Routes API",
+      drive_in_traffic: true,
+      starts: "2026-03-20T01:10:00+00:00",
+      ends: "2026-03-20T02:25:00+00:00",
+      condition_summary: "40% high cloud over a clear horizon.",
+      reasons: ["high cloud 40%", "low cloud 5%"],
+      gear_glass: "Wide for the sweep, 70-200mm to compress layers",
+      gear_support: "Tripod, circular polariser",
+      gear_settings: "Bracket exposures",
+      source_url: "",
+      ...overrides,
+    },
+  };
+}
+
+function outlookState(events, extra = {}) {
+  return {
+    state: String(events.length),
+    attributes: {
+      events,
+      all_categories: ["astronomy", "sunset", "marine", "parks"],
+      parks: {
+        yosemite_np: {
+          name: "Yosemite NP",
+          miles: 310,
+          drive_hours: 5.5,
+          drive_label: "310 mi, about 5.5 h",
+          dogs: "limited",
+          dog_label: "Paved paths only",
+          dog_detail: "Fully paved roads and campgrounds only.",
+        },
+        muir_woods_nm: {
+          name: "Muir Woods NM",
+          miles: 290,
+          drive_hours: 5,
+          drive_label: "290 mi, about 5 h",
+          dogs: "none",
+          dog_label: "Strictly prohibited",
+          dog_detail: "No pets anywhere in the monument.",
+        },
+      },
+      gear_by_category: {},
+      ...extra,
+    },
+  };
+}
+
+test("drive times are labelled the way a person would say them", () => {
+  assert.equal(backend.driveLabel(45), "45 min");
+  assert.equal(backend.driveLabel(89), "89 min");
+  assert.equal(backend.driveLabel(120), "2 h");
+  assert.equal(backend.driveLabel(105), "1 h 45");
+});
+
+test("a routed drive time is distinguishable from a guess", () => {
+  const routed = backend.driveProvenance("Routes API", true);
+  const legacy = backend.driveProvenance("Distance Matrix API", false);
+  const guess = backend.driveProvenance("estimate", false);
+  const baseline = backend.driveProvenance("baseline", false);
+
+  assert.equal(routed.routed, true);
+  assert.equal(routed.note, "live traffic");
+  assert.equal(legacy.routed, true);
+  assert.equal(guess.routed, false, "a straight-line estimate must never read as routed");
+  assert.equal(baseline.routed, false);
+});
+
+test("all-day windows and timestamps both parse, without a timezone shift", () => {
+  const allDay = backend.parseEventDate("2026-06-01");
+  assert.equal(allDay.getFullYear(), 2026);
+  assert.equal(allDay.getMonth(), 5);
+  assert.equal(allDay.getDate(), 1, "a date-only value must not slide a day on parse");
+
+  assert.equal(backend.parseEventDate("2026-03-20T01:10:00+00:00").getTime(),
+    Date.parse("2026-03-20T01:10:00+00:00"));
+  assert.equal(backend.parseEventDate(""), null);
+  assert.equal(backend.parseEventDate("nonsense"), null);
+});
+
+test("the hero payload is empty unless the sensor is actually on", () => {
+  assert.equal(backend.heroFromState(null), null);
+  assert.equal(backend.heroFromState({ state: "off", attributes: { event_name: "x" } }), null);
+  assert.equal(backend.heroFromState({ state: "on", attributes: {} }), null,
+    "an on sensor with no event name has nothing to show");
+
+  const hero = backend.heroFromState(heroState());
+  assert.equal(hero.score, 92);
+  assert.equal(hero.driveMinutes, 78);
+  assert.equal(hero.drive.routed, true);
+});
+
+test("the hero falls back to drive_hours when drive_minutes is absent", () => {
+  const state = heroState();
+  delete state.attributes.drive_minutes;
+  assert.equal(backend.heroFromState(state).driveMinutes, 90);
+});
+
+test("a category with no toggle configured is shown, never hidden", () => {
+  const hass = { states: { "input_boolean.astro": { state: "off" } } };
+  const allowed = backend.activeCategories(hass, { astronomy: "input_boolean.astro" },
+    ["astronomy", "sunset", "parks"]);
+  assert.equal(allowed.has("astronomy"), false, "an off toggle hides its category");
+  assert.equal(allowed.has("sunset"), true, "an unconfigured category stays visible");
+  assert.equal(allowed.has("parks"), true);
+});
+
+test("a toggle pointing at a missing entity does not hide its category", () => {
+  const allowed = backend.activeCategories({ states: {} }, { parks: "input_boolean.gone" }, ["parks"]);
+  assert.equal(allowed.has("parks"), true, "a half-configured card must not swallow the calendar");
+});
+
+test("the outlook keeps seasons already underway and drops what is out of range", () => {
+  const now = new Date("2026-06-15T12:00:00Z");
+  const events = [
+    { key: "a", title: "Underway season", category: "parks", start: "2026-06-01", end: "2026-08-31", score: 60 },
+    { key: "b", title: "Next spring", category: "parks", start: "2027-03-01", end: "2027-04-30", score: 55 },
+    { key: "c", title: "Finished", category: "parks", start: "2026-04-01", end: "2026-05-31", score: 55 },
+    { key: "d", title: "Filtered out", category: "astronomy", start: "2026-07-01", end: "2026-07-02", score: 80 },
+  ];
+  const filtered = backend.filterOutlook(events, {
+    allowed: new Set(["parks"]),
+    now,
+    fromDays: 0,
+    throughDays: 365,
+  });
+  assert.deepEqual(filtered.map((event) => event.key), ["a", "b"]);
+});
+
+test("the outlook window is bounded at both ends", () => {
+  const now = new Date("2026-06-15T12:00:00Z");
+  const events = [
+    { key: "soon", title: "Soon", category: "parks", start: "2026-06-20", end: "2026-06-21", score: 50 },
+    { key: "later", title: "Later", category: "parks", start: "2026-09-01", end: "2026-09-30", score: 50 },
+  ];
+  const far = backend.filterOutlook(events, { allowed: null, now, fromDays: 30, throughDays: 365 });
+  assert.deepEqual(far.map((event) => event.key), ["later"], "fromDays should exclude the near event");
+
+  const near = backend.filterOutlook(events, { allowed: null, now, fromDays: 0, throughDays: 40 });
+  assert.deepEqual(near.map((event) => event.key), ["soon"], "throughDays should exclude the far event");
+});
+
+test("months group in chronological order", () => {
+  const now = new Date("2026-01-01T00:00:00Z");
+  const events = backend.filterOutlook([
+    { key: "b", title: "B", category: "parks", start: "2026-03-05", end: "2026-03-06", score: 50 },
+    { key: "a", title: "A", category: "parks", start: "2026-02-05", end: "2026-02-06", score: 50 },
+    { key: "c", title: "C", category: "parks", start: "2026-03-20", end: "2026-03-21", score: 50 },
+  ], { allowed: null, now, fromDays: 0, throughDays: 365 });
+  const months = backend.groupByMonth(events);
+  // Built inside the vm realm, so compare plain values rather than references.
+  assert.deepEqual(JSON.parse(JSON.stringify(months.map((month) => month.label))),
+    ["February 2026", "March 2026"]);
+  assert.equal(months[1].events.length, 2);
+});
+
+test("a single-day window is not rendered as a range", () => {
+  const day = new Date(2026, 2, 3);
+  assert.ok(!backend.rangeLabel(day, day).includes("-"));
+  assert.ok(backend.rangeLabel(new Date(2026, 2, 3), new Date(2026, 2, 14)).includes("-"));
+});
+
+test("action_hero renders nothing at all while the sensor is off", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = { states: { "binary_sensor.action": { state: "off", attributes: {} } } };
+  card.connectedCallback();
+
+  assert.equal(card.style.display, "none", "an idle hero must not draw a card at all");
+  assert.equal(card._root, null, "an idle hero should not even build a DOM root");
+  assert.equal(card.getCardSize(), 1, "a hidden hero should not reserve layout space");
+  card.disconnectedCallback();
+});
+
+test("action_hero shows the name, drive time, score and gear when it fires", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = { states: { "binary_sensor.action": heroState() } };
+  card.connectedCallback();
+
+  const html = card._root.innerHTML;
+  assert.equal(card.style.display, "");
+  assert.match(html, /Sunset could go off at Piedras Blancas/);
+  assert.match(html, /78 min/, "expected the routed drive time");
+  assert.match(html, /live traffic/);
+  assert.match(html, /92/);
+  assert.match(html, /70-200mm to compress layers/);
+  card.disconnectedCallback();
+});
+
+test("action_hero labels an estimated drive time as estimated", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = {
+    states: {
+      "binary_sensor.action": heroState({ drive_source: "estimate", drive_in_traffic: false }),
+    },
+  };
+  card.connectedCallback();
+  assert.match(card._root.innerHTML, /estimated/);
+  assert.doesNotMatch(card._root.innerHTML, /live traffic/);
+  card.disconnectedCallback();
+});
+
+test("the hero appears and disappears as the sensor flips", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = { states: { "binary_sensor.action": { state: "off", attributes: {} } } };
+  card.connectedCallback();
+  assert.equal(card.style.display, "none");
+
+  card.hass = { states: { "binary_sensor.action": heroState() } };
+  assert.equal(card.style.display, "", "a new state object should redraw the hero");
+  assert.match(card._root.innerHTML, /Drop everything/i);
+
+  card.hass = { states: { "binary_sensor.action": { state: "off", attributes: {} } } };
+  assert.equal(card.style.display, "none", "the hero must go away again when it is over");
+  card.disconnectedCallback();
+});
+
+test("a misconfigured hero says so instead of hiding the problem", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.missing" });
+  card.hass = { states: {} };
+  card.connectedCallback();
+  assert.notEqual(card.style.display, "none", "a configuration error is not the same as nothing to report");
+  assert.match(card._root.innerHTML, /not in Home Assistant/);
+  card.disconnectedCallback();
+});
+
+test("the backend modes never call the weather websocket", async () => {
+  for (const mode of ["action_hero", "calendar_outlook"]) {
+    const calls = [];
+    const card = new Card();
+    card.setConfig({ mode, hero_entity: "binary_sensor.action", outlook_entity: "sensor.outlook" });
+    card.hass = {
+      states: { "binary_sensor.action": heroState(), "sensor.outlook": outlookState([]) },
+      callWS: async (message) => {
+        calls.push(message);
+        return {};
+      },
+    };
+    card.connectedCallback();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(calls, [], `${mode} should read entity state, never poll a forecast`);
+    assert.equal(card._eventInterval, null, `${mode} is push-driven and should start no timers`);
+    card.disconnectedCallback();
+  }
+});
+
+test("calendar_outlook lists park windows with their dog rules", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 40 * 86400000).toISOString().slice(0, 10);
+  const later = new Date(now.getTime() + 70 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        {
+          key: "park-yosemite_np-optimal", title: "Yosemite NP - best window", category: "parks",
+          zone_id: "yosemite_np", zone: "Yosemite NP", start: soon, end: later,
+          score: 60, drive_hours: 5.5, planning_only: true, all_day: true, tier: "optimal",
+        },
+        {
+          key: "park-muir_woods_nm-good", title: "Muir Woods NM - good window", category: "parks",
+          zone_id: "muir_woods_nm", zone: "Muir Woods NM", start: soon, end: later,
+          score: 45, drive_hours: 5, planning_only: true, all_day: true, tier: "good",
+        },
+      ]),
+    },
+  };
+  card.connectedCallback();
+
+  const html = card._root.innerHTML;
+  assert.match(html, /Yosemite NP - best window/);
+  assert.match(html, /Best window/);
+  assert.match(html, /Paved paths only/);
+  assert.match(html, /Strictly prohibited/, "the no-dogs parks are the ones worth flagging hardest");
+  assert.match(html, /310 mi, about 5\.5 h/);
+  card.disconnectedCallback();
+});
+
+test("calendar_outlook toggles call the input_boolean service they are bound to", () => {
+  const services = [];
+  const now = new Date();
+  const soon = new Date(now.getTime() + 10 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({
+    mode: "calendar_outlook",
+    outlook_entity: "sensor.outlook",
+    filter_toggles: { parks: "input_boolean.show_parks", astronomy: "input_boolean.show_astro" },
+  });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        {
+          key: "p", title: "Yosemite NP - best window", category: "parks", zone_id: "yosemite_np",
+          zone: "Yosemite NP", start: soon, end: soon, score: 60, planning_only: true, tier: "optimal",
+        },
+        {
+          key: "a", title: "Perseids peak", category: "astronomy", zone_id: "carrizo_plain",
+          zone: "Carrizo Plain", start: soon, end: soon, score: 88, detail: "ZHR ~100/hr",
+        },
+      ]),
+      "input_boolean.show_parks": { state: "on" },
+      "input_boolean.show_astro": { state: "off" },
+    },
+    callService: (domain, service, data) => services.push([domain, service, data.entity_id]),
+  };
+  card.connectedCallback();
+
+  const html = card._root.innerHTML;
+  assert.match(html, /Yosemite NP - best window/);
+  assert.doesNotMatch(html, /Perseids peak/, "a category switched off should not be listed");
+
+  const buttons = card._root.querySelectorAll("[data-toggle]");
+  assert.equal(buttons.length, 2);
+  // Found by entity rather than by position: chip order follows the backend's
+  // category list, which is not this test's business.
+  const parksChip = buttons.find((button) => button.getAttribute("data-toggle") === "input_boolean.show_parks");
+  parksChip.click();
+  assert.deepEqual(services, [["input_boolean", "toggle", "input_boolean.show_parks"]]);
+  card.disconnectedCallback();
+});
+
+test("an empty outlook explains itself rather than showing a blank card", () => {
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = { states: { "sensor.outlook": outlookState([]) } };
+  card.connectedCallback();
+  assert.match(card._root.innerHTML, /Nothing in this window/);
+  card.disconnectedCallback();
+});
+
+test("an unknown mode falls back to the timeline rather than rendering nothing", () => {
+  const card = new Card();
+  card.setConfig({ mode: "not_a_mode" });
+  assert.equal(card._config.mode, "timeline");
+});
+
+test("outlook range options are clamped to a year", () => {
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_from_days: -5, outlook_through_days: 9999 });
+  assert.equal(card._config.outlook_from_days, 0);
+  assert.equal(card._config.outlook_through_days, 365);
+});
+
+test("filter_toggles rejects anything that is not a map", () => {
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", filter_toggles: ["input_boolean.nope"] });
+  assert.equal(Object.keys(card._config.filter_toggles).length, 0);
+});
+
+
+test("the editor offers the two backend modes and asks different questions for each", () => {
+  const editor = new Editor();
+  editor.hass = {
+    states: {
+      "binary_sensor.photography_events_action_opportunity": { state: "off", attributes: {} },
+      "sensor.photography_events_planning_outlook": { state: "12", attributes: {} },
+      "input_boolean.show_parks": { state: "on" },
+    },
+  };
+
+  editor.setConfig({ mode: "timeline" });
+  assert.match(editor.shadowRoot.innerHTML, /Days to look ahead/, "timeline mode configures the browser view");
+  assert.doesNotMatch(editor.shadowRoot.innerHTML, /Filter switches/);
+
+  editor.setConfig({ mode: "action_hero" });
+  const hero = editor.shadowRoot.innerHTML;
+  assert.match(hero, /Drop-everything sensor/);
+  assert.match(hero, /binary_sensor\.photography_events_action_opportunity/);
+  assert.doesNotMatch(hero, /Days to look ahead/, "the hero has no browser-side outlook to configure");
+
+  editor.setConfig({ mode: "calendar_outlook" });
+  const outlook = editor.shadowRoot.innerHTML;
+  assert.match(outlook, /Planning sensor/);
+  assert.match(outlook, /Filter switches/);
+  assert.match(outlook, /input_boolean\.show_parks/);
+});
+
+test("choosing a filter switch stores it, and clearing it removes the key", () => {
+  const editor = new Editor();
+  const emitted = [];
+  editor.hass = { states: { "input_boolean.show_parks": { state: "on" } } };
+  editor.dispatchEvent = (event) => emitted.push(event.detail.config);
+  editor.setConfig({ mode: "calendar_outlook" });
+
+  const selects = editor.shadowRoot.querySelectorAll("[data-filter]");
+  const parks = selects.find((select) => select.dataset.filter === "parks");
+  assert.ok(parks, "expected a filter row for every category");
+
+  parks.value = "input_boolean.show_parks";
+  parks.fire("change");
+  assert.equal(emitted.at(-1).filter_toggles.parks, "input_boolean.show_parks");
+
+  parks.value = "";
+  parks.fire("change");
+  assert.equal("parks" in emitted.at(-1).filter_toggles, false, "clearing should delete the key, not blank it");
+});
+
+test("the outlook range inputs clamp to their own bounds, not the timeline's", () => {
+  const editor = new Editor();
+  const emitted = [];
+  editor.hass = { states: {} };
+  editor.dispatchEvent = (event) => emitted.push(event.detail.config);
+  editor.setConfig({ mode: "calendar_outlook" });
+
+  const numbers = editor.shadowRoot.querySelectorAll("[data-number]");
+  const through = numbers.find((input) => input.dataset.number === "outlook_through_days");
+  assert.ok(through, "expected the outlook range to be editable");
+
+  through.value = "9999";
+  through.fire("change");
+  assert.equal(emitted.at(-1).outlook_through_days, 365);
+
+  const from = numbers.find((input) => input.dataset.number === "outlook_from_days");
+  from.value = "-4";
+  from.fire("change");
+  assert.equal(emitted.at(-1).outlook_from_days, 0);
 });

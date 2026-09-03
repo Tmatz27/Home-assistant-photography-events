@@ -71,8 +71,14 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
             "category": top.category,
             "target_zone": top.zone_name,
             "zone_id": top.zone_id,
-            "drive_time": f"{top.drive_hours:.1f} h",
+            "drive_time": _drive_label(top.drive_hours),
             "drive_hours": top.drive_hours,
+            "drive_minutes": int(round(top.drive_hours * 60)),
+            # "Routes API" / "Distance Matrix API" when Google answered,
+            # "baseline" or "estimate" otherwise. The card says which, rather
+            # than presenting a guess with the same confidence as a route.
+            "drive_source": top.drive_source,
+            "drive_in_traffic": top.drive_in_traffic,
             "starts": top.start.isoformat(),
             "ends": top.end.isoformat() if top.end else None,
             "condition_summary": top.detail,
@@ -83,3 +89,14 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
             "gear_settings": gear.get("settings"),
             "sources": (self.coordinator.data or {}).get("sources", {}),
         }
+
+
+def _drive_label(hours: float) -> str:
+    """A drive time a person would say out loud."""
+    minutes = int(round(hours * 60))
+    if minutes < 90:
+        return f"{minutes} min"
+    whole, remainder = divmod(minutes, 60)
+    if remainder == 0:
+        return f"{whole} h"
+    return f"{whole} h {remainder:02d} min"

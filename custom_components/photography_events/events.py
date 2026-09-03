@@ -14,12 +14,14 @@ from . import astronomy as astro
 from .const import (
     CATEGORY_ASTRO,
     CATEGORY_MARINE,
+    CATEGORY_PARKS,
     CATEGORY_SUNSET,
     DEFAULT_HOME,
     GEAR_PROFILES,
     TARGET_ZONES,
     ZONES_BY_ID,
 )
+from .parks import active_windows as active_park_windows
 from .seasonal import active_windows
 from .weather_scoring import score_sky
 from .wildlife import describe_drive, estimate_drive_hours, nearest_zone
@@ -74,12 +76,68 @@ class Opportunity:
     # vagrant at some lagoon down the road - is the one that cannot be.
     latitude: float | None = None
     longitude: float | None = None
+    # Trips rather than events: shown in the year view, never gated on drive
+    # time, never eligible for a drop-everything alert.
+    planning_only: bool = False
+    extra: dict = field(default_factory=dict)
+    # Where drive_hours came from, so the card can say whether it is a routed
+    # figure or an estimate instead of presenting both as equally certain.
+    drive_source: str = "baseline"
+    drive_in_traffic: bool = False
 
     def as_dict(self) -> dict:
         data = asdict(self)
         data["start"] = self.start.isoformat()
         data["end"] = self.end.isoformat() if self.end else None
         return data
+
+    def compact(self) -> dict:
+        """A row for the planning view, with every repeated string factored out.
+
+        The full form runs about a kilobyte an event, most of it gear advice and
+        dog regulations that are identical across dozens of rows. A year of
+        events that way is a hundred kilobytes of attribute re-sent on every
+        update to say the same twenty things over and over. Gear is per
+        category and park rules are per park, so both are published once as
+        reference maps and looked up by key instead.
+        """
+        row = {
+            "key": self.key,
+            "title": self.title,
+            "category": self.category,
+            "zone_id": self.zone_id,
+            "zone": self.zone_name,
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat() if self.end else None,
+            "score": self.score,
+            "drive_hours": self.drive_hours,
+            "drive_source": self.drive_source,
+        }
+        if self.planning_only:
+            # A park window is a range of days, not an instant. Publishing it as
+            # a timestamp implies a precision it does not have - and invites the
+            # card to render "ends 23:59:59" on a three-month season.
+            row["all_day"] = True
+            row["start"] = self.start.date().isoformat()
+            row["end"] = self.end.date().isoformat() if self.end else None
+            # Everything else about a park window is in the parks reference map.
+            row["planning_only"] = True
+            if self.extra.get("tier"):
+                row["tier"] = self.extra["tier"]
+        else:
+            row["detail"] = _shorten(self.detail)
+            if self.reasons:
+                row["reasons"] = self.reasons[:3]
+            if self.source_url:
+                row["source_url"] = self.source_url
+        return row
+
+
+def _shorten(text: str, limit: int = 160) -> str:
+    text = (text or "").strip()
+    if len(text) <= limit:
+        return text
+    return text[: limit - 1].rstrip() + "\u2026"
 
 
 def _gear_for(category: str) -> dict[str, str]:
@@ -306,14 +364,24 @@ def build_seasonal_opportunities(now: datetime, horizon_days: int) -> list[Oppor
 
 
 def within_drive(opportunities: list[Opportunity], max_hours: float) -> list[Opportunity]:
-    return [item for item in opportunities if item.drive_hours <= max_hours]
+    """Drop what is too far to drive to, keeping the trips you plan instead.
+
+    The drive limit answers "could I be there tonight", which is the wrong
+    question for a national park eight hours away - you go there for a long
+    weekend, and gating it out would defeat the point of listing it.
+    """
+    return [item for item in opportunities if item.planning_only or item.drive_hours <= max_hours]
 
 
 def action_window(opportunities: list[Opportunity], now: datetime, hours: int = 48) -> list[Opportunity]:
     """Opportunities starting inside the drop-everything window."""
     cutoff = now + timedelta(hours=hours)
     return sorted(
-        (item for item in opportunities if now - timedelta(hours=2) <= item.start <= cutoff),
+        (
+            item
+            for item in opportunities
+            if not item.planning_only and now - timedelta(hours=2) <= item.start <= cutoff
+        ),
         key=lambda item: (-item.score, item.start),
     )
 
@@ -440,6 +508,7 @@ def build_wildlife_opportunities(
                 reasons=reasons,
                 gear=_gear_for(sighting.category),
                 source_url=sighting.url,
+                drive_source="estimate",
                 latitude=sighting.latitude,
                 longitude=sighting.longitude,
             )
@@ -487,3 +556,57 @@ def build_field_report_opportunities(reports: list, now: datetime) -> list[Oppor
 def _slug(text: str) -> str:
     cleaned = "".join(char.lower() if char.isalnum() else "-" for char in text)
     return "-".join(part for part in cleaned.split("-") if part)[:60]
+
+
+# --- Parks ------------------------------------------------------------------
+
+PARK_OPTIMAL_SCORE = 55
+PARK_GOOD_SCORE = 40
+
+
+def build_park_opportunities(now: datetime, horizon_days: int) -> list[Opportunity]:
+    """National park and monument seasons, for the year view.
+
+    Scored well below the alert threshold and flagged ``planning_only``, because
+    a park is not something that happens - it is somewhere that is worth the
+    drive in some months and not others, and no scoring should ever turn that
+    into a reason to leave the house right now.
+    """
+    found: list[Opportunity] = []
+    for window in active_park_windows(now, horizon_days):
+        park = window["park"]
+        optimal = window["tier"] == "optimal"
+        score = PARK_OPTIMAL_SCORE if optimal else PARK_GOOD_SCORE
+        if window["underway"]:
+            score += 5
+
+        tier_text = "Best window" if optimal else "Good window"
+        reasons = [f"{tier_text.lower()} for this park", park.drive_label, park.dog_label]
+
+        found.append(
+            Opportunity(
+                key=window["key"],
+                title=f"{park.name} - {tier_text.lower()}",
+                category=CATEGORY_PARKS,
+                zone_id=park.key,
+                zone_name=park.name,
+                start=datetime.combine(window["start"], datetime.min.time()).replace(tzinfo=now.tzinfo),
+                end=datetime.combine(window["end"], datetime.max.time()).replace(tzinfo=now.tzinfo),
+                score=score,
+                detail=f"{tier_text} to visit {park.name} ({park.drive_label}). Dogs: {park.dog_detail}",
+                drive_hours=park.drive_hours,
+                reasons=reasons,
+                gear=_gear_for(CATEGORY_PARKS),
+                latitude=park.latitude,
+                longitude=park.longitude,
+                planning_only=True,
+                extra={
+                    "tier": window["tier"],
+                    "miles": park.miles,
+                    "dogs": park.dogs,
+                    "dog_label": park.dog_label,
+                    "dog_detail": park.dog_detail,
+                },
+            )
+        )
+    return found

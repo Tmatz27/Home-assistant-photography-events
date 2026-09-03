@@ -361,6 +361,144 @@ every built-in card, so they are easy to miss when scrolling.
 If the console shows an error mentioning `photography-events-card` instead of
 the version banner, please open an issue with that message.
 
+## Card modes
+
+The card has three modes. Two of them read the integration's entities; the third
+computes everything in the browser and needs no integration at all.
+
+```yaml
+type: custom:photography-events-card
+mode: action_hero          # timeline | action_hero | calendar_outlook
+```
+
+### `action_hero` - the drop-everything card
+
+Renders **nothing at all** - no border, no empty box, no space in the layout -
+until `binary_sensor.photography_events_action_opportunity` turns on. When it
+does, it shows the event, the drive time, the confidence score and what to pack.
+
+```yaml
+type: custom:photography-events-card
+mode: action_hero
+# Optional. Left blank, the card finds the integration's sensor by name.
+hero_entity: binary_sensor.photography_events_action_opportunity
+show_gear: true
+```
+
+The drive time says where it came from. A figure Google routed reads
+**"live traffic"**; the calibrated distance estimate reads **"estimated"**. They
+are not the same claim and the card does not present them as though they were.
+
+Put it at the top of a dashboard and forget about it - it is silent until it
+is not.
+
+### `calendar_outlook` - the year ahead
+
+A scrollable, month-grouped timeline of everything the backend knows about,
+out to 365 days: meteor showers, Milky Way windows, whale and rut seasons, bloom
+and colour reports, and the national parks calendar below.
+
+```yaml
+type: custom:photography-events-card
+mode: calendar_outlook
+title: Planning
+outlook_from_days: 0        # 0 keeps seasons that are already underway
+outlook_through_days: 365
+filter_toggles:
+  astronomy: input_boolean.photo_show_astro
+  marine: input_boolean.photo_show_marine
+  mammals: input_boolean.photo_show_mammals
+  birds: input_boolean.photo_show_birds
+  blooms: input_boolean.photo_show_blooms
+  foliage: input_boolean.photo_show_foliage
+  parks: input_boolean.photo_show_parks
+  sunset: input_boolean.photo_show_skies
+```
+
+Each entry in `filter_toggles` becomes a chip you tap to show or hide that
+category. A category with no toggle configured is **always shown** - a
+half-configured card can never silently swallow half your calendar.
+
+Create the helpers once in `configuration.yaml` (or via
+**Settings → Devices & services → Helpers**):
+
+```yaml
+input_boolean:
+  photo_show_astro:
+    name: Show astro
+    icon: mdi:telescope
+    initial: true
+  photo_show_marine:
+    name: Show whales
+    icon: mdi:whale
+    initial: true
+  photo_show_mammals:
+    name: Show mammals
+    icon: mdi:paw
+    initial: true
+  photo_show_birds:
+    name: Show birds
+    icon: mdi:bird
+    initial: true
+  photo_show_blooms:
+    name: Show blooms
+    icon: mdi:flower
+    initial: true
+  photo_show_foliage:
+    name: Show autumn colour
+    icon: mdi:leaf-maple
+    initial: true
+  photo_show_parks:
+    name: Show parks
+    icon: mdi:pine-tree
+    initial: true
+  photo_show_skies:
+    name: Show skies
+    icon: mdi:weather-sunset
+    initial: true
+```
+
+### `timeline` - the standalone view
+
+The original mode, and still the default. It computes sun, moon, planet and
+meteor geometry in the browser from your coordinates, needs no integration, and
+makes no third-party requests. Everything under
+[What this card computes](#what-this-card-computes) describes this mode.
+
+### Why the backend modes hold no logic
+
+A browser tab cannot keep an API key, cannot call eBird or Google past CORS, and
+only runs while a dashboard is open. Anything sourced from a live service has to
+arrive as entity state - so in these two modes the card draws what the
+integration worked out, and does no computing of its own. They are also
+push-driven: they start no timers and redraw only when one of the entities they
+read actually changes.
+
+## National parks and monuments
+
+Twenty-one California parks and monuments are in the planning calendar, each
+with its best and merely-good months, its distance and drive time from home, and
+its dog rules.
+
+The dog rules are there because they decide whether a trip happens at all: three
+of these ban dogs outright, and most of the rest allow them only on pavement.
+That is worth knowing before a five-hour drive rather than at the gate.
+
+Parks behave differently from everything else in two ways, both deliberate:
+
+- **They are never a drop-everything alert.** A park is a trip you plan, not a
+  sky you chase, so park windows score below the alert threshold by
+  construction and never enter the 48-hour action window.
+- **They ignore the drive-time limit.** Half the list is further than any sane
+  day trip - Redwood is nine and a half hours - and gating those out at six
+  hours would defeat the point of listing them.
+
+Drive times and distances are the measured ones for the Vandenberg origin rather
+than anything computed. Coordinates are approximate main-area or visitor-centre
+positions: good enough to put a park on a map or hand to a router, not a
+trailhead. Edit the table at the top of
+`custom_components/photography_events/parks.py` to add your own.
+
 ## Configuration
 
 Every setting is available in the visual editor.

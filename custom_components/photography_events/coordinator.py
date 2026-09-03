@@ -45,6 +45,7 @@ from .const import (
     CATEGORY_BLOOMS,
     CATEGORY_FOLIAGE,
     CATEGORY_MARINE,
+    CATEGORY_PARKS,
     CATEGORY_SUNSET,
     CONF_ALERT_SCORE,
     CONF_EBIRD_API_KEY,
@@ -282,6 +283,13 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         )
         opportunities.extend(seasonal)
 
+        if CATEGORY_PARKS in categories:
+            opportunities.extend(
+                await self.hass.async_add_executor_job(
+                    event_builder.build_park_opportunities, now, CALENDAR_HORIZON_DAYS
+                )
+            )
+
         return [item for item in opportunities if item.category in categories]
 
     async def _refresh(self, source: Source, now: datetime, fetcher: Callable[[], Awaitable[Any]]) -> None:
@@ -414,6 +422,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             if routed is None:
                 continue
             item.drive_hours = round(routed.hours, 2)
+            item.drive_source = routed.source
+            item.drive_in_traffic = routed.in_traffic
             note = f"{routed.minutes} min by road" + (" in current traffic" if routed.in_traffic else "")
             if note not in item.reasons:
                 item.reasons.append(note)

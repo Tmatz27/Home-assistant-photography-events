@@ -1,5 +1,39 @@
 # Changelog
 
+## 0.5.0
+
+The frontend half. The card can now render what the integration worked out
+instead of recomputing a weaker version of it in the browser.
+
+- **`mode: action_hero`** - the drop-everything card. It renders *nothing*
+  until the binary sensor fires: no border, no empty box, no slot in the
+  layout. When it does fire it shows the event, the drive time, the confidence
+  score and the gear to pack. The drive time states its own provenance, so a
+  figure Google routed reads "live traffic" and the calibrated distance
+  estimate reads "estimated" - they are different claims and the card no longer
+  presents them identically
+- **`mode: calendar_outlook`** - the year ahead as a scrollable, month-grouped
+  timeline, with filter chips bound to `input_boolean` helpers. A category with
+  no toggle configured is always shown, so a half-configured card cannot
+  silently swallow half the calendar
+- Both modes are **push-driven**: they start no timers and redraw only when an
+  entity they actually read changes. `mode: timeline` keeps the original
+  browser-computed view, unchanged and still the default
+- The visual editor asks different questions per mode, including a per-category
+  picker for the filter helpers
+- **Twenty-one California national parks and monuments** in the planning
+  calendar, each with its best and good months, distance and drive time from
+  home, and its dog rules - three ban dogs outright and most of the rest allow
+  them only on pavement, which decides whether a trip happens at all. Parks are
+  never a drop-everything alert and deliberately ignore the drive-time limit,
+  because a nine-hour trip to Redwood is a long weekend, not an evening
+- New `sensor.photography_events_planning_outlook` publishes the whole year as
+  one attribute for the card to render. It is declared unrecorded, so a few
+  hundred events are not written to the database on every update, and the rows
+  are compacted against reference maps for gear and park rules - a year of
+  events went from 102 KB of repeated prose to 43 KB
+- 81 Python tests alongside the 67 JavaScript ones
+
 ## 0.4.0
 
 Adds the live data sources - the ones that answer "is it happening *right now*",

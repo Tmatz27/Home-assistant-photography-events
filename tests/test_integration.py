@@ -19,6 +19,7 @@ PACKAGE = "photography_events"
 ROOT = Path(__file__).resolve().parent.parent / "custom_components" / PACKAGE
 PURE_MODULES = (
     "const",
+    "parks",
     "astronomy",
     "weather_scoring",
     "seasonal",
@@ -61,6 +62,7 @@ wildlife = _pkg.wildlife
 field_reports = _pkg.field_reports
 routing = _pkg.routing
 throttle = _pkg.throttle
+parks = _pkg.parks
 
 VANDENBERG = (math.radians(34.7420), math.radians(-120.5724))
 
@@ -875,3 +877,90 @@ class TestRateLimiting(unittest.TestCase):
         ):
             self.assertGreaterEqual(interval, 60)
         self.assertGreaterEqual(const.MIN_INTERVAL_FIELD_REPORTS, 60 * 24)
+
+
+class TestNationalParks(unittest.TestCase):
+    def test_entries_are_well_formed(self):
+        seen = set()
+        for park in parks.PARKS:
+            self.assertNotIn(park.key, seen, f"duplicate park key {park.key}")
+            seen.add(park.key)
+            self.assertIn(park.dogs, (parks.DOGS_FULL, parks.DOGS_LIMITED, parks.DOGS_NONE))
+            self.assertTrue(park.dog_label and park.dog_detail, f"{park.name} has no dog rules")
+            self.assertGreater(park.miles, 0)
+            self.assertGreater(park.drive_hours, 0)
+            self.assertTrue(park.optimal, f"{park.name} has no optimal window")
+            for months in park.optimal + park.good:
+                first, last = months
+                self.assertTrue(1 <= first <= 12 and 1 <= last <= 12, f"{park.name}: bad months {months}")
+                self.assertLessEqual(first, last, f"{park.name}: {months} runs backwards")
+
+    def test_coordinates_are_inside_california(self):
+        for park in parks.PARKS:
+            self.assertTrue(32.0 < park.latitude < 42.5, f"{park.name} latitude {park.latitude}")
+            self.assertTrue(-125.0 < park.longitude < -114.0, f"{park.name} longitude {park.longitude}")
+
+    def test_listed_closest_first(self):
+        """The table is ordered by drive time, and the card relies on it."""
+        hours = [park.drive_hours for park in parks.PARKS]
+        self.assertEqual(hours, sorted(hours))
+
+    def test_a_year_view_reaches_into_next_year(self):
+        now = datetime(2026, 11, 15, tzinfo=UTC)
+        windows = parks.active_windows(now, 365)
+        years = {entry["start"].year for entry in windows}
+        self.assertIn(2027, years, "a 365-day view from November must cross into next year")
+
+    def test_windows_underway_are_flagged(self):
+        now = datetime(2026, 7, 15, tzinfo=UTC)
+        underway = [entry for entry in parks.active_windows(now, 365) if entry["underway"]]
+        self.assertTrue(underway, "mid-July should have several parks in season")
+        for entry in underway:
+            self.assertLessEqual(entry["start"], now.date())
+            self.assertGreaterEqual(entry["end"], now.date())
+
+    def test_parks_never_reach_the_drop_everything_score(self):
+        """A park is somewhere you plan to go, never a reason to leave now."""
+        now = datetime(2026, 3, 1, tzinfo=UTC)
+        for item in events.build_park_opportunities(now, 365):
+            self.assertLess(item.score, const.DEFAULT_ALERT_SCORE)
+
+    def test_parks_survive_the_drive_gate_but_stay_out_of_the_action_window(self):
+        now = datetime(2026, 7, 1, tzinfo=UTC)
+        built = events.build_park_opportunities(now, 365)
+        far = [item for item in built if item.drive_hours > 6]
+        self.assertTrue(far, "the far parks are the ones this rule exists for")
+        self.assertEqual(len(events.within_drive(built, 6.0)), len(built))
+        self.assertEqual(events.action_window(built, now), [])
+
+    def test_optimal_windows_outrank_good_ones(self):
+        now = datetime(2026, 1, 1, tzinfo=UTC)
+        built = events.build_park_opportunities(now, 365)
+        best = [item for item in built if item.extra["tier"] == "optimal"]
+        good = [item for item in built if item.extra["tier"] == "good"]
+        self.assertTrue(best and good)
+        self.assertGreater(min(item.score for item in best), max(item.score for item in good))
+
+    def test_compact_rows_are_all_day_and_carry_no_repeated_prose(self):
+        now = datetime(2026, 6, 1, tzinfo=UTC)
+        row = events.build_park_opportunities(now, 365)[0].compact()
+        self.assertTrue(row["all_day"])
+        self.assertEqual(len(row["start"]), 10, "an all-day window should publish a date, not a timestamp")
+        self.assertNotIn("detail", row, "park prose lives in the reference map, not on every row")
+        self.assertNotIn("gear", row)
+
+    def test_the_planning_payload_stays_small_enough_to_ship_as_an_attribute(self):
+        """Reference maps exist so a year of events is not a hundred kilobytes."""
+        import json
+
+        now = datetime(2026, 8, 28, tzinfo=UTC)
+        items = events.build_park_opportunities(now, 365) + events.build_seasonal_opportunities(now, 365)
+        rows = json.dumps([item.compact() for item in items])
+        full = json.dumps([item.as_dict() for item in items], default=str)
+        self.assertLess(len(rows), len(full) / 2, "compaction should more than halve the payload")
+
+    def test_every_park_window_can_be_routed(self):
+        now = datetime(2026, 5, 1, tzinfo=UTC)
+        for item in events.build_park_opportunities(now, 365):
+            self.assertIsNotNone(item.latitude)
+            self.assertIsNotNone(item.longitude)

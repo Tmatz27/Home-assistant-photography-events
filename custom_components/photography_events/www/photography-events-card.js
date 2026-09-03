@@ -1396,8 +1396,200 @@ const CATEGORY_TOGGLE_KEYS = [
  * Config editor
  * ---------------------------------------------------------------------- */
 
+// --- Backend-driven modes ---------------------------------------------------
+//
+// The timeline mode below computes everything in the browser, which is what
+// this card did before the integration existed. It still works standalone, so
+// it stays.
+//
+// These two modes do the opposite: they render what the `photography_events`
+// integration has already worked out. That is not a shortcut - the browser
+// cannot hold an API key, cannot call eBird or Google past CORS, and only runs
+// while somebody has the dashboard open. Anything sourced from a live service
+// has to arrive as entity state, so these modes read it and draw it.
+
+const MODE_TIMELINE = "timeline";
+const MODE_HERO = "action_hero";
+const MODE_OUTLOOK = "calendar_outlook";
+const BACKEND_MODES = new Set([MODE_HERO, MODE_OUTLOOK]);
+
+const CATEGORY_META = Object.freeze({
+  astronomy: { label: "Astro", icon: "mdi:telescope" },
+  sunset: { label: "Skies", icon: "mdi:weather-sunset" },
+  marine: { label: "Whales", icon: "mdi:whale" },
+  mammals: { label: "Mammals", icon: "mdi:paw" },
+  birds: { label: "Birds", icon: "mdi:bird" },
+  blooms: { label: "Blooms", icon: "mdi:flower" },
+  foliage: { label: "Autumn", icon: "mdi:leaf-maple" },
+  parks: { label: "Parks", icon: "mdi:pine-tree" },
+});
+
+// Icon and colour per access class. The wording comes from the park itself -
+// "Paved paths only" tells you whether the trip is worth taking; a generic
+// "Dogs restricted" does not.
+const DOG_META = Object.freeze({
+  full: { label: "Dogs on trails", icon: "mdi:dog-side", tone: "yes" },
+  limited: { label: "Dogs restricted", icon: "mdi:dog", tone: "part" },
+  none: { label: "No dogs", icon: "mdi:dog-side-off", tone: "no" },
+});
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December"];
+
+/** Minutes as something a person would say out loud. */
+function driveLabel(minutes) {
+  const total = Math.max(0, Math.round(Number(minutes) || 0));
+  if (total < 90) return `${total} min`;
+  const hours = Math.floor(total / 60);
+  const rest = total % 60;
+  return rest ? `${hours} h ${String(rest).padStart(2, "0")}` : `${hours} h`;
+}
+
+/**
+ * How much to trust the drive time. A routed figure and a straight-line
+ * estimate are both "a number of minutes", and showing them identically would
+ * quietly imply the estimate is as good as the route.
+ */
+function driveProvenance(source, inTraffic) {
+  if (source === "Routes API" || source === "Distance Matrix API") {
+    return { routed: true, note: inTraffic ? "live traffic" : "by road", detail: source };
+  }
+  if (source === "estimate") return { routed: false, note: "estimated", detail: "distance estimate, no route" };
+  return { routed: false, note: "baseline", detail: "measured baseline for this destination" };
+}
+
+/** Date from either a full timestamp or an all-day `YYYY-MM-DD`. */
+function parseEventDate(value) {
+  if (!value) return null;
+  const text = String(value);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(text) ? new Date(`${text}T00:00:00`) : new Date(text);
+  return Number.isNaN(date.getTime()) ? null : date;
+}
+
+/** The hero's payload, or null when there is nothing to shout about. */
+function heroFromState(state) {
+  if (!state || state.state !== "on") return null;
+  const attributes = state.attributes || {};
+  if (!attributes.event_name) return null;
+  return {
+    name: attributes.event_name,
+    score: Number(attributes.confidence_score) || 0,
+    category: attributes.category || "",
+    zone: attributes.target_zone || "",
+    driveMinutes: Number(attributes.drive_minutes) || Math.round((Number(attributes.drive_hours) || 0) * 60),
+    drive: driveProvenance(attributes.drive_source, attributes.drive_in_traffic),
+    starts: parseEventDate(attributes.starts),
+    ends: parseEventDate(attributes.ends),
+    summary: attributes.condition_summary || "",
+    reasons: Array.isArray(attributes.reasons) ? attributes.reasons : [],
+    gear: {
+      glass: attributes.gear_glass || "",
+      support: attributes.gear_support || "",
+      settings: attributes.gear_settings || "",
+    },
+    sourceUrl: attributes.source_url || "",
+  };
+}
+
+/** The planning sensor's payload, normalised and defensive about shape. */
+function outlookFromState(state) {
+  const attributes = state?.attributes || {};
+  const events = Array.isArray(attributes.events) ? attributes.events : [];
+  return {
+    events,
+    parks: attributes.parks && typeof attributes.parks === "object" ? attributes.parks : {},
+    gear: attributes.gear_by_category && typeof attributes.gear_by_category === "object"
+      ? attributes.gear_by_category
+      : {},
+    categories: Array.isArray(attributes.all_categories) && attributes.all_categories.length
+      ? attributes.all_categories
+      : Array.isArray(attributes.categories) ? attributes.categories : [],
+    truncated: Boolean(attributes.truncated),
+    missing: !state,
+  };
+}
+
+/**
+ * Which categories the toggles currently allow.
+ *
+ * A category with no toggle configured is always shown - the absence of a
+ * switch means "not filtered", never "hidden", so a half-configured card
+ * cannot silently swallow half the calendar.
+ */
+function activeCategories(hass, toggles, known) {
+  const allowed = new Set(known);
+  for (const [category, entityId] of Object.entries(toggles || {})) {
+    const state = hass?.states?.[entityId];
+    if (!state) continue;
+    if (state.state === "off") allowed.delete(category);
+    else allowed.add(category);
+  }
+  return allowed;
+}
+
+/** Events inside the planning window, in the allowed categories, in order. */
+function filterOutlook(events, { allowed, now, fromDays, throughDays }) {
+  const from = new Date(now.getTime() + fromDays * 86400000);
+  const through = new Date(now.getTime() + throughDays * 86400000);
+  return events
+    .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) }))
+    .filter((event) => {
+      if (!event.startDate) return false;
+      if (allowed && !allowed.has(event.category)) return false;
+      // A season already underway is kept: its end is what matters, not its
+      // start, and a park in its best window right now is the single most
+      // useful thing a planning view can show.
+      const finish = event.endDate || event.startDate;
+      return finish >= from && event.startDate <= through;
+    })
+    .sort((left, right) => left.startDate - right.startDate || right.score - left.score);
+}
+
+/** Group into month buckets for the scrollable timeline. */
+function groupByMonth(events) {
+  const buckets = new Map();
+  for (const event of events) {
+    const key = `${event.startDate.getFullYear()}-${event.startDate.getMonth()}`;
+    if (!buckets.has(key)) {
+      buckets.set(key, {
+        key,
+        label: `${MONTH_NAMES[event.startDate.getMonth()]} ${event.startDate.getFullYear()}`,
+        events: [],
+      });
+    }
+    buckets.get(key).events.push(event);
+  }
+  return [...buckets.values()];
+}
+
+/** First entity whose id starts with a domain and contains a marker. */
+function findEntity(hass, domain, marker) {
+  if (!hass?.states) return "";
+  return Object.keys(hass.states).find((id) => id.startsWith(domain) && id.includes(marker)) || "";
+}
+
+/** "1-14 Mar", or "Mar 3" when a window is a single day. */
+function rangeLabel(start, end) {
+  if (!end || Math.abs(end - start) < 86400000) {
+    return start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  }
+  const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
+  const left = start.toLocaleDateString(undefined, sameMonth ? { day: "numeric" } : { month: "short", day: "numeric" });
+  const right = end.toLocaleDateString(undefined, { month: "short", day: "numeric" });
+  return `${left} - ${right}`;
+}
+
 const DEFAULT_CONFIG = Object.freeze({
   title: "Photography Events",
+  // "timeline" keeps the original browser-computed view. The other two read
+  // the photography_events integration's entities instead.
+  mode: MODE_TIMELINE,
+  hero_entity: "",
+  outlook_entity: "",
+  filter_toggles: {},
+  outlook_from_days: 0,
+  outlook_through_days: 365,
+  show_gear: true,
   location_name: "",
   latitude: null,
   longitude: null,
@@ -1413,6 +1605,7 @@ const DEFAULT_CONFIG = Object.freeze({
   show_bird_migration: true,
   custom_events: [],
 });
+
 
 const sameConfig = (left, right) => {
   const keys = new Set([...Object.keys(left || {}), ...Object.keys(right || {})]);
@@ -1465,6 +1658,7 @@ class PhotographyEventsCardEditor extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const cfg = this._config;
+    const backendMode = BACKEND_MODES.has(cfg.mode);
     this.shadowRoot.innerHTML = `
       <style>
         :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); }
@@ -1489,11 +1683,29 @@ class PhotographyEventsCardEditor extends HTMLElement {
 
       <div class="section">
         <div class="title">Display</div>
+        <div class="row"><span class="label">Mode</span>
+          <select data-select="mode">
+            <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (computed here)</option>
+            <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Drop everything (hero)</option>
+            <option value="${MODE_OUTLOOK}" ${cfg.mode === MODE_OUTLOOK ? "selected" : ""}>Planning calendar</option>
+          </select>
+        </div>
+        <div class="hint">${backendMode
+          ? "Reads the Photography Events integration's entities. Everything below the mode is about which entities to read."
+          : "Computes everything in the browser from your coordinates. Works without the integration installed."}</div>
         <div class="row"><span class="label">Card title</span>
           <input type="text" data-text="title" value="${escapeHtml(cfg.title)}">
         </div>
       </div>
 
+      ${backendMode ? this._backendSectionsHtml(cfg) : this._timelineSectionsHtml(cfg)}
+    `;
+    this._bindEditor();
+    this._rendered = true;
+  }
+
+  _timelineSectionsHtml(cfg) {
+    return `
       <div class="section">
         <div class="title">Location</div>
         <div class="hint">Leave latitude/longitude blank to use your Home Assistant location. Override them to
@@ -1540,7 +1752,88 @@ class PhotographyEventsCardEditor extends HTMLElement {
         ${this._toggleRow("show_bird_migration", "Bird migration season")}
       </div>
     `;
+  }
 
+  /**
+   * The entity pickers. Left blank, the card finds the integration's entities
+   * by name, which is right almost always and wrong exactly once - when two
+   * config entries exist - so they stay overridable.
+   */
+  _backendSectionsHtml(cfg) {
+    const hero = cfg.mode === MODE_HERO;
+    return `
+      <div class="section">
+        <div class="title">${hero ? "Drop-everything sensor" : "Planning sensor"}</div>
+        <div class="hint">Leave as auto-detect unless you run more than one Photography Events entry.</div>
+        <div class="row"><span class="label">Entity</span>
+          ${hero
+            ? `<select data-select="hero_entity">${this._entityOptionsHtml("binary_sensor.", "action_opportunity", cfg.hero_entity)}</select>`
+            : `<select data-select="outlook_entity">${this._entityOptionsHtml("sensor.", "planning_outlook", cfg.outlook_entity)}</select>`}
+        </div>
+      </div>
+
+      ${hero ? `
+        <div class="section">
+          <div class="title">Hero</div>
+          ${this._toggleRow("show_gear", "Show the gear recommendation")}
+          <div class="hint">This card renders nothing at all while the sensor is off.</div>
+        </div>` : `
+        <div class="section">
+          <div class="title">Range</div>
+          <div class="row"><span class="label">Start from (days)</span>
+            <input type="number" min="0" max="365" step="1" data-number="outlook_from_days"
+              data-min="0" data-max="365" value="${Number(cfg.outlook_from_days) || 0}">
+          </div>
+          <div class="row"><span class="label">Through (days)</span>
+            <input type="number" min="1" max="365" step="1" data-number="outlook_through_days"
+              data-min="1" data-max="365" value="${Number(cfg.outlook_through_days) || DEFAULT_CONFIG.outlook_through_days}">
+          </div>
+          <div class="hint">Start from 0 to include seasons already underway - usually what you want, since a park
+            in its best window right now is the most useful thing a planning view can show.</div>
+        </div>
+
+        <div class="section">
+          <div class="title">Filter switches</div>
+          <div class="hint">Point each category at an <code>input_boolean</code> to get a filter chip for it.
+            Categories left unset are always shown.</div>
+          ${Object.keys(CATEGORY_META).map((category) => `
+            <div class="row">
+              <span class="label">${escapeHtml(CATEGORY_META[category].label)}</span>
+              <select data-filter="${category}">${this._booleanOptionsHtml(cfg.filter_toggles?.[category])}</select>
+            </div>`).join("")}
+        </div>`}
+    `;
+  }
+
+  _entityOptionsHtml(domain, marker, current) {
+    const ids = this._hass?.states
+      ? Object.keys(this._hass.states).filter((id) => id.startsWith(domain) && id.includes(marker)).sort()
+      : [];
+    const options = [`<option value="" ${current ? "" : "selected"}>Auto-detect</option>`];
+    if (current && !ids.includes(current)) {
+      options.push(`<option value="${escapeHtml(current)}" selected>${escapeHtml(current)} (not found)</option>`);
+    }
+    for (const id of ids) {
+      options.push(`<option value="${escapeHtml(id)}" ${id === current ? "selected" : ""}>${escapeHtml(id)}</option>`);
+    }
+    return options.join("");
+  }
+
+  _booleanOptionsHtml(current) {
+    const ids = this._hass?.states
+      ? Object.keys(this._hass.states).filter((id) => id.startsWith("input_boolean.")).sort()
+      : [];
+    const options = [`<option value="" ${current ? "" : "selected"}>No filter</option>`];
+    if (current && !ids.includes(current)) {
+      options.push(`<option value="${escapeHtml(current)}" selected>${escapeHtml(current)} (not found)</option>`);
+    }
+    for (const id of ids) {
+      options.push(`<option value="${escapeHtml(id)}" ${id === current ? "selected" : ""}>${escapeHtml(id)}</option>`);
+    }
+    return options.join("");
+  }
+
+  _bindEditor() {
     this.shadowRoot.querySelectorAll("[data-toggle]").forEach((input) => {
       input.addEventListener("change", () => this._update(input.dataset.toggle, input.checked));
     });
@@ -1549,9 +1842,24 @@ class PhotographyEventsCardEditor extends HTMLElement {
     });
     this.shadowRoot.querySelectorAll("[data-number]").forEach((input) => {
       input.addEventListener("change", () => {
-        const value = clamp(Number.parseInt(input.value, 10) || DEFAULT_CONFIG.outlook_days, 7, 30);
+        const key = input.dataset.number;
+        // Each number carries its own bounds; the outlook range and the
+        // timeline's day count are not the same scale.
+        const min = input.dataset.min === undefined ? 7 : Number(input.dataset.min);
+        const max = input.dataset.max === undefined ? 30 : Number(input.dataset.max);
+        const fallback = DEFAULT_CONFIG[key] ?? min;
+        const parsed = Number.parseInt(input.value, 10);
+        const value = clamp(Number.isFinite(parsed) ? parsed : fallback, min, max);
         input.value = String(value);
-        this._update(input.dataset.number, value);
+        this._update(key, value);
+      });
+    });
+    this.shadowRoot.querySelectorAll("[data-filter]").forEach((select) => {
+      select.addEventListener("change", () => {
+        const toggles = { ...(this._config.filter_toggles || {}) };
+        if (select.value) toggles[select.dataset.filter] = select.value;
+        else delete toggles[select.dataset.filter];
+        this._update("filter_toggles", toggles);
       });
     });
     this.shadowRoot.querySelectorAll("[data-geo]").forEach((input) => {
@@ -1570,10 +1878,13 @@ class PhotographyEventsCardEditor extends HTMLElement {
       });
     });
     this.shadowRoot.querySelectorAll("[data-select]").forEach((select) => {
-      select.addEventListener("change", () => this._update(select.dataset.select, select.value));
+      select.addEventListener("change", () => {
+        this._update(select.dataset.select, select.value);
+        // Changing the mode changes which questions the form should be asking,
+        // so this one redraws rather than waiting for the config to echo back.
+        if (select.dataset.select === "mode") this._render();
+      });
     });
-
-    this._rendered = true;
   }
 
   _weatherOptionsHtml() {
@@ -1628,18 +1939,66 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   set hass(hass) {
+    const previous = this._hass;
     this._hass = hass;
-    if (this._connected && !this._initialized) this._start();
+    if (this._connected && !this._initialized) {
+      this._start();
+      return;
+    }
+    // The backend modes are push-driven: Home Assistant hands us a new state
+    // object whenever one of the entities we read changes, and identity
+    // comparison is enough to tell. The timeline mode ignores this entirely,
+    // because it recomputes on its own clock and re-rendering it on every
+    // unrelated state change in the house would be pure waste.
+    if (this._isBackendMode() && this._trackedStatesChanged(previous, hass)) this._render();
+  }
+
+  _isBackendMode() {
+    return BACKEND_MODES.has(this._config?.mode);
+  }
+
+  /** Every entity this card reads, so changes to them (and only them) redraw. */
+  _trackedEntities() {
+    const ids = [this._heroEntityId(), this._outlookEntityId()];
+    for (const entityId of Object.values(this._config?.filter_toggles || {})) ids.push(entityId);
+    return ids.filter(Boolean);
+  }
+
+  _trackedStatesChanged(previous, next) {
+    if (!previous) return true;
+    return this._trackedEntities().some((id) => previous.states?.[id] !== next.states?.[id]);
+  }
+
+  _heroEntityId() {
+    if (this._config?.hero_entity) return this._config.hero_entity;
+    return findEntity(this._hass, "binary_sensor.", "action_opportunity");
+  }
+
+  _outlookEntityId() {
+    if (this._config?.outlook_entity) return this._config.outlook_entity;
+    return findEntity(this._hass, "sensor.", "planning_outlook");
   }
 
   setConfig(config) {
     if (!config) throw new Error("Photography Events Card configuration is required");
     const weatherChanged = config.weather_entity !== this._config.weather_entity;
+    const mode = BACKEND_MODES.has(config.mode) || config.mode === MODE_TIMELINE
+      ? config.mode
+      : DEFAULT_CONFIG.mode;
     this._config = {
       ...DEFAULT_CONFIG,
       ...config,
+      mode,
       outlook_days: clamp(Number.parseInt(config.outlook_days, 10) || DEFAULT_CONFIG.outlook_days, 7, 30),
+      outlook_from_days: clamp(Number.parseInt(config.outlook_from_days, 10) || 0, 0, 365),
+      outlook_through_days: clamp(
+        Number.parseInt(config.outlook_through_days, 10) || DEFAULT_CONFIG.outlook_through_days, 1, 365),
+      filter_toggles:
+        config.filter_toggles && typeof config.filter_toggles === "object" && !Array.isArray(config.filter_toggles)
+          ? { ...config.filter_toggles }
+          : {},
     };
+    this._lastHtml = "";
     if (this._connected && this._hass && this._initialized) {
       if (weatherChanged) this._refreshWeather().then(() => this._recomputeAndRender());
       else this._recomputeAndRender();
@@ -1658,6 +2017,10 @@ class PhotographyEventsCard extends HTMLElement {
       // Home Assistant detaches and re-attaches the element on a dashboard
       // view switch; polling has to be restarted explicitly or data goes
       // stale until a full reload.
+      if (this._isBackendMode()) {
+        this._render();
+        return;
+      }
       this._recomputeAndRender();
       this._scheduleRefresh();
       return;
@@ -1673,6 +2036,12 @@ class PhotographyEventsCard extends HTMLElement {
   async _start() {
     if (this._initialized || !this._hass) return;
     this._initialized = true;
+    // Nothing to fetch or compute in the backend modes - the integration has
+    // done it, and state arrives on its own.
+    if (this._isBackendMode()) {
+      this._render();
+      return;
+    }
     this._render();
     await this._refreshWeather();
     this._recomputeAndRender();
@@ -1732,16 +2101,31 @@ class PhotographyEventsCard extends HTMLElement {
 
   _render() {
     if (!this.shadowRoot) return;
+    const body = this._hass ? this._bodyHtml() : this._loadingHtml("Waiting for Home Assistant");
+
+    // A hero with nothing to announce leaves no trace at all. An empty card
+    // still draws a border and takes a slot in the layout, which is its own
+    // small false alarm on a dashboard whose whole point is that this thing
+    // is silent until it matters.
+    if (body === null) {
+      this._setHidden(true);
+      this._lastHtml = "";
+      if (this._root) this._root.innerHTML = "";
+      return;
+    }
+    this._setHidden(false);
+
     const html = `
       <ha-card>
         <div class="card-content">
-          ${this._hass ? this._bodyHtml() : this._loadingHtml("Waiting for Home Assistant")}
+          ${body}
         </div>
       </ha-card>
     `;
 
     // Ticks that produce byte-identical markup leave the live DOM untouched
-    // instead of destroying and re-upgrading every ha-icon in the timeline.
+    // instead of destroying and re-upgrading every ha-icon in the timeline -
+    // and, in the outlook, keep the toggle listeners bound.
     if (this._root && html === this._lastHtml) return;
     this._lastHtml = html;
 
@@ -1754,6 +2138,28 @@ class PhotographyEventsCard extends HTMLElement {
       this._root = root;
     }
     this._root.innerHTML = html;
+    this._bindEvents();
+  }
+
+  /**
+   * Toggle chips are rendered as real buttons carrying their entity id, and
+   * wired up here after each DOM write. No inline handlers: they would break
+   * under a strict Content-Security-Policy, which several people run.
+   */
+  _bindEvents() {
+    if (!this._root) return;
+    for (const button of this._root.querySelectorAll("[data-toggle]")) {
+      button.addEventListener("click", () => {
+        const entityId = button.getAttribute("data-toggle");
+        if (!entityId || !this._hass) return;
+        const [domain] = entityId.split(".");
+        this._hass.callService(domain, "toggle", { entity_id: entityId });
+      });
+    }
+  }
+
+  _setHidden(hidden) {
+    if (this.style) this.style.display = hidden ? "none" : "";
   }
 
   _loadingHtml(label) {
@@ -1761,6 +2167,8 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   _bodyHtml() {
+    if (this._config.mode === MODE_HERO) return this._heroHtml();
+    if (this._config.mode === MODE_OUTLOOK) return this._outlookHtml();
     if (this._buildError) {
       return `<div class="empty-card"><ha-icon icon="mdi:map-marker-off-outline"></ha-icon><strong>${escapeHtml(this._buildError)}</strong></div>`;
     }
@@ -1898,6 +2306,213 @@ class PhotographyEventsCard extends HTMLElement {
     return `<div class="footer">${notes.map((note) => `<div>${escapeHtml(note)}</div>`).join("")}</div>`;
   }
 
+
+  // --- action_hero ----------------------------------------------------------
+
+  /**
+   * The drop-everything card. Returns null - not empty markup - when there is
+   * nothing worth driving to, which is how it stays completely invisible.
+   */
+  _heroHtml() {
+    const entityId = this._heroEntityId();
+    if (!entityId) {
+      return this._setupHtml(
+        "No drop-everything sensor found",
+        "Install the Photography Events integration, or set <code>hero_entity</code> to its binary sensor."
+      );
+    }
+    const state = this._hass.states[entityId];
+    if (!state) {
+      return this._setupHtml("Sensor unavailable", `<code>${escapeHtml(entityId)}</code> is not in Home Assistant.`);
+    }
+
+    const hero = heroFromState(state);
+    if (!hero) return null;
+
+    const now = new Date();
+    const when = hero.starts ? relativeLabel(now, hero.starts) : "now";
+    const window = hero.starts && hero.ends
+      ? `${fmtTime(hero.starts)} - ${fmtTime(hero.ends)}`
+      : hero.starts ? fmtTime(hero.starts) : "";
+    const meta = CATEGORY_META[hero.category] || { label: hero.category, icon: "mdi:camera" };
+    const gear = [
+      ["Glass", hero.gear.glass],
+      ["Support", hero.gear.support],
+      ["Settings", hero.gear.settings],
+    ].filter(([, value]) => value);
+
+    return `
+      <div class="hero">
+        <div class="hero-flag">
+          <span class="hero-pulse"></span>
+          <span>Drop everything</span>
+          <span class="hero-when">${escapeHtml(when)}</span>
+        </div>
+
+        <div class="hero-title">${escapeHtml(hero.name)}</div>
+        ${hero.zone ? `<div class="hero-zone"><ha-icon icon="mdi:map-marker"></ha-icon>${escapeHtml(hero.zone)}</div>` : ""}
+
+        <div class="hero-stats">
+          <div class="hero-stat">
+            <div class="hero-stat-label">Drive</div>
+            <div class="hero-stat-value">${escapeHtml(driveLabel(hero.driveMinutes))}</div>
+            <div class="hero-stat-note ${hero.drive.routed ? "routed" : ""}" title="${escapeHtml(hero.drive.detail)}">
+              ${hero.drive.routed ? `<ha-icon icon="mdi:car-clock"></ha-icon>` : ""}${escapeHtml(hero.drive.note)}
+            </div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-label">Confidence</div>
+            <div class="hero-stat-value">${hero.score}<span class="hero-stat-unit">/100</span></div>
+            <div class="hero-meter"><span style="width:${clamp(hero.score, 0, 100)}%"></span></div>
+          </div>
+          <div class="hero-stat">
+            <div class="hero-stat-label">${escapeHtml(meta.label)}</div>
+            <div class="hero-stat-value small">
+              <ha-icon icon="${meta.icon}"></ha-icon>${escapeHtml(window || "tonight")}
+            </div>
+          </div>
+        </div>
+
+        ${hero.summary ? `<div class="hero-summary">${escapeHtml(hero.summary)}</div>` : ""}
+        ${hero.reasons.length
+          ? `<div class="hero-reasons">${hero.reasons.map((reason) => `<span>${escapeHtml(reason)}</span>`).join("")}</div>`
+          : ""}
+
+        ${this._config.show_gear && gear.length ? `
+          <div class="hero-gear">
+            <div class="hero-gear-head"><ha-icon icon="mdi:camera-iris"></ha-icon>Take</div>
+            ${gear.map(([label, value]) => `
+              <div class="hero-gear-row">
+                <span class="hero-gear-label">${label}</span>
+                <span class="hero-gear-value">${escapeHtml(value)}</span>
+              </div>`).join("")}
+          </div>` : ""}
+
+        ${hero.sourceUrl ? `
+          <a class="hero-link" href="${escapeHtml(hero.sourceUrl)}" target="_blank" rel="noopener noreferrer">
+            <ha-icon icon="mdi:open-in-new"></ha-icon>Check the original report
+          </a>` : ""}
+      </div>
+    `;
+  }
+
+  // --- calendar_outlook -----------------------------------------------------
+
+  /** The year-ahead planning view, filtered by the toggle chips. */
+  _outlookHtml() {
+    const entityId = this._outlookEntityId();
+    if (!entityId) {
+      return this._setupHtml(
+        "No planning sensor found",
+        "Install the Photography Events integration, or set <code>outlook_entity</code> to its planning outlook sensor."
+      );
+    }
+    const state = this._hass.states[entityId];
+    if (!state) {
+      return this._setupHtml("Sensor unavailable", `<code>${escapeHtml(entityId)}</code> is not in Home Assistant.`);
+    }
+
+    const outlook = outlookFromState(state);
+    const now = new Date();
+    const known = outlook.categories.length ? outlook.categories : Object.keys(CATEGORY_META);
+    const allowed = activeCategories(this._hass, this._config.filter_toggles, known);
+    const events = filterOutlook(outlook.events, {
+      allowed,
+      now,
+      fromDays: this._config.outlook_from_days,
+      throughDays: this._config.outlook_through_days,
+    });
+    const months = groupByMonth(events);
+
+    return `
+      <div class="header">
+        <div class="header-title">${escapeHtml(this._config.title)}</div>
+        <div class="header-subtitle">
+          ${events.length} of ${outlook.events.length} events, next ${this._config.outlook_through_days} days
+          ${outlook.truncated ? " (list truncated)" : ""}
+        </div>
+      </div>
+      ${this._toggleChipsHtml(known, allowed)}
+      ${months.length
+        ? `<div class="outlook">${months.map((month) => this._monthHtml(month, outlook)).join("")}</div>`
+        : `<div class="empty-card">
+             <ha-icon icon="mdi:calendar-blank-outline"></ha-icon>
+             <strong>Nothing in this window</strong>
+             <span>Every category may be switched off, or the range may be too narrow.</span>
+           </div>`}
+    `;
+  }
+
+  _toggleChipsHtml(known, allowed) {
+    const toggles = this._config.filter_toggles || {};
+    const chips = known.map((category) => {
+      const meta = CATEGORY_META[category] || { label: category, icon: "mdi:camera" };
+      const entityId = toggles[category];
+      const on = allowed.has(category);
+      // Categories without a switch are shown as static chips rather than
+      // dead buttons: a chip you can click and which does nothing is worse
+      // than one that plainly is not a control.
+      if (!entityId) {
+        return `<span class="pe-chip static" title="No input_boolean configured for this category">
+                  <ha-icon icon="${meta.icon}"></ha-icon>${escapeHtml(meta.label)}
+                </span>`;
+      }
+      return `<button type="button" class="pe-chip ${on ? "on" : "off"}" data-toggle="${escapeHtml(entityId)}"
+                aria-pressed="${on}" title="${escapeHtml(entityId)}">
+                <ha-icon icon="${meta.icon}"></ha-icon>${escapeHtml(meta.label)}
+              </button>`;
+    });
+    return `<div class="pe-chips">${chips.join("")}</div>`;
+  }
+
+  _monthHtml(month, outlook) {
+    return `
+      <div class="outlook-month">
+        <div class="outlook-month-label">${escapeHtml(month.label)}</div>
+        ${month.events.map((event) => this._outlookRowHtml(event, outlook)).join("")}
+      </div>
+    `;
+  }
+
+  _outlookRowHtml(event, outlook) {
+    const meta = CATEGORY_META[event.category] || { label: event.category, icon: "mdi:camera" };
+    const park = event.planning_only ? outlook.parks[event.zone_id] : null;
+    const dog = park ? DOG_META[park.dogs] : null;
+    const drive = park ? park.drive_label : driveLabel(Math.round((event.drive_hours || 0) * 60));
+    const detail = event.detail || (park ? park.dog_detail : "");
+
+    return `
+      <div class="outlook-row ${event.tier === "optimal" ? "optimal" : ""}">
+        <div class="outlook-when">${escapeHtml(rangeLabel(event.startDate, event.endDate))}</div>
+        <div class="outlook-body">
+          <div class="outlook-title">${escapeHtml(event.title)}</div>
+          <div class="outlook-meta">
+            <span class="outlook-tag"><ha-icon icon="${meta.icon}"></ha-icon>${escapeHtml(meta.label)}</span>
+            ${drive ? `<span class="outlook-tag"><ha-icon icon="mdi:car"></ha-icon>${escapeHtml(drive)}</span>` : ""}
+            ${dog ? `<span class="outlook-tag dog-${dog.tone}" title="${escapeHtml(park.dog_detail)}">
+                       <ha-icon icon="${dog.icon}"></ha-icon>${escapeHtml(park.dog_label || dog.label)}
+                     </span>` : ""}
+            ${event.tier === "optimal" ? `<span class="outlook-tag best">Best window</span>` : ""}
+          </div>
+          ${detail ? `<div class="outlook-detail">${escapeHtml(detail)}</div>` : ""}
+        </div>
+        <div class="outlook-score" title="Confidence ${event.score}/100">
+          <span style="height:${clamp(event.score, 0, 100)}%"></span>
+        </div>
+      </div>
+    `;
+  }
+
+  _setupHtml(title, message) {
+    return `
+      <div class="empty-card">
+        <ha-icon icon="mdi:cog-outline"></ha-icon>
+        <strong>${escapeHtml(title)}</strong>
+        <span>${message}</span>
+      </div>
+    `;
+  }
+
   _styles() {
     return `
       :host {
@@ -1991,16 +2606,243 @@ class PhotographyEventsCard extends HTMLElement {
         border-top-color: var(--pe-text); border-radius: 50%; animation: pe-spin .75s linear infinite;
       }
       @keyframes pe-spin { to { transform: rotate(360deg); } }
+      /* --- action_hero ---------------------------------------------------
+         Loud on purpose. This card exists to interrupt whatever you were
+         doing, and it is invisible the rest of the time, so it can afford to
+         shout when it does appear. */
+      .hero {
+        position: relative;
+        border-radius: 14px;
+        padding: 16px;
+        background:
+          radial-gradient(120% 140% at 0% 0%, rgba(255, 138, 61, .22), transparent 58%),
+          linear-gradient(160deg, rgba(255, 138, 61, .12), rgba(255, 138, 61, .03));
+        border: 1px solid rgba(255, 138, 61, .45);
+      }
+      .hero-flag {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .14em;
+        text-transform: uppercase;
+        color: var(--pe-epic);
+      }
+      .hero-when { margin-left: auto; letter-spacing: .04em; color: var(--pe-muted); font-weight: 600; }
+      .hero-pulse {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--pe-epic);
+        box-shadow: 0 0 0 0 rgba(255, 138, 61, .7);
+        animation: pe-pulse 2.4s ease-out infinite;
+      }
+      @keyframes pe-pulse {
+        70% { box-shadow: 0 0 0 10px rgba(255, 138, 61, 0); }
+        100% { box-shadow: 0 0 0 0 rgba(255, 138, 61, 0); }
+      }
+      .hero-title {
+        margin-top: 10px;
+        font-size: 24px;
+        font-weight: 700;
+        line-height: 1.15;
+        letter-spacing: -.01em;
+      }
+      .hero-zone {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+        margin-top: 6px;
+        color: var(--pe-muted);
+        font-size: 13px;
+      }
+      .hero-zone ha-icon { --mdc-icon-size: 16px; }
+      .hero-stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 8px;
+        margin-top: 14px;
+      }
+      .hero-stat {
+        background: rgba(255, 255, 255, .06);
+        border: 1px solid var(--pe-border);
+        border-radius: 10px;
+        padding: 10px;
+      }
+      .hero-stat-label {
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: .1em;
+        color: var(--pe-muted);
+      }
+      .hero-stat-value { margin-top: 4px; font-size: 21px; font-weight: 700; }
+      .hero-stat-value.small { font-size: 14px; display: flex; align-items: center; gap: 5px; }
+      .hero-stat-value.small ha-icon { --mdc-icon-size: 16px; color: var(--pe-muted); }
+      .hero-stat-unit { font-size: 12px; font-weight: 500; color: var(--pe-muted); }
+      .hero-stat-note {
+        display: flex;
+        align-items: center;
+        gap: 3px;
+        margin-top: 3px;
+        font-size: 11px;
+        color: var(--pe-muted);
+      }
+      .hero-stat-note.routed { color: var(--pe-excellent); }
+      .hero-stat-note ha-icon { --mdc-icon-size: 13px; }
+      .hero-meter {
+        margin-top: 6px;
+        height: 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, .14);
+        overflow: hidden;
+      }
+      .hero-meter span { display: block; height: 100%; background: var(--pe-epic); }
+      .hero-summary { margin-top: 12px; font-size: 13px; line-height: 1.5; color: var(--pe-text); }
+      .hero-reasons { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
+      .hero-reasons span {
+        font-size: 11px;
+        padding: 2px 8px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, .08);
+        color: var(--pe-muted);
+      }
+      .hero-gear {
+        margin-top: 14px;
+        padding-top: 12px;
+        border-top: 1px solid var(--pe-border);
+      }
+      .hero-gear-head {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .1em;
+        text-transform: uppercase;
+        color: var(--pe-muted);
+        margin-bottom: 8px;
+      }
+      .hero-gear-head ha-icon { --mdc-icon-size: 15px; }
+      .hero-gear-row { display: flex; gap: 10px; font-size: 12.5px; line-height: 1.5; }
+      .hero-gear-row + .hero-gear-row { margin-top: 4px; }
+      .hero-gear-label { flex: 0 0 62px; color: var(--pe-muted); }
+      .hero-gear-value { flex: 1; }
+      .hero-link {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        margin-top: 12px;
+        font-size: 12.5px;
+        color: var(--pe-epic);
+        text-decoration: none;
+      }
+      .hero-link ha-icon { --mdc-icon-size: 15px; }
+
+      /* --- calendar_outlook ------------------------------------------------ */
+      .pe-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
+      .pe-chip {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font: inherit;
+        font-size: 12px;
+        padding: 5px 10px;
+        border-radius: 999px;
+        border: 1px solid var(--pe-border);
+        background: rgba(255, 255, 255, .05);
+        color: var(--pe-muted);
+        cursor: pointer;
+        transition: background .15s ease, color .15s ease, border-color .15s ease;
+      }
+      .pe-chip ha-icon { --mdc-icon-size: 15px; }
+      .pe-chip.on { background: rgba(133, 212, 129, .16); border-color: rgba(133, 212, 129, .5); color: var(--pe-text); }
+      .pe-chip.off { opacity: .5; }
+      .pe-chip.static { cursor: default; opacity: .75; }
+      .pe-chip:focus-visible { outline: 2px solid var(--pe-epic); outline-offset: 2px; }
+
+      .outlook { max-height: 560px; overflow-y: auto; margin-top: 8px; padding-right: 4px; }
+      .outlook-month + .outlook-month { margin-top: 14px; }
+      .outlook-month-label {
+        position: sticky;
+        top: 0;
+        z-index: 2;
+        padding: 6px 0;
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: .12em;
+        text-transform: uppercase;
+        color: var(--pe-muted);
+        background: var(--pe-surface);
+      }
+      .outlook-row {
+        display: flex;
+        align-items: stretch;
+        gap: 10px;
+        padding: 9px 0;
+        border-top: 1px solid var(--pe-border);
+      }
+      .outlook-when {
+        flex: 0 0 88px;
+        font-size: 12px;
+        font-variant-numeric: tabular-nums;
+        color: var(--pe-muted);
+        padding-top: 1px;
+      }
+      .outlook-row.optimal .outlook-when { color: var(--pe-excellent); font-weight: 600; }
+      .outlook-body { flex: 1; min-width: 0; }
+      .outlook-title { font-size: 13.5px; font-weight: 600; line-height: 1.3; }
+      .outlook-meta { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 5px; }
+      .outlook-tag {
+        display: inline-flex;
+        align-items: center;
+        gap: 3px;
+        font-size: 11px;
+        padding: 2px 7px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, .07);
+        color: var(--pe-muted);
+      }
+      .outlook-tag ha-icon { --mdc-icon-size: 13px; }
+      .outlook-tag.best { background: rgba(133, 212, 129, .18); color: var(--pe-excellent); }
+      .outlook-tag.dog-yes { background: rgba(16, 185, 129, .16); color: #34d399; }
+      .outlook-tag.dog-part { background: rgba(234, 179, 8, .16); color: #eab308; }
+      .outlook-tag.dog-no { background: rgba(244, 63, 94, .16); color: #fb7185; }
+      .outlook-detail { margin-top: 5px; font-size: 12px; line-height: 1.45; color: var(--pe-muted); }
+      .outlook-score {
+        flex: 0 0 4px;
+        border-radius: 2px;
+        background: rgba(255, 255, 255, .1);
+        display: flex;
+        align-items: flex-end;
+        overflow: hidden;
+      }
+      .outlook-score span { width: 100%; background: var(--pe-excellent); border-radius: 2px; }
+
+      @media (prefers-reduced-motion: reduce) {
+        .hero-pulse { animation: none; }
+      }
+
       @media (max-width: 600px) {
         .card-content { padding: 16px 12px; }
         .snapshot-strip { gap: 6px; }
         .snapshot-tile { padding: 8px; }
         .snapshot-count { font-size: 17px; }
+        .hero-stats { grid-template-columns: 1fr 1fr; }
+        .hero-title { font-size: 20px; }
+        .outlook-row { flex-wrap: wrap; }
+        .outlook-when { flex-basis: 100%; }
+        .outlook { max-height: 420px; }
       }
     `;
   }
 
   getCardSize() {
+    // A hidden hero should not reserve space in a masonry column.
+    if (this._config?.mode === MODE_HERO) {
+      return this._hass && heroFromState(this._hass.states[this._heroEntityId()]) ? 6 : 1;
+    }
+    if (this._config?.mode === MODE_OUTLOOK) return 12;
     const categories = CATEGORY_TOGGLE_KEYS.filter((key) => this._config?.[key] !== false).length;
     return Math.max(4, 2 + categories * 2);
   }
@@ -2010,6 +2852,12 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   static getStubConfig(hass) {
+    // When the integration is installed, the hero is the mode worth showing
+    // first: it is the one that changes what you do with your evening.
+    const heroEntity = findEntity(hass, "binary_sensor.", "action_opportunity");
+    if (heroEntity) {
+      return { ...DEFAULT_CONFIG, mode: MODE_HERO, hero_entity: heroEntity };
+    }
     const weatherEntity = hass?.states ? Object.keys(hass.states).find((id) => id.startsWith("weather.")) : undefined;
     return { ...DEFAULT_CONFIG, weather_entity: weatherEntity || "" };
   }
@@ -2018,6 +2866,24 @@ class PhotographyEventsCard extends HTMLElement {
 // Test-only seam: the astronomy math is written as free functions (no `this`
 // juggling), so it is exposed here for direct unit testing the same way the
 // rest of this repo pokes at underscore-prefixed instance methods.
+PhotographyEventsCard.backend = {
+  driveLabel,
+  driveProvenance,
+  parseEventDate,
+  heroFromState,
+  outlookFromState,
+  activeCategories,
+  filterOutlook,
+  groupByMonth,
+  rangeLabel,
+  findEntity,
+  CATEGORY_META,
+  DOG_META,
+  MODE_HERO,
+  MODE_OUTLOOK,
+  MODE_TIMELINE,
+};
+
 PhotographyEventsCard.astro = {
   daysSinceJ2000,
   sunEquatorial,

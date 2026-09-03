@@ -54,6 +54,7 @@ CATEGORY_MAMMALS: Final = "mammals"
 CATEGORY_BIRDS: Final = "birds"
 CATEGORY_BLOOMS: Final = "blooms"
 CATEGORY_FOLIAGE: Final = "foliage"
+CATEGORY_PARKS: Final = "parks"
 
 ALL_CATEGORIES: Final = (
     CATEGORY_ASTRO,
@@ -63,6 +64,7 @@ ALL_CATEGORIES: Final = (
     CATEGORY_BIRDS,
     CATEGORY_BLOOMS,
     CATEGORY_FOLIAGE,
+    CATEGORY_PARKS,
 )
 
 # Gear profiles keyed by category. Deliberately described by focal length and
@@ -103,6 +105,11 @@ GEAR_PROFILES: Final[dict[str, dict[str, str]]] = {
         "glass": "70-200mm to compress aspen stands, wide for canyon context",
         "support": "Circular polariser to saturate leaves and cut glare",
         "settings": "Backlight the leaves; overcast is fine and often better",
+    },
+    CATEGORY_PARKS: {
+        "glass": "Wide for the landscape, 70-200mm for detail, fast prime if you will be out after dark",
+        "support": "Tripod, circular polariser, spare batteries for the cold",
+        "settings": "Shoot the edges of the day; most of these are brutal at midday",
     },
 }
 

@@ -61,4 +61,4 @@ jobs:
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
           generate_release_notes: true
-          files: photography-events-card.js
+          files: custom_components/photography_events/www/photography-events-card.js

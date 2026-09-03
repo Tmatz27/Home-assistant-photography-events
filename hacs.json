@@ -1,7 +1,5 @@
 {
-  "name": "Photography Events Card",
-  "content_in_root": true,
-  "filename": "photography-events-card.js",
+  "name": "Photography Events",
   "render_readme": true,
   "homeassistant": "2024.6.0"
 }

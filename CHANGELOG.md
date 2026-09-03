@@ -1,5 +1,44 @@
 # Changelog
 
+## 0.3.0
+
+Splits the project into a Python backend plus the card, because a Lovelace card
+cannot hold API keys, cannot call third-party APIs past the browser's CORS
+rules, and only runs while someone is looking at a dashboard - none of which
+suits "tell me to get in the car now".
+
+- Add the **`photography_events` custom integration**, publishing real entities
+  so ordinary automations can push to a phone with no dashboard open:
+  `binary_sensor` for the drop-everything flag, `sensor` for the next
+  opportunity and the best sky score, and a `calendar` for the planning view
+- **Layered-cloud sunset scoring via Open-Meteo.** The card had to infer
+  structure from a single aggregate cloud percentage; the backend reads the
+  low, mid, and high decks separately and scores the actual mechanism - high
+  cloud as the canvas, low cloud as the blocker, humidity as the mute. Needs no
+  API key or account
+- **Twelve fixed target zones** scored independently, each with a baseline
+  drive time and Bortle class, gated on a configurable drive limit
+- **Seasonal calendar** covering marine migrations, rut and pupping windows,
+  super blooms, and Eastern Sierra aspen colour, with rainfall-dependent bloom
+  timing explicitly flagged as needing confirmation rather than presented as
+  fact
+- **Gear advice per category** attached to every opportunity, described by
+  focal length and capability rather than a specific body
+- Meteor showers cross-checked against radiant altitude, moon illumination, and
+  forecast cloud, with a ZHR floor so minor showers inform the calendar without
+  raising alerts
+- The card now ships inside the integration and registers itself, so one HACS
+  install covers both halves. **This changes the HACS category from Dashboard
+  to Integration** - see the upgrade note in the README
+- No heavy dependencies: the ephemeris is a port of the already-verified
+  JavaScript, so there is no astropy, numpy, or downloaded kernel. It
+  reproduces the same published opposition dates to the day
+- 28 Python tests alongside the 41 JavaScript ones
+
+Not yet implemented, and deliberately called out rather than stubbed: the eBird
+and iNaturalist clients, the wildflower and fall-colour scrapers, and the
+card's dedicated hero/calendar display modes.
+
 ## 0.2.0
 
 - Rebuild sunset/sunrise scoring around what actually makes a sky catch fire.

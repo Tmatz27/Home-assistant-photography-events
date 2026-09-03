@@ -3,7 +3,7 @@ import fs from "node:fs";
 import test from "node:test";
 import vm from "node:vm";
 
-const source = fs.readFileSync(new URL("../photography-events-card.js", import.meta.url), "utf8");
+const source = fs.readFileSync(new URL("../custom_components/photography_events/www/photography-events-card.js", import.meta.url), "utf8");
 
 class FakeNode {
   constructor(localName = "div") {

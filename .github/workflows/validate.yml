@@ -20,10 +20,10 @@ jobs:
       - name: Validate for HACS
         uses: hacs/action@main
         with:
-          category: plugin
+          category: integration
 
   tests:
-    name: Card tests
+    name: Tests
     runs-on: ubuntu-latest
     steps:
       - name: Check out repository
@@ -36,6 +36,11 @@ jobs:
 
       - name: Syntax check
         run: npm run check
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Unit tests
         run: npm test

@@ -1,6 +1,40 @@
-# Photography Events Card
+# Photography Events
 
-![Photography Events Card](banner.svg)
+![Photography Events](banner.svg)
+
+> **v0.3 splits this into two halves.** A Python integration does the polling,
+> scoring, and notifying; the Lovelace card visualises it. Both ship in this
+> one HACS install. See [Architecture](#architecture) and, if you installed
+> v0.2, [Upgrading from the card-only version](#upgrading-from-the-card-only-version).
+
+## Architecture
+
+A Lovelace card only runs while someone is looking at a dashboard, cannot hold
+API keys, and is blocked by the browser from calling third-party APIs. None of
+that works for "tell me to get in the car." So the work is split:
+
+| | Runs | Does |
+| --- | --- | --- |
+| **`photography_events` integration** | Home Assistant, in the background | Polls Open-Meteo per zone, computes ephemeris, scores opportunities, gates on drive time, publishes entities |
+| **`photography-events-card`** | The browser | Renders the timeline, alerts, and planning view |
+
+Because the integration publishes real entities
+(`binary_sensor.photography_events_action_opportunity`,
+`sensor.photography_events_best_sky_score`,
+`calendar.photography_events_planning_calendar`), ordinary Home Assistant
+automations can push to your phone whether or not any dashboard is open - which
+is the whole point.
+
+### What the backend needs from you
+
+- **Nothing, to start.** Open-Meteo needs no key and no account, so sunset
+  scoring, meteor showers, and Milky Way windows work the moment it is
+  installed.
+- **An eBird API key** (free) only if you want rare-bird alerts.
+- **No Google Maps key.** Drive times to fixed zones from a fixed home barely
+  change, so they are baselined per zone and gated at your configured limit.
+  A live routing API would only add traffic, at the cost of a billing account -
+  it is an opt-in refinement, not a requirement.
 
 A Home Assistant Lovelace card that looks out from your location (or an
 overridden one) for photography-worthy sky and nature events: golden and blue
@@ -141,9 +175,92 @@ The only network request it makes is to your own Home Assistant instance
 1. Open **HACS**
 2. Open the three-dot menu and choose **Custom repositories**
 3. Add `https://github.com/Tmatz27/Home-assistant-photography-events`
-4. Choose the **Dashboard** category
-5. Install **Photography Events Card**
-6. Refresh the browser
+4. Choose the **Integration** category
+5. Install **Photography Events**, then restart Home Assistant
+6. Go to **Settings → Devices & Services → Add Integration** and pick
+   **Photography Events**
+
+The card is bundled inside the integration and registers itself as a dashboard
+resource on setup, so there is no second install and no manual resource entry.
+
+### Upgrading from the card-only version
+
+v0.2 was a Dashboard-category repository; v0.3 is an Integration. HACS pins one
+category per repository, so the old entry has to be removed and re-added:
+
+1. In HACS, uninstall the old **Photography Events Card**
+2. Remove `/hacsfiles/.../photography-events-card.js` from
+   **Settings → Dashboards → ⋮ → Resources** if it is still listed
+3. Re-add this repository as an **Integration** and follow the steps above
+
+Existing `custom:photography-events-card` dashboard cards keep working - the
+card is the same element, just served from the integration now.
+
+## Configuration
+
+Set up in the UI. Everything can be changed later from the integration's
+**Configure** button:
+
+| Option | Default | Description |
+| --- | --- | --- |
+| Enabled categories | all | Astronomy, sunsets, marine, mammals, birds, blooms, foliage |
+| Max drive hours | `6.0` | Zones beyond this are dropped entirely |
+| Sunset score threshold | `85` | Minimum colour score before a sunset is surfaced |
+| Alert score threshold | `75` | Minimum score to trip the drop-everything flag |
+| eBird API key | *(none)* | Optional, for rare-bird alerts |
+
+### Target zones
+
+Twelve fixed zones are evaluated on every update, each with a baseline drive
+time and an approximate Bortle dark-sky class:
+
+| Zone | Drive | Bortle | Specialities |
+| --- | --- | --- | --- |
+| Piedras Blancas (San Simeon) | 1.5 h | 3 | Elephant seals, otters, coastal sunsets |
+| Channel Islands (Ventura) | 1.5 h | 4 | Pelagic whales, island endemics |
+| Carrizo Plain | 2.0 h | 2 | Super blooms, tule elk, pronghorn, dark skies |
+| Big Sur Coastline | 3.0 h | 3 | Fog inversions, gray whales, orcas |
+| Antelope Valley | 3.0 h | 4 | Poppy bloom, desert astronomy |
+| Pinnacles | 3.5 h | 3 | Condors, dark skies |
+| Santa Cruz Redwoods | 4.0 h | 5 | Old-growth redwoods, coastal fog |
+| Sequoia & Kings Canyon | 4.5 h | 2 | Sequoias, black bears |
+| Death Valley | 6.0 h | 1 | Bighorn rut, salt flats, the darkest skies in reach |
+| Yosemite Valley | 6.0 h | 3 | Granite, clearing storms, bears |
+| Eastern Sierra (Bishop/June) | 6.0 h | 2 | Aspen colour, alpine lakes, Sierra bighorn |
+| Lake Tahoe Basin | 6.0 h | 4 | Bear cubs, autumn colour |
+
+## Notifications
+
+The integration exposes everything an automation needs as attributes, so the
+automation itself stays short:
+
+```yaml
+automation:
+  - alias: "Photography: drop-everything alert"
+    trigger:
+      - platform: state
+        entity_id: binary_sensor.photography_events_action_opportunity
+        to: "on"
+    action:
+      - service: notify.mobile_app_your_phone
+        data:
+          title: >-
+            {{ state_attr('binary_sensor.photography_events_action_opportunity',
+                          'event_name') }}
+          message: >-
+            {{ state_attr('binary_sensor.photography_events_action_opportunity',
+                          'target_zone') }}
+            ({{ state_attr('binary_sensor.photography_events_action_opportunity',
+                           'drive_time') }} drive) ·
+            {{ state_attr('binary_sensor.photography_events_action_opportunity',
+                          'condition_summary') }}
+            Pack: {{ state_attr('binary_sensor.photography_events_action_opportunity',
+                                'gear_glass') }}
+```
+
+The flag only turns on when the score clears your alert threshold *and* the
+zone is inside your drive limit, so it stays quiet unless it is genuinely worth
+going.
 
 ## Add the card
 

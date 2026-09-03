@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="320" viewBox="0 0 1200 320" role="img" aria-label="Photography Events Card for Home Assistant">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="1" y2="0.15">
+      <stop offset="0%" stop-color="#171a2b"/>
+      <stop offset="55%" stop-color="#20233a"/>
+      <stop offset="100%" stop-color="#3a2a3a"/>
+    </linearGradient>
+    <radialGradient id="moonGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#dfe6ff" stop-opacity=".28"/>
+      <stop offset="100%" stop-color="#dfe6ff" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="sunGlow" cx="50%" cy="100%" r="75%">
+      <stop offset="0%" stop-color="#f2b45a" stop-opacity=".55"/>
+      <stop offset="100%" stop-color="#f2b45a" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="sun" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#ffd27a"/>
+      <stop offset="100%" stop-color="#ef8a4e"/>
+    </linearGradient>
+    <linearGradient id="ridge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#141221"/>
+      <stop offset="100%" stop-color="#0e0d18"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="320" rx="30" fill="url(#sky)"/>
+  <circle cx="150" cy="90" r="150" fill="url(#moonGlow)"/>
+  <rect width="1200" height="320" rx="30" fill="url(#sunGlow)"/>
+  <rect x="1" y="1" width="1198" height="318" rx="29" fill="none" stroke="#ffffff" stroke-opacity=".14"/>
+
+  <!-- Stars -->
+  <g fill="#f5f5f7">
+    <circle cx="60" cy="46" r="2" opacity=".85"/>
+    <circle cx="110" cy="130" r="1.6" opacity=".7"/>
+    <circle cx="200" cy="52" r="1.6" opacity=".7"/>
+    <circle cx="255" cy="112" r="2" opacity=".8"/>
+    <circle cx="330" cy="60" r="1.4" opacity=".6"/>
+    <circle cx="40" cy="150" r="1.4" opacity=".55"/>
+    <circle cx="170" cy="176" r="1.4" opacity=".55"/>
+    <circle cx="290" cy="150" r="1.6" opacity=".6"/>
+  </g>
+
+  <!-- Moon (waxing gibbous) -->
+  <g transform="translate(150,92)">
+    <circle r="40" fill="#eef1fb"/>
+    <circle cx="16" cy="-4" r="38" fill="#171a2b"/>
+    <circle cx="-12" cy="-14" r="4.5" fill="#171a2b" opacity=".25"/>
+    <circle cx="4" cy="12" r="6" fill="#171a2b" opacity=".18"/>
+  </g>
+
+  <!-- Sun low over the horizon on the warm side -->
+  <g transform="translate(1030,268)">
+    <circle r="54" fill="url(#sun)"/>
+  </g>
+
+  <!-- Horizon ridge -->
+  <path d="M0,300 L120,262 L230,292 L340,250 L470,286 L610,244 L760,284 L900,252 L1040,278 L1200,258 L1200,320 L0,320 Z" fill="url(#ridge)"/>
+
+  <g font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif">
+    <text x="64" y="96" fill="#f5f5f7" font-size="46" font-weight="800">Photography Events Card</text>
+    <text x="64" y="134" fill="#b9b9c4" font-size="20" font-weight="500">Golden hour, moon phases, meteor showers &amp; eclipses for Home Assistant</text>
+
+    <!-- Snapshot pills, echoing the card's own 24/48/72h strip -->
+    <g transform="translate(64,168)">
+      <rect width="150" height="58" rx="16" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".16"/>
+      <text x="18" y="24" fill="#9fa7c9" font-size="12" font-weight="700" letter-spacing="1">NEXT 24H</text>
+      <text x="18" y="46" fill="#ffffff" font-size="18" font-weight="700">Golden hour</text>
+    </g>
+    <g transform="translate(226,168)">
+      <rect width="150" height="58" rx="16" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".16"/>
+      <text x="18" y="24" fill="#9fa7c9" font-size="12" font-weight="700" letter-spacing="1">NEXT 48H</text>
+      <text x="18" y="46" fill="#ffffff" font-size="18" font-weight="700">Full Moon</text>
+    </g>
+    <g transform="translate(388,168)">
+      <rect width="170" height="58" rx="16" fill="#ffffff" fill-opacity=".07" stroke="#ffffff" stroke-opacity=".16"/>
+      <text x="18" y="24" fill="#9fa7c9" font-size="12" font-weight="700" letter-spacing="1">NEXT 72H</text>
+      <text x="18" y="46" fill="#ffffff" font-size="18" font-weight="700">Perseids peak</text>
+    </g>
+  </g>
+</svg>

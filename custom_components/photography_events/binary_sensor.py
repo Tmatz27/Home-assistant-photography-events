@@ -87,6 +87,14 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
             "gear_glass": gear.get("glass"),
             "gear_support": gear.get("support"),
             "gear_settings": gear.get("settings"),
+            # What actually closes the window, so the card can say "1h 36m
+            # before the core sets" rather than a bare end time.
+            "duration_minutes": top.extra.get("duration_minutes"),
+            "limited_by": top.extra.get("limited_by"),
+            "precision": top.extra.get("precision"),
+            "primary_locations": top.extra.get("primary_locations"),
+            "best_time_of_day": top.extra.get("best_time_of_day"),
+            "season_range": top.extra.get("season_range"),
             "sources": (self.coordinator.data or {}).get("sources", {}),
         }
 

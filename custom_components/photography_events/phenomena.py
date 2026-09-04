@@ -31,7 +31,7 @@ it never claims to know that this year's bloom happened.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from .const import (

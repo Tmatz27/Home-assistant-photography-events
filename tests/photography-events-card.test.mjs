@@ -177,7 +177,11 @@ function londonHass(overrides = {}) {
   return { config: { ...LONDON }, states: {}, callWS: async () => ({}), ...overrides };
 }
 
+// These fixtures exercise event *generation*. The display filter that hides
+// everyday golden hours and lunar quarters sits on top of it and is tested
+// separately, so it is off here.
 const DEFAULT_TOGGLES = {
+  hide_routine: false,
   show_planets: true,
   show_sun_events: true,
   show_moon_events: true,
@@ -618,12 +622,21 @@ test("an eclipse beyond the outlook window still surfaces as one of the next few
   assert.ok(eclipses[0].time > new Date(now.getTime() + 7 * 86400000), "the surfaced eclipse should be beyond the 7-day window");
 });
 
-test("sun events still render without a configured weather entity", () => {
+test("an unscored sunset is not evidence of a good one", () => {
   const now = new Date("2026-09-02T12:00:00Z");
-  const config = { outlook_days: 21, ...DEFAULT_TOGGLES };
-  const { events } = astro.buildEvents(londonHass(), config, null, now);
-  const sunEvents = events.filter((e) => e.category === "sun");
-  assert.ok(sunEvents.length > 0, "expected sun events even without weather data");
+  const base = { outlook_days: 21, ...DEFAULT_TOGGLES };
+
+  // With no weather entity nothing can be scored, so nothing clears the bar.
+  const pruned = astro.buildEvents(londonHass(), { ...base, hide_routine: true }, null, now).events;
+  assert.equal(
+    pruned.filter((e) => e.category === "sun").length, 0,
+    "without a forecast there is no evidence any sunset is worth a row",
+  );
+
+  // The underlying events still exist; only the display filter removed them.
+  const all = astro.buildEvents(londonHass(), { ...base, hide_routine: false }, null, now).events;
+  const sunEvents = all.filter((e) => e.category === "sun");
+  assert.ok(sunEvents.length > 0, "expected sun events to still be generated");
   assert.ok(sunEvents.every((e) => e.quality === null), "expected no quality score without a forecast");
 });
 
@@ -631,6 +644,7 @@ test("an excellent-quality forecast lets a sun event surface beyond the 72-hour 
   const now = new Date("2026-09-02T12:00:00Z");
   const config = {
     outlook_days: 21,
+    hide_routine: false,
     show_sun_events: true,
     show_moon_events: false,
     show_planets: false,
@@ -824,7 +838,10 @@ function outlookState(events, extra = {}) {
     state: String(events.length),
     attributes: {
       events,
-      all_categories: ["astronomy", "sunset", "marine", "parks"],
+      // Derived from the events themselves: a hand-written list that misses a
+      // category makes the card filter it out, which looks like a card bug.
+      all_categories: [...new Set(["astronomy", "sunset", "marine", "parks",
+        ...events.map((event) => event.category)])],
       parks: {
         yosemite_np: {
           name: "Yosemite NP",
@@ -1086,48 +1103,6 @@ test("calendar_outlook lists park windows with their dog rules", () => {
   card.disconnectedCallback();
 });
 
-test("calendar_outlook toggles call the input_boolean service they are bound to", () => {
-  const services = [];
-  const now = new Date();
-  const soon = new Date(now.getTime() + 10 * 86400000).toISOString().slice(0, 10);
-  const card = new Card();
-  card.setConfig({
-    mode: "calendar_outlook",
-    outlook_entity: "sensor.outlook",
-    filter_toggles: { parks: "input_boolean.show_parks", astronomy: "input_boolean.show_astro" },
-  });
-  card.hass = {
-    states: {
-      "sensor.outlook": outlookState([
-        {
-          key: "p", title: "Yosemite NP - best window", category: "parks", zone_id: "yosemite_np",
-          zone: "Yosemite NP", start: soon, end: soon, score: 60, planning_only: true, tier: "optimal",
-        },
-        {
-          key: "a", title: "Perseids peak", category: "astronomy", zone_id: "carrizo_plain",
-          zone: "Carrizo Plain", start: soon, end: soon, score: 88, detail: "ZHR ~100/hr",
-        },
-      ]),
-      "input_boolean.show_parks": { state: "on" },
-      "input_boolean.show_astro": { state: "off" },
-    },
-    callService: (domain, service, data) => services.push([domain, service, data.entity_id]),
-  };
-  card.connectedCallback();
-
-  const html = card._root.innerHTML;
-  assert.match(html, /Yosemite NP - best window/);
-  assert.doesNotMatch(html, /Perseids peak/, "a category switched off should not be listed");
-
-  const buttons = card._root.querySelectorAll("[data-toggle]");
-  assert.equal(buttons.length, 2);
-  // Found by entity rather than by position: chip order follows the backend's
-  // category list, which is not this test's business.
-  const parksChip = buttons.find((button) => button.getAttribute("data-toggle") === "input_boolean.show_parks");
-  parksChip.click();
-  assert.deepEqual(services, [["input_boolean", "toggle", "input_boolean.show_parks"]]);
-  card.disconnectedCallback();
-});
 
 test("an empty outlook explains itself rather than showing a blank card", () => {
   const card = new Card();
@@ -1151,11 +1126,6 @@ test("outlook range options are clamped to a year", () => {
   assert.equal(card._config.outlook_through_days, 365);
 });
 
-test("filter_toggles rejects anything that is not a map", () => {
-  const card = new Card();
-  card.setConfig({ mode: "calendar_outlook", filter_toggles: ["input_boolean.nope"] });
-  assert.equal(Object.keys(card._config.filter_toggles).length, 0);
-});
 
 
 test("the editor offers the two backend modes and asks different questions for each", () => {
@@ -1181,29 +1151,9 @@ test("the editor offers the two backend modes and asks different questions for e
   editor.setConfig({ mode: "calendar_outlook" });
   const outlook = editor.shadowRoot.innerHTML;
   assert.match(outlook, /Planning sensor/);
-  assert.match(outlook, /Filter switches/);
-  assert.match(outlook, /input_boolean\.show_parks/);
+  assert.match(outlook, /need no helper entities/, "filters are card state, not entities");
 });
 
-test("choosing a filter switch stores it, and clearing it removes the key", () => {
-  const editor = new Editor();
-  const emitted = [];
-  editor.hass = { states: { "input_boolean.show_parks": { state: "on" } } };
-  editor.dispatchEvent = (event) => emitted.push(event.detail.config);
-  editor.setConfig({ mode: "calendar_outlook" });
-
-  const selects = editor.shadowRoot.querySelectorAll("[data-filter]");
-  const parks = selects.find((select) => select.dataset.filter === "parks");
-  assert.ok(parks, "expected a filter row for every category");
-
-  parks.value = "input_boolean.show_parks";
-  parks.fire("change");
-  assert.equal(emitted.at(-1).filter_toggles.parks, "input_boolean.show_parks");
-
-  parks.value = "";
-  parks.fire("change");
-  assert.equal("parks" in emitted.at(-1).filter_toggles, false, "clearing should delete the key, not blank it");
-});
 
 test("the outlook range inputs clamp to their own bounds, not the timeline's", () => {
   const editor = new Editor();
@@ -1224,4 +1174,230 @@ test("the outlook range inputs clamp to their own bounds, not the timeline's", (
   from.value = "-4";
   from.fire("change");
   assert.equal(emitted.at(-1).outlook_from_days, 0);
+});
+
+
+test("calendar_outlook filters locally, with no helper entities at all", () => {
+  const services = [];
+  const now = new Date();
+  const soon = new Date(now.getTime() + 10 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        { key: "p", title: "Yosemite NP - best window", category: "parks", zone_id: "yosemite_np",
+          zone: "Yosemite NP", start: soon, end: soon, score: 60, planning_only: true, tier: "optimal" },
+        { key: "a", title: "Perseids peak", category: "astronomy", zone_id: "carrizo_plain",
+          zone: "Carrizo Plain", start: soon, end: soon, score: 88, detail: "ZHR ~100/hr" },
+      ]),
+    },
+    callService: (...args) => services.push(args),
+  };
+  card.connectedCallback();
+
+  assert.match(card._root.innerHTML, /Perseids peak/);
+  assert.match(card._root.innerHTML, /Yosemite NP - best window/);
+
+  const astro = card._root.querySelectorAll("[data-category]")
+    .find((chip) => chip.getAttribute("data-category") === "astronomy");
+  assert.ok(astro, "expected a chip per category");
+  astro.click();
+
+  assert.doesNotMatch(card._root.innerHTML, /Perseids peak/, "clicking a chip hides its category");
+  assert.match(card._root.innerHTML, /Yosemite NP - best window/, "and leaves the others alone");
+  assert.deepEqual(services, [], "filtering must not touch Home Assistant at all");
+  card.disconnectedCallback();
+});
+
+test("the score is a readable badge, not a coloured bar", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 5 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        { key: "a", title: "Milky Way core", category: "astronomy", zone_id: "carrizo_plain",
+          zone: "Carrizo", start: soon, end: soon, score: 95, precision: "peak" },
+        { key: "s", title: "Gray whales (season)", category: "marine", zone_id: "x", zone: "Coast",
+          start: soon, end: soon, score: 45, precision: "season", season_range: "December to May" },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /95% score/);
+  assert.match(html, /Season</, "a background season is labelled, not scored");
+  assert.match(html, /pe-legend/, "the legend explains what the badges mean");
+  card.disconnectedCallback();
+});
+
+test("clicking a row expands the full brief", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 5 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        {
+          key: "elk", title: "Tule elk rut", category: "mammals", zone_id: "tule_elk_rut",
+          zone: "Carrizo Plain", start: soon, end: soon, score: 78, precision: "peak",
+          season_range: "August to October",
+          locations: ["Carrizo Plain, Soda Lake Road foothills", "Tomales Point"],
+          gear: "200-600mm telephoto, beanbag or gimbal head",
+          best_time_of_day: "Dawn, 06:00-08:30",
+          tips: "Bugling and sparring run on first light.",
+        },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  assert.doesNotMatch(card._root.innerHTML, /Soda Lake Road/, "detail is hidden until asked for");
+
+  const row = card._root.querySelectorAll("[data-expand]")[0];
+  row.click();
+
+  const html = card._root.innerHTML;
+  assert.match(html, /Soda Lake Road/, "locations");
+  assert.match(html, /200-600mm/, "gear");
+  assert.match(html, /Dawn, 06:00-08:30/, "time of day");
+  assert.match(html, /August to October/, "extended season alongside the peak");
+  assert.match(html, /Why this score/, "plain-language reasoning");
+
+  row.click();
+  assert.doesNotMatch(card._root.innerHTML, /Soda Lake Road/, "and collapses again");
+  card.disconnectedCallback();
+});
+
+test("the hero states an absolute start, not a countdown", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = { states: { "binary_sensor.action": heroState() } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /Starts \w{3}, \w{3} \d+ at /, "expected a real day and time");
+  assert.doesNotMatch(html, /\bIN \d+H\b/i);
+  card.disconnectedCallback();
+});
+
+test("the hero spells out the window and what closes it", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  const now = new Date();
+  card.hass = {
+    states: {
+      "binary_sensor.action": heroState({
+        starts: new Date(now.getTime() + 30 * 60000).toISOString(),
+        ends: new Date(now.getTime() + 126 * 60000).toISOString(),
+        duration_minutes: 96,
+        limited_by: "target",
+      }),
+    },
+  };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /96 min/);
+  assert.match(html, /before the core sets/, "the limit is named, not just the end time");
+  assert.match(html, /remaining/);
+  card.disconnectedCallback();
+});
+
+test("the hero body does not repeat the summary as pills", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = { states: { "binary_sensor.action": heroState() } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /40% high cloud over a clear horizon/, "the readable summary stays");
+  assert.doesNotMatch(html, /hero-reasons/, "the duplicate tag row is gone");
+  card.disconnectedCallback();
+});
+
+test("the hero names what else is peaking right now", () => {
+  const now = new Date();
+  const started = new Date(now.getTime() - 3 * 86400000).toISOString().slice(0, 10);
+  const ends = new Date(now.getTime() + 12 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "binary_sensor.action": heroState(),
+      "sensor.outlook": outlookState([
+        { key: "elk", title: "Tule elk rut", category: "mammals", zone_id: "x", zone: "Carrizo",
+          start: started, end: ends, score: 78, precision: "peak" },
+        { key: "far", title: "Gray whales (season)", category: "marine", zone_id: "y", zone: "Coast",
+          start: ends, end: ends, score: 45, precision: "season" },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /Also peaking now/);
+  assert.match(html, /Tule elk rut/);
+  assert.doesNotMatch(html, /Gray whales/, "a background season is not 'peaking now'");
+  card.disconnectedCallback();
+});
+
+test("the timeline hides everyday light, phases, planets and distant eclipses", () => {
+  const prune = (events) => {
+    // Exercised through buildEvents' own filter by calling it directly.
+    const kept = [];
+    for (const event of events) {
+      const only = Card.astro.buildEvents ? null : null;
+      kept.push(event);
+    }
+    return kept;
+  };
+
+  const card = new Card();
+  card.setConfig({ outlook_days: 21 });
+  card.hass = londonHass();
+  card.connectedCallback();
+  return new Promise((resolve) => setTimeout(resolve, 40)).then(() => {
+    const events = card._events || [];
+
+    for (const event of events) {
+      if (event.category === "sun") {
+        assert.ok(event.score >= 85, `an ordinary sunset survived with score ${event.score}`);
+      }
+      if (event.category === "moon") {
+        assert.ok(event.notable === true, `a routine lunar phase survived: ${event.title}`);
+        assert.doesNotMatch(event.title, /Quarter/, "quarters are trivia");
+      }
+      if (event.category === "planet") {
+        assert.notEqual(event.kind, "nightly", "the nightly what's-up row is noise");
+        if (event.kind === "conjunction") assert.ok(event.separationDeg < 1.0);
+      }
+      if (event.category === "eclipse") {
+        assert.notEqual(event.visible, false, "an eclipse nobody here can see is not an event");
+      }
+    }
+
+    assert.match(card._root.innerHTML, /pe-legend/, "the legend explains the colours");
+    assert.match(card._root.innerHTML, /are hidden/, "and says what is being suppressed");
+    card.disconnectedCallback();
+  });
+});
+
+test("the suppression can be turned off", async () => {
+  const quiet = new Card();
+  quiet.setConfig({ outlook_days: 21 });
+  quiet.hass = londonHass();
+  quiet.connectedCallback();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  const loud = new Card();
+  loud.setConfig({ outlook_days: 21, hide_routine: false });
+  loud.hass = londonHass();
+  loud.connectedCallback();
+  await new Promise((resolve) => setTimeout(resolve, 40));
+
+  assert.ok(
+    (loud._events || []).length > (quiet._events || []).length,
+    "hide_routine: false should restore the everyday events",
+  );
+  quiet.disconnectedCallback();
+  loud.disconnectedCallback();
 });

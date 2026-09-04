@@ -1,5 +1,57 @@
 # Changelog
 
+## 0.6.0
+
+A trust release. Three things were wrong enough to make the rest not worth
+believing, and all three are fixed.
+
+**The Milky Way window was the span of darkness, not the span you can shoot.**
+From California in September those differ by a factor of five: darkness runs 503
+minutes on 5 September, the galactic core is above 15 degrees inside that
+darkness for 105 of them, and it is gone by 22:36. The window is now the true
+intersection of three conditions - sun below -18 degrees, target above 15
+degrees, moon below the horizon or under 20% lit - solved as intervals and
+intersected, with `duration_minutes` and a note saying *what* closes it, because
+"the core sets at 22:36" and "dawn" are different instructions.
+
+**A cloudless night with a 72% moon scored in the nineties.** Cloud is a
+forecast about tonight; moon phase is near-certain about next week, and a model
+that only weighs tonight will always mis-rank them. A night with more than a
+quarter-lit moon is now capped at 75 when a new moon falls inside ten days, and
+it names the night to wait for. Ninety-plus is reserved for within three days of
+new moon, or a moon down for the whole window, *and* cloud under 15%. An unknown
+forecast can never reach it.
+
+**Seasons were being reported as if they were appointments.** Every entry now
+carries a background season *and* a concrete peak window, and only the second
+scores or alerts. Beyond thirty days you get "gray whales, December to May";
+inside thirty you get the three-week January pulse past the coastal points, with
+the specific overlooks, real focal lengths and the behaviour or tide that
+decides the shot. An alert fires as a window opens, not on each of its days.
+
+Also:
+
+- Meteor showers are single peak nights gated on radiant altitude, not
+  multi-week ranges. Quadrantids corrected to ZHR 120
+- Twenty-one California phenomena including the Horsetail Fall firefall, grunion
+  runs, the Pismo monarch roost and the Central Valley crane fly-in; aspen colour
+  split by elevation tier; blooms flagged rain-dependent with the live scrapers
+  still the authority
+- **Hero card**: an absolute start time instead of a countdown, the window
+  spelled out with what closes it and how long is left, the duplicate tag row
+  removed, and a strip naming what else is peaking now
+- **Planning card**: filters are card state - no `input_boolean` helpers to
+  create - plus a readable score badge instead of a coloured bar, and every row
+  expands to peak-vs-season, gear, locations, time of day and why it scored
+- **Timeline**: ordinary golden hours, lunar quarters, nightly planet summaries
+  and eclipses that miss this location are hidden, with a legend explaining the
+  colours and what is suppressed. `hide_routine: false` restores them
+- Parks pruned to ten
+- 104 Python tests and 73 JavaScript ones
+
+Breaking: `filter_toggles` is gone from the card config - the chips need no
+helper entities now. Any `input_boolean`s created for it can be deleted.
+
 ## 0.5.1
 
 Fixes a bug that made the integration impossible to set up at all.

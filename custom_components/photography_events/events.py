@@ -15,7 +15,6 @@ from .const import (
     CATEGORY_ASTRO,
     CATEGORY_MARINE,
     CATEGORY_PARKS,
-    CATEGORY_RARE,
     CATEGORY_SUNSET,
     DEFAULT_HOME,
     GEAR_PROFILES,
@@ -151,6 +150,28 @@ class Opportunity:
                 row["reasons"] = self.reasons[:3]
             if self.source_url:
                 row["source_url"] = self.source_url
+
+        # Everything the expandable detail needs, and nothing it does not.
+        for key in (
+            "precision",
+            "season_range",
+            "duration_minutes",
+            "limited_by",
+            "best_time_of_day",
+            "days_away",
+            "confirm",
+        ):
+            if self.extra.get(key) not in (None, ""):
+                row[key] = self.extra[key]
+        if self.extra.get("primary_locations"):
+            row["locations"] = self.extra["primary_locations"]
+        # Only gear specific to this entry. Category gear is identical across
+        # dozens of rows and is published once in the reference map instead -
+        # putting it back on every row is what made the payload 100 KB.
+        if self.extra.get("recommended_gear"):
+            row["gear"] = self.extra["recommended_gear"]
+        if self.extra.get("photo_tips"):
+            row["tips"] = _shorten(self.extra["photo_tips"], 400)
         return row
 
 

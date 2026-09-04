@@ -38,6 +38,25 @@ is the whole point.
   that are not at a zone, from a distance estimate calibrated against those
   baselines. See [Drive times](#drive-times).
 
+### Seasons versus peak windows
+
+Every natural event carries two different facts, and the integration keeps them
+apart:
+
+| | What it is | What it can do |
+| --- | --- | --- |
+| **Background season** | "Gray whales, December to May" | Appears in the year view. Never scores, never alerts |
+| **Peak window** | "Southbound adults past the points, 5-25 January" | Scores, and can raise a drop-everything alert as it opens |
+
+Beyond thirty days you get the season, because that is the most honest thing
+anyone can say - weather models do not reach that far and animals do not read
+calendars. Inside thirty days it switches to the concrete window and carries the
+specific overlooks, real focal lengths, and the behaviour or tide that decides
+whether you come home with the shot.
+
+An alert fires as a window *opens*, not on every day it is open: a five-week rut
+peak announces itself once rather than thirty-five times.
+
 ### Live data sources
 
 | Source | Key | Polled | Feeds |
@@ -415,59 +434,24 @@ mode: calendar_outlook
 title: Planning
 outlook_from_days: 0        # 0 keeps seasons that are already underway
 outlook_through_days: 365
-filter_toggles:
-  astronomy: input_boolean.photo_show_astro
-  marine: input_boolean.photo_show_marine
-  mammals: input_boolean.photo_show_mammals
-  birds: input_boolean.photo_show_birds
-  blooms: input_boolean.photo_show_blooms
-  foliage: input_boolean.photo_show_foliage
-  parks: input_boolean.photo_show_parks
-  sunset: input_boolean.photo_show_skies
 ```
 
-Each entry in `filter_toggles` becomes a chip you tap to show or hide that
-category. A category with no toggle configured is **always shown** - a
-half-configured card can never silently swallow half your calendar.
+Each category gets a chip on the card itself. Tapping one shows or hides that
+category immediately - the filters are card state and need no helper entities.
 
-Create the helpers once in `configuration.yaml` (or via
-**Settings → Devices & services → Helpers**):
+Every row expands. Tapping one opens the peak window against its extended
+season, the recommended gear, the specific locations, the best time of day, and
+a plain-language account of why it scored what it did.
 
-```yaml
-input_boolean:
-  photo_show_astro:
-    name: Show astro
-    icon: mdi:telescope
-    initial: true
-  photo_show_marine:
-    name: Show whales
-    icon: mdi:whale
-    initial: true
-  photo_show_mammals:
-    name: Show mammals
-    icon: mdi:paw
-    initial: true
-  photo_show_birds:
-    name: Show birds
-    icon: mdi:bird
-    initial: true
-  photo_show_blooms:
-    name: Show blooms
-    icon: mdi:flower
-    initial: true
-  photo_show_foliage:
-    name: Show autumn colour
-    icon: mdi:leaf-maple
-    initial: true
-  photo_show_parks:
-    name: Show parks
-    icon: mdi:pine-tree
-    initial: true
-  photo_show_skies:
-    name: Show skies
-    icon: mdi:weather-sunset
-    initial: true
-```
+### What the timeline suppresses
+
+Golden hour happens twice a day and the Moon reaches first quarter every month.
+Listing all of it buries the handful of things a year worth reorganising an
+evening around, so by default the timeline hides ordinary golden and blue hours
+(only a sunset scoring 85 or better gets a row), lunar quarters (only a New Moon
+or a Supermoon), nightly "planets are up" summaries (only oppositions and
+conjunctions closer than one degree), and eclipses that miss this location
+entirely. Set `hide_routine: false` to get them all back.
 
 ### `timeline` - the standalone view
 
@@ -487,13 +471,17 @@ read actually changes.
 
 ## National parks and monuments
 
-Twenty-one California parks and monuments are in the planning calendar, each
+Ten California parks and monuments are in the planning calendar, each
 with its best and merely-good months, its distance and drive time from home, and
 its dog rules.
 
 The dog rules are there because they decide whether a trip happens at all: three
 of these ban dogs outright, and most of the rest allow them only on pavement.
 That is worth knowing before a five-hour drive rather than at the gate.
+
+The list is deliberately short. Monuments without a visitor centre or a real
+photographic draw were cut: a planning list you scroll past is worse than a
+shorter one you read.
 
 Parks behave differently from everything else in two ways, both deliberate:
 

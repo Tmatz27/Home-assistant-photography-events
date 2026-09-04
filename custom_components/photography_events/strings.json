@@ -1,0 +1,81 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Photography Events",
+        "description": "Nothing here is required to start. Open-Meteo, iNaturalist and the wildflower hotlines need no account, so sunset scoring, meteor showers, whales and blooms all work straight away. The two API keys unlock rare birds and traffic-aware drive times, and can be added later.",
+        "data": {
+          "enabled_categories": "Categories to track",
+          "max_drive_hours": "Maximum drive time",
+          "sunset_score": "Sunset alert threshold",
+          "alert_score": "Drop-everything threshold",
+          "ebird_api_key": "eBird API key",
+          "google_api_key": "Google Maps API key",
+          "routing_mode": "Drive time source",
+          "enable_field_reports": "Read the wildflower and autumn colour hotlines"
+        },
+        "data_description": {
+          "max_drive_hours": "How far you will drive for an event. National park windows ignore this, since those are trips rather than evenings.",
+          "sunset_score": "How good a sky has to look before it is worth listing. Raise it if you get too many.",
+          "alert_score": "How good anything has to be before the drop-everything sensor turns on.",
+          "ebird_api_key": "Free and instant from ebird.org/api/keygen. Without it the bird category simply produces nothing.",
+          "google_api_key": "Optional. Without it, drive times come from measured baselines and a calibrated distance estimate.",
+          "enable_field_reports": "Scrapes three public pages once a day. Bloom timing depends on winter rainfall and cannot be computed, so these are the only real source for it."
+        }
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Photography Events is already set up. Use its Configure button to change settings.",
+      "already_configured": "Photography Events is already set up.",
+      "already_in_progress": "Setup is already open in another window. Finish or close it, then try again."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "Photography Events",
+        "description": "Changes take effect immediately; the integration reloads itself when you save.",
+        "data": {
+          "enabled_categories": "Categories to track",
+          "max_drive_hours": "Maximum drive time",
+          "sunset_score": "Sunset alert threshold",
+          "alert_score": "Drop-everything threshold",
+          "ebird_api_key": "eBird API key",
+          "google_api_key": "Google Maps API key",
+          "routing_mode": "Drive time source",
+          "enable_field_reports": "Read the wildflower and autumn colour hotlines"
+        },
+        "data_description": {
+          "max_drive_hours": "How far you will drive for an event. National park windows ignore this, since those are trips rather than evenings.",
+          "sunset_score": "How good a sky has to look before it is worth listing. Raise it if you get too many.",
+          "alert_score": "How good anything has to be before the drop-everything sensor turns on.",
+          "ebird_api_key": "Free and instant from ebird.org/api/keygen. Without it the bird category simply produces nothing.",
+          "google_api_key": "Optional. Without it, drive times come from measured baselines and a calibrated distance estimate.",
+          "enable_field_reports": "Scrapes three public pages once a day. Bloom timing depends on winter rainfall and cannot be computed, so these are the only real source for it."
+        }
+      }
+    }
+  },
+  "selector": {
+    "category": {
+      "options": {
+        "astronomy": "Astronomy \u2014 meteor showers and Milky Way windows",
+        "sunset": "Skies \u2014 sunrise and sunset colour",
+        "marine": "Whales \u2014 orca, blue, fin and humpback",
+        "mammals": "Land mammals \u2014 rut, pupping and elephant seals",
+        "birds": "Rare birds \u2014 needs an eBird key",
+        "blooms": "Wildflower blooms",
+        "foliage": "Autumn colour",
+        "parks": "National parks and monuments"
+      }
+    },
+    "routing_mode": {
+      "options": {
+        "auto": "Automatic \u2014 try the Routes API, fall back to Distance Matrix",
+        "routes": "Routes API only",
+        "distance_matrix": "Distance Matrix API only (legacy)",
+        "off": "Off \u2014 use the built-in distance estimate"
+      }
+    }
+  }
+}

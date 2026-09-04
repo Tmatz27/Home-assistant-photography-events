@@ -1,5 +1,34 @@
 # Changelog
 
+## 0.5.1
+
+Fixes a bug that made the integration impossible to set up at all.
+
+- **The config flow could not render its form.** Home Assistant serialises a
+  flow's schema to JSON to draw it, and the categories field was written as a
+  bare `[vol.In(...)]` list - which `voluptuous_serialize` cannot convert. The
+  conversion raised inside `async_show_form`, so the flow failed while staying
+  registered as in progress, and every later attempt aborted with
+  `already_in_progress`. **If you hit this, restart Home Assistant once after
+  updating**: in-progress flows live in memory, so the stale one only clears on
+  a restart
+- Every field is now a Home Assistant **selector** - a multi-select list for
+  categories, sliders for the thresholds, a box with units for the drive limit,
+  and masked password fields for both API keys. Those are the shapes Home
+  Assistant guarantees it can serialise
+- The single-instance guard no longer depends on `async_set_unique_id`'s
+  in-progress check, which is what turned one failed attempt into a permanent
+  block. It checks for an existing entry before building anything
+- **Added `strings.json` and `translations/en.json`**, which were missing
+  entirely. That is why the error appeared as the raw key `already_in_progress`
+  rather than a sentence - and why every field would have shown as a raw name.
+  Each field now has a label and an explanation, and the categories and routing
+  modes have readable option labels
+- Five regression tests, including one that reintroduces the original schema and
+  confirms it is caught
+- Minimum Home Assistant raised to 2024.11, the version whose `OptionsFlow`
+  exposes `config_entry` as a property
+
 ## 0.5.0
 
 The frontend half. The card can now render what the integration worked out

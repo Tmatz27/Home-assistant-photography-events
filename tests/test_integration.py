@@ -964,3 +964,119 @@ class TestNationalParks(unittest.TestCase):
         for item in events.build_park_opportunities(now, 365):
             self.assertIsNotNone(item.latitude)
             self.assertIsNotNone(item.longitude)
+
+
+class TestConfigFlowSchema(unittest.TestCase):
+    """Static checks on the config flow, which cannot be imported here.
+
+    ``config_flow.py`` imports Home Assistant, so these read it as source. That
+    is worth doing rather than skipping, because the failure mode this guards
+    against is silent and total: Home Assistant serialises the schema to JSON to
+    render the form, a validator it cannot serialise raises inside
+    ``async_show_form``, and the flow then fails while staying registered as in
+    progress - so every later attempt aborts with ``already_in_progress`` and
+    the integration can never be added until Home Assistant is restarted.
+
+    A bare ``[vol.In(...)]`` list, the obvious way to write a multi-select, is
+    exactly such a validator. Selectors are the shapes Home Assistant guarantees
+    it can serialise.
+    """
+
+    SOURCE = ROOT / "config_flow.py"
+
+    def _schema_values(self):
+        import ast
+
+        tree = ast.parse(self.SOURCE.read_text())
+        function = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_schema"
+        )
+        dicts = [node for node in ast.walk(function) if isinstance(node, ast.Dict)]
+        self.assertTrue(dicts, "expected _schema to build a dict of fields")
+        return dicts[0].values
+
+    def test_every_field_is_a_selector(self):
+        import ast
+
+        values = self._schema_values()
+        self.assertGreaterEqual(len(values), 8, "expected the full form")
+        for value in values:
+            self.assertIsInstance(
+                value, ast.Call, f"field on line {value.lineno} is not a selector call"
+            )
+            func = value.func
+            self.assertTrue(
+                isinstance(func, ast.Attribute)
+                and isinstance(func.value, ast.Name)
+                and func.value.id == "selector",
+                f"field on line {value.lineno} must use a selector, "
+                "or Home Assistant cannot render the form",
+            )
+
+    def test_no_unserialisable_validators_in_the_form(self):
+        """The specific shapes that break the form, spelled out.
+
+        Scanned from the parsed function rather than the file, so the module
+        docstring - which names these shapes in order to explain them - does not
+        trip its own test.
+        """
+        import ast
+
+        tree = ast.parse(self.SOURCE.read_text())
+        function = next(
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_schema"
+        )
+        body = ast.unparse(function)
+        for banned in ("[vol.In(", "vol.All(vol.Length"):
+            self.assertNotIn(
+                banned, body, f"{banned} cannot be serialised into a config flow form"
+            )
+
+    def test_single_instance_guard_cannot_wedge_the_flow(self):
+        """`async_set_unique_id` aborts on an in-progress flow by default.
+
+        That is the trap: one failed attempt leaves a flow registered, and the
+        next one aborts rather than retrying. The entry check runs first, and
+        the unique id is set without that behaviour.
+        """
+        source = self.SOURCE.read_text()
+        self.assertIn("_async_current_entries()", source)
+        self.assertIn("raise_on_progress=False", source)
+
+    def test_translations_cover_every_field_and_abort(self):
+        """Untranslated keys surface to the user as raw strings like
+        `already_in_progress`, which is what sent us looking here."""
+        import json
+
+        strings = json.loads((ROOT / "strings.json").read_text())
+        english = json.loads((ROOT / "translations" / "en.json").read_text())
+        self.assertEqual(strings, english, "translations/en.json should match strings.json")
+
+        # Field names reach the form as CONF_* constants, so a translated key
+        # is checked through the constant that carries it.
+        source = self.SOURCE.read_text()
+        by_value = {
+            value: name
+            for name, value in vars(const).items()
+            if name.startswith("CONF_") and isinstance(value, str)
+        }
+        for step in (strings["config"]["step"]["user"], strings["options"]["step"]["init"]):
+            for key in step["data"]:
+                constant = by_value.get(key)
+                self.assertIsNotNone(constant, f"{key} is translated but has no CONF_ constant")
+                self.assertIn(constant, source, f"{key} is translated but not in the form")
+
+        aborts = strings["config"]["abort"]
+        self.assertIn("single_instance_allowed", aborts)
+        self.assertIn("already_in_progress", aborts)
+
+        for category in const.ALL_CATEGORIES:
+            self.assertIn(
+                category,
+                strings["selector"]["category"]["options"],
+                f"category {category} has no label",
+            )
+        for mode in const.ROUTING_MODES:
+            self.assertIn(mode, strings["selector"]["routing_mode"]["options"])

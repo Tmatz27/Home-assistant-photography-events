@@ -225,6 +225,17 @@ only network request is to your own Home Assistant instance.
 The card is bundled inside the integration and registers itself as a dashboard
 resource on setup, so there is no second install and no manual resource entry.
 
+### "already_in_progress" when adding the integration
+
+Versions before 0.5.1 shipped a config flow whose schema Home Assistant could
+not render. The attempt failed but stayed registered, so every retry aborted
+with `already_in_progress`.
+
+Update to 0.5.1 or later, then **restart Home Assistant once**. In-progress
+flows are held in memory, so the stale one clears only on a restart - after
+which **Settings → Devices & services → Add integration → Photography Events**
+works normally.
+
 ### Upgrading from the card-only version
 
 v0.2 was a Dashboard-category repository; v0.3 is an Integration. HACS pins one

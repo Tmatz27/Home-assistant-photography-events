@@ -59,6 +59,11 @@ class Park:
 
 
 # Ordered by drive time from Vandenberg, closest first.
+#
+# Deliberately short. Monuments without a visitor centre or a real photographic
+# draw were cut - listing every BLM and USFS unit in southern California padded
+# the calendar with places nobody was going to drive to, and a planning list you
+# scroll past is worse than a shorter one you read.
 PARKS: tuple[Park, ...] = (
     Park(
         key="channel_islands_np",
@@ -103,64 +108,6 @@ PARKS: tuple[Park, ...] = (
         good=((1, 2), (10, 12)),
     ),
     Park(
-        key="cesar_chavez_nm",
-        name="Cesar E. Chavez NM",
-        latitude=35.2242,
-        longitude=-118.5637,
-        miles=170,
-        drive_hours=2.75,
-        dogs=DOGS_LIMITED,
-        dog_label="Outdoor grounds only",
-        dog_detail="Leashed in the memorial gardens, visitor centre exterior and desert landscape paths. Not inside buildings.",
-        optimal=((3, 5),),
-        good=((9, 11),),
-    ),
-    Park(
-        key="san_gabriel_mountains_nm",
-        name="San Gabriel Mtns NM",
-        latitude=34.2839,
-        longitude=-117.8443,
-        miles=175,
-        drive_hours=3.0,
-        dogs=DOGS_FULL,
-        dog_label="Full trail access",
-        dog_detail="USFS managed: dogs on almost all trails, dirt roads and wilderness on a 6 ft leash.",
-        optimal=((4, 5), (10, 11)),
-        good=((3, 3), (9, 9)),
-    ),
-    Park(
-        key="sand_to_snow_nm",
-        name="Sand to Snow NM",
-        latitude=34.0575,
-        longitude=-116.6644,
-        miles=235,
-        drive_hours=3.75,
-        dogs=DOGS_LIMITED,
-        dog_label="USFS trails only",
-        dog_detail=(
-            "Allowed on USFS trails in the San Gorgonio Wilderness. Strictly prohibited at the "
-            "lower Whitewater Preserve to protect bighorn sheep."
-        ),
-        optimal=((3, 4), (7, 8)),
-        good=((2, 2), (9, 10)),
-    ),
-    Park(
-        key="santa_rosa_san_jacinto_nm",
-        name="Santa Rosa & San Jacinto Mtns NM",
-        latitude=33.6539,
-        longitude=-116.4400,
-        miles=245,
-        drive_hours=4.0,
-        dogs=DOGS_LIMITED,
-        dog_label="High-elevation trails only",
-        dog_detail=(
-            "Allowed on high-elevation USFS trails. Strictly prohibited on the lower Coachella "
-            "Valley desert trails to protect endangered Peninsular bighorn sheep."
-        ),
-        optimal=((1, 3),),
-        good=((4, 4), (11, 12)),
-    ),
-    Park(
         key="sequoia_np",
         name="Sequoia NP",
         latitude=36.5647,
@@ -200,19 +147,6 @@ PARKS: tuple[Park, ...] = (
         good=((9, 10),),
     ),
     Park(
-        key="mojave_preserve",
-        name="Mojave National Preserve",
-        latitude=35.0119,
-        longitude=-115.6533,
-        miles=290,
-        drive_hours=4.5,
-        dogs=DOGS_FULL,
-        dog_label="Full trail access",
-        dog_detail="Unusually dog-friendly for an NPS unit: all trails, dirt roads and developed campgrounds on a 6 ft leash.",
-        optimal=((3, 4), (11, 11)),
-        good=((2, 2), (10, 10)),
-    ),
-    Park(
         key="joshua_tree_np",
         name="Joshua Tree NP",
         latitude=33.8734,
@@ -224,32 +158,6 @@ PARKS: tuple[Park, ...] = (
         dog_detail="Unpaved backcountry vehicle roads, campgrounds and within 100 ft of roads. Prohibited on all trails.",
         optimal=((2, 4),),
         good=((1, 1), (5, 5), (10, 12)),
-    ),
-    Park(
-        key="cabrillo_nm",
-        name="Cabrillo NM",
-        latitude=32.6722,
-        longitude=-117.2417,
-        miles=260,
-        drive_hours=4.5,
-        dogs=DOGS_LIMITED,
-        dog_label="Tidepool area only",
-        dog_detail="Leashed along the coastal tidepool trail and roadway only. Prohibited on the Bayside Trail, in the lighthouse and visitor centre.",
-        optimal=((1, 3),),
-        good=((4, 5), (10, 12)),
-    ),
-    Park(
-        key="muir_woods_nm",
-        name="Muir Woods NM",
-        latitude=37.8970,
-        longitude=-122.5811,
-        miles=290,
-        drive_hours=5.0,
-        dogs=DOGS_NONE,
-        dog_label="Strictly prohibited",
-        dog_detail="No pets anywhere in the monument, including the parking plazas and paved boardwalks.",
-        optimal=((4, 5),),
-        good=((3, 3), (9, 11)),
     ),
     Park(
         key="yosemite_np",
@@ -292,61 +200,6 @@ PARKS: tuple[Park, ...] = (
         dog_detail="Exceptionally pet-friendly: all trails on a 6 ft leash, and dogs are allowed on the mandatory Reds Meadow shuttle.",
         optimal=((7, 8),),
         good=((9, 9),),
-    ),
-    Park(
-        key="lassen_volcanic_np",
-        name="Lassen Volcanic NP",
-        latitude=40.4977,
-        longitude=-121.4207,
-        miles=510,
-        drive_hours=8.0,
-        dogs=DOGS_LIMITED,
-        dog_label="Paved and campgrounds only",
-        dog_detail="Paved roads, parking areas and campgrounds. Strictly prohibited on all trails and in hydrothermal areas.",
-        optimal=((7, 8),),
-        good=((9, 10),),
-    ),
-    Park(
-        key="redwood_np",
-        name="Redwood NP & State Parks",
-        latitude=41.2132,
-        longitude=-124.0046,
-        miles=560,
-        drive_hours=9.5,
-        dogs=DOGS_LIMITED,
-        dog_label="Gravel roads and select beaches",
-        dog_detail=(
-            "Campgrounds, paved roads, gravel roads such as Cal-Barrel Road, and select beaches "
-            "(Crescent Beach, Gold Bluffs Beach). Prohibited on dirt single-track."
-        ),
-        optimal=((6, 8),),
-        good=((5, 5), (9, 10)),
-    ),
-    Park(
-        key="lava_beds_nm",
-        name="Lava Beds NM",
-        latitude=41.7141,
-        longitude=-121.5083,
-        miles=640,
-        drive_hours=10.0,
-        dogs=DOGS_LIMITED,
-        dog_label="Developed areas and select roads",
-        dog_detail="Developed campground roads and select surface routes (Schneider Trail, Lyon's Road). Strictly prohibited inside all caves.",
-        optimal=((6, 8),),
-        good=((5, 5), (9, 10)),
-    ),
-    Park(
-        key="tule_lake_nm",
-        name="Tule Lake NM",
-        latitude=41.8886,
-        longitude=-121.4744,
-        miles=650,
-        drive_hours=10.5,
-        dogs=DOGS_LIMITED,
-        dog_label="Outdoor grounds only",
-        dog_detail="Leashed on outdoor grounds and parking lots. Prohibited inside the visitor centre.",
-        optimal=((6, 8),),
-        good=((5, 5),),
     ),
 )
 

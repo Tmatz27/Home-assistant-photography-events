@@ -54,6 +54,7 @@ CATEGORY_MAMMALS: Final = "mammals"
 CATEGORY_BIRDS: Final = "birds"
 CATEGORY_BLOOMS: Final = "blooms"
 CATEGORY_FOLIAGE: Final = "foliage"
+CATEGORY_RARE: Final = "rare_phenomena"
 CATEGORY_PARKS: Final = "parks"
 
 ALL_CATEGORIES: Final = (
@@ -64,6 +65,7 @@ ALL_CATEGORIES: Final = (
     CATEGORY_BIRDS,
     CATEGORY_BLOOMS,
     CATEGORY_FOLIAGE,
+    CATEGORY_RARE,
     CATEGORY_PARKS,
 )
 
@@ -105,6 +107,11 @@ GEAR_PROFILES: Final[dict[str, dict[str, str]]] = {
         "glass": "70-200mm to compress aspen stands, wide for canyon context",
         "support": "Circular polariser to saturate leaves and cut glare",
         "settings": "Backlight the leaves; overcast is fine and often better",
+    },
+    CATEGORY_RARE: {
+        "glass": "Whatever the phenomenon needs - these range from 24mm at night to 600mm on a roost",
+        "support": "Per event; most of these are tripod or gimbal work",
+        "settings": "Read the event's own notes - these are one-shot-a-year situations",
     },
     CATEGORY_PARKS: {
         "glass": "Wide for the landscape, 70-200mm for detail, fast prime if you will be out after dark",

@@ -22,7 +22,7 @@ PURE_MODULES = (
     "parks",
     "astronomy",
     "weather_scoring",
-    "seasonal",
+    "phenomena",
     "wildlife",
     "field_reports",
     "routing",
@@ -55,7 +55,7 @@ def _load_package():
 _pkg = _load_package()
 astronomy = _pkg.astronomy
 weather_scoring = _pkg.weather_scoring
-seasonal = _pkg.seasonal
+phenomena = _pkg.phenomena
 events = _pkg.events
 const = _pkg.const
 wildlife = _pkg.wildlife
@@ -346,19 +346,33 @@ class TestOpportunities(unittest.TestCase):
         self.assertGreaterEqual(geminids[0].score, 75)
         self.assertLessEqual(geminids[0].end.timestamp() - geminids[0].start.timestamp(), 20 * 3600)
 
-    def test_bright_moon_pushes_a_shower_below_the_alert_bar(self):
+    def test_a_shower_the_moon_owns_produces_no_window_at_all(self):
+        """The moon gate is structural, not a scoring penalty.
+
+        If the radiant never clears 30 degrees in darkness with the moon down
+        or faint, there is nothing to photograph and the correct output is
+        nothing - not a low-scoring row.
+        """
         zone = const.ZONES_BY_ID["death_valley"]
-        december = datetime(2026, 12, 1, tzinfo=timezone.utc)
-        shower = [
-            item for item in events.build_meteor_opportunities(zone, december, 30)
-            if "Geminids" in item.title
-        ][0]
-        illumination, _, _ = astronomy.moon_illumination(shower.start)
-        # Guard the cross-check itself: the score should reflect the real moon.
-        if illumination <= events.MAX_MOON_ILLUMINATION:
-            self.assertTrue(any("moon only" in reason for reason in shower.reasons))
-        else:
-            self.assertTrue(any("wash it out" in reason for reason in shower.reasons))
+        lat, lon = math.radians(zone["latitude"]), math.radians(zone["longitude"])
+        shower = next(item for item in events.METEOR_SHOWERS if item["name"] == "Geminids")
+
+        for year in (2026, 2027, 2028):
+            peak = datetime(year, shower["month"], shower["day"], 12, tzinfo=timezone.utc)
+            window = astronomy.astro_shooting_window(
+                peak, lat, lon, shower["ra_deg"], shower["dec_deg"],
+                min_target_altitude=events.MIN_RADIANT_ALTITUDE,
+                max_moon_illumination=events.MAX_MOON_ILLUMINATION,
+            )
+            if window is None:
+                continue
+            # Whenever a window exists, every gate held inside it.
+            self.assertGreater(window.peak_target_altitude, events.MIN_RADIANT_ALTITUDE)
+            moon_ok = (
+                window.moon_illumination < events.MAX_MOON_ILLUMINATION
+                or events._moon_down_throughout(window, lat, lon)
+            )
+            self.assertTrue(moon_ok, f"{year}: window kept despite a dominant moon")
 
     def test_milky_way_only_in_core_season_and_only_when_dark(self):
         zone = const.ZONES_BY_ID["carrizo_plain"]
@@ -369,13 +383,27 @@ class TestOpportunities(unittest.TestCase):
         for item in summer:
             self.assertLessEqual(item.end.timestamp() - item.start.timestamp(), 16 * 3600)
 
-    def test_drive_time_gating_removes_distant_zones(self):
-        seasonal_events = events.build_seasonal_opportunities(NOW, 365)
-        self.assertTrue(seasonal_events)
-        near = events.within_drive(seasonal_events, 2.0)
-        self.assertTrue(near)
-        self.assertLess(len(near), len(seasonal_events))
-        self.assertTrue(all(item.drive_hours <= 2.0 for item in near))
+    def test_drive_time_gates_peaks_but_not_background_seasons(self):
+        """A season is a note in a calendar; a peak window is a trip.
+
+        Gating the former on drive time would blank the year view for anyone
+        with a short limit. Not gating the latter would alert about a bighorn
+        rut six hours away to someone who will not drive two.
+        """
+        built = events.build_seasonal_opportunities(NOW, 365)
+        self.assertTrue(built)
+        near = events.within_drive(built, 2.0)
+
+        far_peaks = [
+            item for item in built
+            if item.extra["precision"] == "peak" and item.drive_hours > 2.0
+        ]
+        self.assertTrue(far_peaks, "expected at least one distant peak window to gate")
+        self.assertTrue(all(item.key not in {n.key for n in near} for item in far_peaks))
+
+        seasons = [item for item in built if item.extra["precision"] == "season"]
+        self.assertTrue(seasons)
+        self.assertTrue(all(item.key in {n.key for n in near} for item in seasons))
 
     def test_action_window_is_sorted_by_score_and_bounded_to_48h(self):
         zone = const.ZONES_BY_ID["piedras_blancas"]
@@ -397,29 +425,89 @@ class TestOpportunities(unittest.TestCase):
             self.assertIn("score", data)
 
 
-class TestSeasonalWindows(unittest.TestCase):
-    def test_windows_reference_real_zones_and_categories(self):
-        for window in seasonal.SEASONAL_WINDOWS:
-            self.assertIn(window.zone_id, const.ZONES_BY_ID, window.key)
-            self.assertIn(window.category, const.ALL_CATEGORIES, window.key)
-            self.assertTrue(window.detail.strip(), window.key)
+class TestPeakWindows(unittest.TestCase):
+    """The rule: a background season and an actionable window are different
+    facts, and only the second may trigger anything."""
 
-    def test_year_crossing_windows_appear_in_a_forward_view(self):
-        """Elephant seal season runs mid-December to February."""
-        december = datetime(2026, 12, 20, tzinfo=timezone.utc)
-        found = seasonal.active_windows(december, 90)
-        keys = {entry["key"].rsplit("-", 3)[0] for entry in found}
-        self.assertIn("elephant_seal_battles", keys)
+    def test_every_entry_carries_both_a_season_and_a_peak(self):
+        for window in phenomena.PEAK_WINDOWS:
+            self.assertTrue(window.season_range, f"{window.key} has no background season")
+            self.assertTrue(window.primary_locations, f"{window.key} has no locations")
+            self.assertTrue(window.recommended_gear, f"{window.key} has no gear")
+            self.assertTrue(window.photo_tips, f"{window.key} has no tips")
+            for month, day in (window.peak_start, window.peak_end):
+                self.assertTrue(1 <= month <= 12 and 1 <= day <= 31)
 
-    def test_rainfall_dependent_blooms_are_flagged_for_confirmation(self):
-        blooms = [w for w in seasonal.SEASONAL_WINDOWS if w.category == const.CATEGORY_BLOOMS]
+    def test_no_peak_window_is_a_disguised_season(self):
+        """The failure this refactor exists to fix: a 'window' three months
+        wide, which is true on every day and useful on none."""
+        for window in phenomena.PEAK_WINDOWS:
+            for start, end in window.occurrences(2026):
+                span = (end - start).days
+                if (start.month, start.day) == (1, 1) or (end.month, end.day) == (12, 31):
+                    continue  # a half of a window split at New Year
+                self.assertLessEqual(
+                    span, 75, f"{window.key} spans {span} days - that is a season, not a peak"
+                )
+
+    def test_coordinates_are_in_california(self):
+        for window in phenomena.PEAK_WINDOWS:
+            self.assertTrue(32.0 < window.latitude < 42.5, window.key)
+            self.assertTrue(-125.0 < window.longitude < -114.0, window.key)
+
+    def test_precision_escalates_inside_thirty_days(self):
+        now = datetime(2026, 9, 4, tzinfo=UTC)
+        built = events.build_seasonal_opportunities(now, 365)
+        for item in built:
+            days = item.extra["days_away"]
+            expected = "peak" if days <= phenomena.PRECISION_HORIZON_DAYS else "season"
+            self.assertEqual(item.extra["precision"], expected, item.title)
+
+    def test_background_seasons_can_never_raise_an_alert(self):
+        now = datetime(2026, 9, 4, tzinfo=UTC)
+        for item in events.build_seasonal_opportunities(now, 365):
+            if item.extra["precision"] == "season":
+                self.assertLess(item.score, const.DEFAULT_ALERT_SCORE, item.title)
+                self.assertTrue(item.planning_only)
+        self.assertEqual(events.action_window(
+            [i for i in events.build_seasonal_opportunities(now, 365)
+             if i.extra["precision"] == "season"], now), [])
+
+    def test_a_peak_window_underway_can_reach_the_alert_threshold(self):
+        now = datetime(2026, 9, 4, tzinfo=UTC)
+        underway = [
+            item for item in events.build_seasonal_opportunities(now, 365)
+            if item.extra["precision"] == "peak" and item.start.date() <= now.date() <= item.end.date()
+        ]
+        self.assertTrue(underway, "early September should have peak windows running")
+        self.assertTrue(any(item.score >= const.DEFAULT_ALERT_SCORE for item in underway))
+
+    def test_near_entries_carry_what_you_need_to_actually_go(self):
+        now = datetime(2026, 9, 4, tzinfo=UTC)
+        for item in events.build_seasonal_opportunities(now, 365):
+            if item.extra["precision"] != "peak":
+                continue
+            self.assertTrue(item.extra["primary_locations"])
+            self.assertTrue(item.extra["recommended_gear"])
+            self.assertTrue(item.extra["photo_tips"])
+            self.assertIsNotNone(item.latitude)
+
+    def test_year_crossing_windows_are_not_reported_twice(self):
+        """Split at New Year for generation, stitched back for display."""
+        now = datetime(2026, 9, 4, tzinfo=UTC)
+        titles = [item.title for item in events.build_seasonal_opportunities(now, 365)]
+        self.assertEqual(len(titles), len(set(titles)))
+        crane = next(
+            item for item in events.build_seasonal_opportunities(now, 365)
+            if "crane" in item.title.lower()
+        )
+        self.assertEqual(crane.start.month, 11)
+        self.assertEqual(crane.end.month, 1)
+
+    def test_rainfall_dependent_entries_are_flagged(self):
+        blooms = [w for w in phenomena.PEAK_WINDOWS if w.category == const.CATEGORY_BLOOMS]
         self.assertTrue(blooms)
-        self.assertTrue(all(w.confirm for w in blooms), "bloom timing must not be presented as certain")
-
-    def test_seasonal_events_never_reach_the_drop_everything_score(self):
-        """A season lasting weeks is planning material, not an urgent alert."""
-        for item in events.build_seasonal_opportunities(NOW, 365):
-            self.assertLess(item.score, const.DEFAULT_ALERT_SCORE)
+        self.assertTrue(all(w.confirm for w in blooms), "bloom timing is never a certainty")
 
 
 class TestZonesAndGear(unittest.TestCase):
@@ -1080,3 +1168,175 @@ class TestConfigFlowSchema(unittest.TestCase):
             )
         for mode in const.ROUTING_MODES:
             self.assertIn(mode, strings["selector"]["routing_mode"]["options"])
+
+
+PACIFIC = timezone(timedelta(hours=-7))
+
+
+class TestAstroShootingWindow(unittest.TestCase):
+    """The window is an intersection, never the span of darkness.
+
+    Reporting astronomical dusk to dawn as Milky Way time is the single
+    worst failure this integration had: in early September from California it
+    overstates the real opportunity roughly fivefold, and it does it on exactly
+    the nights you would otherwise plan around.
+    """
+
+    LAT = math.radians(34.7420)
+    LON = math.radians(-120.5724)
+
+    def _window(self, day):
+        return astronomy.astro_shooting_window(
+            datetime(2026, 9, day, 12, tzinfo=PACIFIC), self.LAT, self.LON
+        )
+
+    def test_september_core_window_is_under_two_hours_not_all_night(self):
+        window = self._window(5)
+        self.assertIsNotNone(window)
+        self.assertLess(
+            window.duration_minutes, 150,
+            "an early-September core window is roughly 105 minutes, not a whole night",
+        )
+        self.assertGreater(window.duration_minutes, 60)
+
+        dark = astronomy.dark_window(datetime(2026, 9, 5, 12, tzinfo=PACIFIC), self.LAT, self.LON)
+        darkness_minutes = (dark.end - dark.start).total_seconds() / 60
+        self.assertGreater(
+            darkness_minutes, window.duration_minutes * 3,
+            "the point of the fix: darkness is several times longer than the usable window",
+        )
+
+    def test_the_window_closes_because_the_core_sets(self):
+        window = self._window(5)
+        self.assertEqual(window.limited_by, "target")
+        self.assertIsNotNone(window.target_sets)
+        local = window.end.astimezone(PACIFIC)
+        self.assertTrue(21 <= local.hour <= 23, f"core should set late evening, got {local:%H:%M}")
+
+    def test_the_window_never_escapes_darkness_or_the_target(self):
+        for day in range(1, 21):
+            window = self._window(day)
+            if window is None:
+                continue
+            self.assertLess(astronomy.sun_altitude(window.start, self.LAT, self.LON),
+                            astronomy.ASTRONOMICAL_TWILIGHT)
+            self.assertLess(astronomy.sun_altitude(window.end, self.LAT, self.LON),
+                            astronomy.ASTRONOMICAL_TWILIGHT)
+            floor = math.radians(astronomy.MIN_CORE_ALTITUDE_DEG)
+            for fraction in (0.0, 0.5, 1.0):
+                moment = window.start + (window.end - window.start) * fraction
+                altitude = astronomy.horizontal(
+                    math.radians(astronomy.GALACTIC_CORE_RA_DEG),
+                    math.radians(astronomy.GALACTIC_CORE_DEC_DEG),
+                    moment, self.LAT, self.LON,
+                )[0]
+                self.assertGreaterEqual(round(altitude, 6), round(floor, 6) - 1e-4)
+
+    def test_each_night_gets_its_own_window_and_its_own_moon(self):
+        """A search span wide enough to hold two nights reported tomorrow's
+        window under today's date, paired with today's moon."""
+        seen = {}
+        for day in range(1, 15):
+            window = self._window(day)
+            if window is None:
+                continue
+            key = window.start.astimezone(PACIFIC).date()
+            self.assertNotIn(key, seen, f"two nights resolved to {key}")
+            seen[key] = window
+            self.assertEqual(key.day, day, "window belongs to the night it was asked for")
+
+
+class TestLunarLookAhead(unittest.TestCase):
+    """A night is scored against the cycle it sits in, not in isolation."""
+
+    LAT = math.radians(34.7420)
+    LON = math.radians(-120.5724)
+
+    def _nights(self, cloud=5.0):
+        zone = const.ZONES_BY_ID["carrizo_plain"]
+        return {
+            item.start.astimezone(PACIFIC).date().day: item
+            for item in events.build_milky_way_opportunities(
+                zone, datetime(2026, 9, 1, 12, tzinfo=PACIFIC), 20, cloud_lookup=lambda m: cloud
+            )
+        }
+
+    def test_a_bright_moon_night_is_capped_even_under_a_clear_sky(self):
+        """The exact reported failure: a cloudless 70%-moon night scoring in
+        the nineties while the new moon nine days out is far better."""
+        nights = self._nights()
+        bright = nights[2]
+        self.assertGreater(bright.extra["moon_illumination"], 0.25)
+        self.assertLessEqual(bright.score, events.MOON_LOOKAHEAD_CEILING)
+        self.assertTrue(any("new moon in" in reason for reason in bright.reasons))
+
+    def test_the_new_moon_night_outscores_the_bright_one(self):
+        nights = self._nights()
+        self.assertGreater(nights[10].score, nights[2].score + 10)
+        self.assertGreaterEqual(nights[10].score, events.DROP_EVERYTHING_SCORE)
+
+    def test_ninety_plus_requires_clear_skies_as_well_as_a_dark_moon(self):
+        clear = self._nights(cloud=5.0)
+        murky = self._nights(cloud=30.0)
+        self.assertGreaterEqual(clear[10].score, events.DROP_EVERYTHING_SCORE)
+        self.assertLess(
+            murky[10].score, events.DROP_EVERYTHING_SCORE,
+            "a new moon under 30% cloud is not a drop-everything night",
+        )
+
+    def test_an_unknown_forecast_can_never_reach_drop_everything(self):
+        zone = const.ZONES_BY_ID["carrizo_plain"]
+        for item in events.build_milky_way_opportunities(
+            zone, datetime(2026, 9, 1, 12, tzinfo=PACIFIC), 20, cloud_lookup=None
+        ):
+            self.assertLess(item.score, events.DROP_EVERYTHING_SCORE)
+
+    def test_marginal_windows_do_not_score_well(self):
+        """A twenty-minute slot is not a good night with a caveat."""
+        nights = self._nights()
+        for item in nights.values():
+            if item.extra["duration_minutes"] < 45:
+                self.assertLess(item.score, 70, f"{item.extra['duration_minutes']} min scored {item.score}")
+
+    def test_nearest_new_moon_looks_both_ways(self):
+        just_after = datetime(2026, 9, 12, 12, tzinfo=PACIFIC)
+        when, offset = astronomy.nearest_new_moon(just_after)
+        self.assertLess(offset, 0, "the new moon a day earlier is the nearest one")
+        self.assertLess(abs(offset), 3)
+
+
+class TestMeteorPeakNights(unittest.TestCase):
+    def test_a_shower_is_one_night_not_a_date_range(self):
+        zone = const.ZONES_BY_ID["carrizo_plain"]
+        built = events.build_meteor_opportunities(
+            zone, datetime(2026, 8, 1, 12, tzinfo=PACIFIC), 30, cloud_lookup=lambda m: 10.0
+        )
+        self.assertTrue(built)
+        for item in built:
+            span_hours = (item.end - item.start).total_seconds() / 3600
+            self.assertLess(span_hours, 14, "a peak is one night, not a multi-week window")
+            self.assertGreater(item.extra["peak_altitude"], events.MIN_RADIANT_ALTITUDE)
+
+    def test_the_three_major_showers_carry_their_published_rates(self):
+        rates = {item["name"]: item["zhr"] for item in events.METEOR_SHOWERS}
+        self.assertEqual(rates["Quadrantids"], 120)
+        self.assertEqual(rates["Perseids"], 100)
+        self.assertEqual(rates["Geminids"], 150)
+
+    def test_peak_dates_are_the_night_of_maximum(self):
+        dates = {item["name"]: (item["month"], item["day"]) for item in events.METEOR_SHOWERS}
+        self.assertEqual(dates["Quadrantids"], (1, 3))
+        self.assertEqual(dates["Perseids"], (8, 12))
+        self.assertEqual(dates["Geminids"], (12, 13))
+
+
+class TestPrunedParks(unittest.TestCase):
+    def test_only_the_parks_worth_driving_to_remain(self):
+        keys = {park.key for park in parks.PARKS}
+        self.assertEqual(len(keys), 10)
+        for required in ("carrizo_plain_nm", "devils_postpile_nm", "giant_sequoia_nm",
+                         "channel_islands_np", "pinnacles_np", "yosemite_np",
+                         "death_valley_np", "sequoia_np", "kings_canyon_np", "joshua_tree_np"):
+            self.assertIn(required, keys)
+        for pruned in ("cesar_chavez_nm", "sand_to_snow_nm", "mojave_preserve", "muir_woods_nm"):
+            self.assertNotIn(pruned, keys)

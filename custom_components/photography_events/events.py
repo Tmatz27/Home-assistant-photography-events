@@ -15,6 +15,7 @@ from .const import (
     CATEGORY_ASTRO,
     CATEGORY_MARINE,
     CATEGORY_PARKS,
+    CATEGORY_RARE,
     CATEGORY_SUNSET,
     DEFAULT_HOME,
     GEAR_PROFILES,
@@ -22,7 +23,7 @@ from .const import (
     ZONES_BY_ID,
 )
 from .parks import active_windows as active_park_windows
-from .seasonal import active_windows
+from .phenomena import PRECISION_HORIZON_DAYS, active_windows
 from .weather_scoring import score_sky
 from .wildlife import describe_drive, estimate_drive_hours, nearest_zone
 
@@ -30,7 +31,7 @@ from .wildlife import describe_drive, estimate_drive_hours, nearest_zone
 MIN_METEOR_ZHR = 60
 
 METEOR_SHOWERS: tuple[dict, ...] = (
-    {"name": "Quadrantids", "month": 1, "day": 3, "zhr": 110, "ra_deg": 230.1, "dec_deg": 49.0},
+    {"name": "Quadrantids", "month": 1, "day": 3, "zhr": 120, "ra_deg": 230.1, "dec_deg": 49.0},
     {"name": "Perseids", "month": 8, "day": 12, "zhr": 100, "ra_deg": 48.0, "dec_deg": 58.0},
     {"name": "Geminids", "month": 12, "day": 13, "zhr": 150, "ra_deg": 112.3, "dec_deg": 33.0},
     # Below the alert floor, but kept for the planning calendar.
@@ -45,6 +46,26 @@ MAX_MOON_ILLUMINATION = 0.40
 MIN_RADIANT_ALTITUDE = 30.0
 MAX_ASTRO_CLOUD = 25.0
 MIN_CORE_ALTITUDE = 15.0
+MOON_SUPPRESSION = 0.20
+
+# --- The lunar look-ahead ---------------------------------------------------
+#
+# The failure this exists to prevent: a cloudless night with a 72% moon scoring
+# in the nineties and shouting "go now", when the new moon nine days later is a
+# categorically better night at the same site. Cloud cover is a forecast of
+# tonight; moon phase is a near-certainty about next week, and a scoring model
+# that only looks at tonight will always mis-rank the two.
+MOON_LOOKAHEAD_DAYS = 10
+MOON_LOOKAHEAD_ILLUMINATION = 0.25
+MOON_LOOKAHEAD_CEILING = 75
+
+# "Drop everything" is reserved, not earned by good cloud alone.
+NEW_MOON_PROXIMITY_DAYS = 3.0
+DROP_EVERYTHING_SCORE = 90
+DROP_EVERYTHING_MAX_CLOUD = 15.0
+
+# Below this a night is not worth a row of its own.
+MIN_ASTRO_SCORE = 60
 
 # How long a sighting stays worth acting on after the last report.
 SIGHTING_WINDOW_HOURS = 36
@@ -196,7 +217,15 @@ def build_meteor_opportunities(
     cloud_lookup=None,
     alert_only: bool = True,
 ) -> list[Opportunity]:
-    """Meteor shower peaks cross-checked against radiant height and moonlight."""
+    """The single peak night of each shower worth driving for.
+
+    A shower is not a fortnight-long event. Rates climb and collapse around one
+    night, and plotting the broad activity period as a date range is how a
+    calendar ends up saying "Perseids" for three weeks and meaning nothing on
+    any of them. Each entry here is the night of maximum, and the window inside
+    it is the intersection of darkness, radiant elevation and moonlight - the
+    same engine the Milky Way uses, pointed at the radiant.
+    """
     lat, lon = _zone_coords(zone)
     found: list[Opportunity] = []
     horizon = now + timedelta(days=horizon_days)
@@ -208,39 +237,57 @@ def build_meteor_opportunities(
             peak = datetime(year, shower["month"], shower["day"], 12, tzinfo=now.tzinfo)
             if not now - timedelta(days=1) <= peak <= horizon:
                 continue
-            window = astro.dark_window(peak, lat, lon)
+
+            window = astro.astro_shooting_window(
+                peak,
+                lat,
+                lon,
+                ra_deg=shower["ra_deg"],
+                dec_deg=shower["dec_deg"],
+                min_target_altitude=MIN_RADIANT_ALTITUDE,
+                max_moon_illumination=MAX_MOON_ILLUMINATION,
+            )
             if window is None:
+                # Radiant never clears 30 degrees in darkness, or the moon owns
+                # the whole night. Either way there is nothing to alert on.
                 continue
 
-            radiant_alt = astro.max_altitude_in_window(
-                shower["ra_deg"], shower["dec_deg"], window.start, window.end, lat, lon
-            )
-            illumination, _, _ = astro.moon_illumination(window.start)
             cloud = cloud_lookup(window.start) if cloud_lookup else None
+            reasons = [
+                f"ZHR ~{shower['zhr']}/hr at maximum",
+                f"radiant peaks {round(window.peak_target_altitude)}deg",
+                f"{window.duration_minutes} min above {round(MIN_RADIANT_ALTITUDE)}deg in darkness",
+            ]
 
-            reasons = [f"ZHR ~{shower['zhr']}/hr", f"radiant peaks {round(radiant_alt)}deg"]
-            score = 50
-            if radiant_alt >= MIN_RADIANT_ALTITUDE:
-                score += 25
-            else:
-                score -= 20
-                reasons.append("radiant stays low here")
-            if illumination <= MAX_MOON_ILLUMINATION:
-                score += 20
-                reasons.append(f"moon only {round(illumination * 100)}% lit")
-            else:
-                score -= 25
-                reasons.append(f"moon {round(illumination * 100)}% lit will wash it out")
+            score = 55
+            score += min(20, int(window.peak_target_altitude / 3))
+            if window.moon_illumination <= 0.10:
+                score += 15
+                reasons.append("essentially no moon")
+            elif window.moon_illumination <= MAX_MOON_ILLUMINATION:
+                score += 8
+                reasons.append(f"moon {round(window.moon_illumination * 100)}% lit")
+            if window.duration_minutes >= 180:
+                score += 10
+            elif window.duration_minutes < 60:
+                score -= 15
+                reasons.append("short radiant window")
+            if zone.get("bortle", 5) <= 3:
+                score += 8
+                reasons.append(f"Bortle {zone['bortle']} skies")
             if cloud is not None:
                 if cloud <= MAX_ASTRO_CLOUD:
-                    score += 15
+                    score += 12
                     reasons.append(f"{round(cloud)}% cloud")
                 else:
-                    score -= 20
+                    score -= 25
                     reasons.append(f"{round(cloud)}% cloud forecast")
-            if zone.get("bortle", 5) <= 3:
-                score += 10
-                reasons.append(f"Bortle {zone['bortle']} skies")
+
+            ceiling, ceiling_reasons = lunar_ceiling(
+                peak, window.moon_illumination, _moon_down_throughout(window, lat, lon), cloud
+            )
+            score = min(int(max(0, min(100, score))), ceiling)
+            reasons.extend(ceiling_reasons)
 
             found.append(
                 Opportunity(
@@ -251,16 +298,74 @@ def build_meteor_opportunities(
                     zone_name=zone["name"],
                     start=window.start,
                     end=window.end,
-                    score=int(max(0, min(100, score))),
-                    detail="Best after midnight once the radiant climbs. " + ", ".join(reasons) + ".",
+                    score=score,
+                    detail=(
+                        f"Peak night only. Radiant above {round(MIN_RADIANT_ALTITUDE)}deg in darkness "
+                        f"for {window.duration_minutes} min. " + ", ".join(reasons) + "."
+                    ),
                     drive_hours=zone["drive_hours"],
                     reasons=reasons,
                     gear=_gear_for(CATEGORY_ASTRO),
                     latitude=zone["latitude"],
                     longitude=zone["longitude"],
+                    extra={
+                        "duration_minutes": window.duration_minutes,
+                        "limited_by": window.limited_by,
+                        "zhr": shower["zhr"],
+                        "moon_illumination": round(window.moon_illumination, 3),
+                        "peak_altitude": round(window.peak_target_altitude, 1),
+                        "score_ceiling": ceiling,
+                    },
                 )
             )
     return found
+
+
+def lunar_ceiling(
+    night: datetime,
+    illumination: float,
+    moon_down_all_window: bool,
+    cloud: float | None,
+) -> tuple[int, list[str]]:
+    """The highest score a night is allowed, given what is coming.
+
+    Two separate caps, for two separate reasons:
+
+    - **A better night is imminent.** If a new moon falls inside the next ten
+      days and tonight is washed by more than a quarter-lit moon, tonight is
+      not a ninety-something however clear it is. It is capped at 75 - still
+      listed, still worth knowing, but never a drop-everything.
+    - **Ninety-plus is reserved.** It means darkness that will not come again
+      for a month: within three days of new moon, or a moon that is down for
+      the whole window, *and* genuinely clear skies. Anything else tops out at
+      89 no matter what the components add up to.
+    """
+    reasons: list[str] = []
+    ceiling = 100
+
+    upcoming = astro.next_new_moon(night, horizon_days=int(MOON_LOOKAHEAD_DAYS))
+    if upcoming is not None and illumination > MOON_LOOKAHEAD_ILLUMINATION:
+        ceiling = MOON_LOOKAHEAD_CEILING
+        days = max(1, round((upcoming - night).total_seconds() / 86400))
+        reasons.append(f"new moon in {days} days will be far darker - worth waiting")
+
+    _, offset_days = astro.nearest_new_moon(night)
+    near_new = abs(offset_days) <= NEW_MOON_PROXIMITY_DAYS
+    if not (near_new or moon_down_all_window):
+        ceiling = min(ceiling, DROP_EVERYTHING_SCORE - 1)
+    if cloud is None or cloud >= DROP_EVERYTHING_MAX_CLOUD:
+        ceiling = min(ceiling, DROP_EVERYTHING_SCORE - 1)
+
+    return ceiling, reasons
+
+
+def _moon_down_throughout(window, lat: float, lon: float) -> bool:
+    """Whether the Moon stays below the horizon for the whole window."""
+    span = window.end - window.start
+    return all(
+        astro.moon_altitude(window.start + span * fraction, lat, lon) < 0
+        for fraction in (0.0, 0.25, 0.5, 0.75, 1.0)
+    )
 
 
 def build_milky_way_opportunities(
@@ -269,43 +374,94 @@ def build_milky_way_opportunities(
     horizon_days: int,
     cloud_lookup=None,
 ) -> list[Opportunity]:
-    """Nights the galactic core clears the horizon in genuine darkness."""
+    """Nights the galactic core is actually shootable, and for how long.
+
+    The window is the intersection of darkness, core elevation and moonlight -
+    never the span of astronomical night. In September from California the core
+    is below the ridgeline by half past ten, so a dusk-to-dawn window overstates
+    the real opportunity roughly fivefold and sends you out on the wrong night.
+    """
     lat, lon = _zone_coords(zone)
     found: list[Opportunity] = []
 
     for offset in range(horizon_days):
         night = now + timedelta(days=offset)
-        # The core is only up during darkness from roughly March to September.
-        if not 3 <= night.month <= 9:
-            continue
-        window = astro.dark_window(night, lat, lon)
+        window = astro.astro_shooting_window(night, lat, lon)
         if window is None:
-            continue
-        illumination, _, _ = astro.moon_illumination(window.start)
-        if illumination > MAX_MOON_ILLUMINATION:
-            continue
-        core_alt = astro.max_altitude_in_window(
-            astro.GALACTIC_CORE_RA_DEG, astro.GALACTIC_CORE_DEC_DEG, window.start, window.end, lat, lon
-        )
-        if core_alt < MIN_CORE_ALTITUDE:
             continue
 
         cloud = cloud_lookup(window.start) if cloud_lookup else None
-        score = 45 + min(30, int(core_alt))
-        reasons = [f"core reaches {round(core_alt)}deg", f"moon {round(illumination * 100)}% lit"]
-        if zone.get("bortle", 5) <= 2:
-            score += 20
-            reasons.append(f"Bortle {zone['bortle']} - about as dark as California gets")
-        elif zone.get("bortle", 5) <= 3:
+        moon_down = _moon_down_throughout(window, lat, lon)
+
+        score = 40
+        reasons = [
+            f"core peaks at {round(window.peak_target_altitude)}deg",
+            f"{window.duration_minutes} min of usable darkness",
+        ]
+        score += min(25, int(window.peak_target_altitude))
+        # Duration cuts both ways. A twenty-minute slot between the end of
+        # twilight and the core dropping into the haze is not a good night with
+        # a caveat - it is barely worth the drive, and scoring it in the
+        # eighties is how this thing loses trust.
+        if window.duration_minutes >= 180:
+            score += 15
+        elif window.duration_minutes >= 120:
             score += 10
-            reasons.append(f"Bortle {zone['bortle']} skies")
+        elif window.duration_minutes >= 75:
+            score += 5
+        elif window.duration_minutes >= 45:
+            score -= 10
+            reasons.append("short window - set up before dark")
+        else:
+            score -= 25
+            reasons.append(f"only {window.duration_minutes} min - marginal")
+
+        if window.moon_illumination <= 0.05:
+            score += 10
+            reasons.append("no moon at all")
+        elif window.moon_illumination <= MOON_SUPPRESSION:
+            score += 5
+            reasons.append(f"moon only {round(window.moon_illumination * 100)}% lit")
+        elif moon_down:
+            score += 5
+            reasons.append("moon down for the whole window")
+        else:
+            reasons.append(f"moon {round(window.moon_illumination * 100)}% lit")
+
+        bortle = zone.get("bortle", 5)
+        if bortle <= 2:
+            score += 15
+            reasons.append(f"Bortle {bortle} - about as dark as California gets")
+        elif bortle <= 3:
+            score += 8
+            reasons.append(f"Bortle {bortle} skies")
+
         if cloud is not None:
-            if cloud <= MAX_ASTRO_CLOUD:
-                score += 10
+            if cloud <= DROP_EVERYTHING_MAX_CLOUD:
+                score += 12
                 reasons.append(f"{round(cloud)}% cloud")
-            else:
+            elif cloud <= MAX_ASTRO_CLOUD:
+                score += 6
+                reasons.append(f"{round(cloud)}% cloud")
+            elif cloud > 40:
                 score -= 25
                 reasons.append(f"{round(cloud)}% cloud forecast")
+
+        ceiling, ceiling_reasons = lunar_ceiling(night, window.moon_illumination, moon_down, cloud)
+        score = min(int(max(0, min(100, score))), ceiling)
+        reasons.extend(ceiling_reasons)
+
+        if score < MIN_ASTRO_SCORE:
+            continue
+
+        detail = (
+            f"Core above {round(astro.MIN_CORE_ALTITUDE_DEG)}deg in full darkness for "
+            f"{window.duration_minutes} min. " + ", ".join(reasons) + "."
+        )
+        if window.is_brief and window.limited_by == "target":
+            detail = (
+                f"Brief window: core sets early at {window.target_sets.strftime('%H:%M')}. " + detail
+            )
 
         found.append(
             Opportunity(
@@ -316,48 +472,120 @@ def build_milky_way_opportunities(
                 zone_name=zone["name"],
                 start=window.start,
                 end=window.end,
-                score=int(max(0, min(100, score))),
-                detail="Core visible during full darkness. " + ", ".join(reasons) + ".",
+                score=score,
+                detail=detail,
                 drive_hours=zone["drive_hours"],
                 reasons=reasons,
                 gear=_gear_for(CATEGORY_ASTRO),
                 latitude=zone["latitude"],
                 longitude=zone["longitude"],
+                extra={
+                    "duration_minutes": window.duration_minutes,
+                    "limited_by": window.limited_by,
+                    "target_sets": window.target_sets.isoformat() if window.target_sets else None,
+                    "moon_illumination": round(window.moon_illumination, 3),
+                    "peak_altitude": round(window.peak_target_altitude, 1),
+                    "score_ceiling": ceiling,
+                },
             )
         )
     return found
 
 
-def build_seasonal_opportunities(now: datetime, horizon_days: int) -> list[Opportunity]:
-    """Wildlife and botanical windows, for the planning calendar."""
+# A background season is planning material and nothing more. Only a concrete
+# peak window may reach the alert threshold, and only as it opens.
+SEASON_SCORE = 45
+PEAK_UPCOMING_SCORE = 65
+PEAK_UNDERWAY_SCORE = 78
+UNCONFIRMED_PENALTY = 8
+
+
+def build_seasonal_opportunities(
+    now: datetime,
+    horizon_days: int,
+    home: tuple[float, float] | None = None,
+) -> list[Opportunity]:
+    """Natural phenomena, told at the precision the distance justifies.
+
+    Beyond thirty days an entry reports its background season and scores as
+    planning material - "gray whales, December to May" is the most honest thing
+    anyone can say four months out, and dressing it up as an appointment would
+    be a lie. Inside thirty days it switches to the concrete peak window and
+    carries the locations, gear and behaviour notes, and only then can it reach
+    the alert threshold.
+
+    The alert fires as the window *opens*, not every day it is open: the
+    48-hour action window admits an opportunity by its start date, so a
+    five-week rut peak announces itself once rather than for thirty-five
+    consecutive days.
+    """
+    origin = home or DEFAULT_HOME
     found: list[Opportunity] = []
-    for window in active_windows(now, horizon_days):
-        zone = ZONES_BY_ID.get(window["zone_id"])
-        if zone is None:
-            continue
-        start = datetime.combine(window["start"], datetime.min.time()).replace(tzinfo=now.tzinfo)
-        end = datetime.combine(window["end"], datetime.max.time()).replace(tzinfo=now.tzinfo)
-        detail = window["detail"]
-        if window["confirm"]:
-            detail += " Timing shifts with the season - confirm current reports before driving."
+
+    for entry in active_windows(now, horizon_days):
+        window = entry["window"]
+        near = entry["precision"] == "peak"
+        drive_hours = estimate_drive_hours(window.latitude, window.longitude, origin)
+
+        if not near:
+            score = SEASON_SCORE
+            detail = (
+                f"{window.name}. Background season: {window.season_range}. Peak window is "
+                f"{entry['start']:%d %b} to {entry['end']:%d %b}; specifics firm up inside "
+                f"{PRECISION_HORIZON_DAYS} days."
+            )
+            reasons = [f"season: {window.season_range}", "too far out for specifics"]
+        else:
+            score = PEAK_UNDERWAY_SCORE if entry["underway"] else PEAK_UPCOMING_SCORE
+            if window.confirm:
+                score -= UNCONFIRMED_PENALTY
+            state = "underway now" if entry["underway"] else f"opens in {entry['days_away']} days"
+            detail = (
+                f"Peak window {entry['start']:%d %b} to {entry['end']:%d %b} ({state}). "
+                f"{window.photo_tips}"
+            )
+            reasons = [
+                state,
+                f"peak of a season that runs {window.season_range}",
+                window.primary_locations[0],
+            ]
+            if window.best_time_of_day:
+                reasons.append(window.best_time_of_day)
+            if window.confirm:
+                reasons.append("timing shifts year to year - confirm before driving")
 
         found.append(
             Opportunity(
-                key=window["key"],
-                title=f"{window['title']} - {zone['name']}",
-                category=window["category"],
-                zone_id=zone["id"],
-                zone_name=zone["name"],
-                start=start,
-                end=end,
-                # Seasonal windows are planning material, never a drop-everything alert.
-                score=60 if window["underway"] else 45,
+                key=entry["key"],
+                title=window.name if near else f"{window.name} (season)",
+                category=window.category,
+                zone_id=window.key,
+                zone_name=window.primary_locations[0],
+                start=datetime.combine(entry["start"], datetime.min.time()).replace(tzinfo=now.tzinfo),
+                end=datetime.combine(entry["end"], datetime.max.time()).replace(tzinfo=now.tzinfo),
+                score=score,
                 detail=detail,
-                drive_hours=zone["drive_hours"],
-                reasons=["underway now"] if window["underway"] else ["upcoming season"],
-                gear=_gear_for(window["category"]),
-                latitude=zone["latitude"],
-                longitude=zone["longitude"],
+                drive_hours=round(drive_hours, 2),
+                reasons=reasons,
+                gear={"glass": window.recommended_gear, "settings": window.photo_tips},
+                latitude=window.latitude,
+                longitude=window.longitude,
+                drive_source="estimate",
+                # A background season is never something to act on today.
+                planning_only=not near,
+                extra={
+                    "precision": entry["precision"],
+                    "season_range": window.season_range,
+                    "peak_start": entry["start"].isoformat(),
+                    "peak_end": entry["end"].isoformat(),
+                    "days_away": entry["days_away"],
+                    "primary_locations": list(window.primary_locations),
+                    "recommended_gear": window.recommended_gear,
+                    "photo_tips": window.photo_tips,
+                    "best_time_of_day": window.best_time_of_day,
+                    "confirm": window.confirm,
+                    "lunar_dependent": window.lunar_dependent,
+                },
             )
         )
     return found

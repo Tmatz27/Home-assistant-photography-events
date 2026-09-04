@@ -46,6 +46,7 @@ from .const import (
     CATEGORY_FOLIAGE,
     CATEGORY_MARINE,
     CATEGORY_PARKS,
+    CATEGORY_RARE,
     CATEGORY_SUNSET,
     CONF_ALERT_SCORE,
     CONF_EBIRD_API_KEY,
@@ -279,7 +280,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             )
 
         seasonal = await self.hass.async_add_executor_job(
-            event_builder.build_seasonal_opportunities, now, CALENDAR_HORIZON_DAYS
+            event_builder.build_seasonal_opportunities, now, CALENDAR_HORIZON_DAYS, self.home
         )
         opportunities.extend(seasonal)
 

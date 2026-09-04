@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from homeassistant.components.calendar import CalendarEntity, CalendarEvent
 from homeassistant.config_entries import ConfigEntry
@@ -42,9 +42,44 @@ class PhotographyCalendar(CoordinatorEntity, CalendarEntity):
 
     @staticmethod
     def _to_calendar_event(item) -> CalendarEvent:
+        """One opportunity as a calendar entry.
+
+        A multi-day window becomes an all-day event and a shooting window keeps
+        its clock times. Home Assistant decides which is which by the type it is
+        handed - dates for all-day, datetimes for timed - so a peak window that
+        runs three weeks does not render as an appointment starting at 00:00 and
+        ending at 23:59, and an 80-minute Milky Way window keeps the only two
+        numbers that matter about it.
+        """
+        summary = item.title
+        if item.extra.get("precision") == "season":
+            summary = f"{item.title} - {item.extra.get('season_range', 'season')}"
+        elif item.extra.get("duration_minutes"):
+            summary = f"{item.title} ({item.extra['duration_minutes']} min)"
+
+        description = item.detail
+        locations = item.extra.get("primary_locations")
+        if locations:
+            description = f"{description}\n\nWhere: " + "; ".join(locations)
+        gear = item.extra.get("recommended_gear") or item.gear.get("glass")
+        if gear:
+            description = f"{description}\n\nGear: {gear}"
+
+        if item.planning_only or (item.end and (item.end - item.start) >= timedelta(hours=24)):
+            end = (item.end or item.start).date() + timedelta(days=1)
+            return CalendarEvent(
+                summary=summary,
+                description=description,
+                location=item.zone_name,
+                start=item.start.date(),
+                # Calendars treat an all-day end as exclusive, so the last day
+                # of a window needs the day after it to actually be included.
+                end=end,
+            )
+
         return CalendarEvent(
-            summary=f"{item.title} ({item.score})",
-            description=item.detail,
+            summary=f"{summary} - {item.score}/100",
+            description=description,
             location=item.zone_name,
             start=item.start,
             end=item.end or item.start,

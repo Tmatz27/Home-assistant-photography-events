@@ -536,3 +536,275 @@ def sun_event(night_of: datetime, lat: float, lon: float, rising: bool) -> datet
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+# --- Shooting windows -------------------------------------------------------
+#
+# The astro window is the *intersection* of three independent conditions, not
+# the span of astronomical darkness. Reporting darkness alone is how a
+# September night in California gets described as an all-night Milky Way
+# window when the galactic core is already below the ridgeline by 22:30.
+#
+# Each condition is solved as an interval by root-finding rather than by
+# sampling on a grid: altitude curves are smooth, so the crossings are exact to
+# the second and cost a fraction of a minute-by-minute scan. The intervals are
+# then intersected.
+
+MIN_CORE_ALTITUDE_DEG = 15.0
+MOON_SUPPRESSION_ILLUMINATION = 0.20
+
+
+@dataclass(frozen=True)
+class Interval:
+    """A closed time span."""
+
+    start: datetime
+    end: datetime
+
+    @property
+    def minutes(self) -> float:
+        return (self.end - self.start).total_seconds() / 60
+
+
+@dataclass(frozen=True)
+class ShootingWindow:
+    """When every condition for a target is satisfied at once."""
+
+    start: datetime
+    end: datetime
+    limited_by: str
+    target_sets: datetime | None
+    darkness_ends: datetime | None
+    moon_rises: datetime | None
+    moon_illumination: float
+    peak_target_altitude: float
+
+    @property
+    def duration_minutes(self) -> int:
+        return int(round((self.end - self.start).total_seconds() / 60))
+
+    @property
+    def is_brief(self) -> bool:
+        """Short enough that the drive needs planning around it."""
+        return self.duration_minutes < 120
+
+
+def intervals_where(
+    altitude_fn,
+    start: datetime,
+    end: datetime,
+    threshold: float,
+    above: bool,
+    step_minutes: int = 4,
+) -> list[Interval]:
+    """Sub-spans of [start, end] on the wanted side of a threshold.
+
+    Built from interpolated threshold crossings, so a boundary is accurate to
+    well under a minute regardless of the sampling step.
+    """
+    crossings = find_altitude_crossings(altitude_fn, start, end, threshold, step_minutes)
+    inside = (altitude_fn(start) > threshold) if above else (altitude_fn(start) < threshold)
+
+    spans: list[Interval] = []
+    opened = start if inside else None
+    for crossing in crossings:
+        entering = crossing.rising if above else not crossing.rising
+        if entering and opened is None:
+            opened = crossing.moment
+        elif not entering and opened is not None:
+            if crossing.moment > opened:
+                spans.append(Interval(opened, crossing.moment))
+            opened = None
+    if opened is not None and end > opened:
+        spans.append(Interval(opened, end))
+    return spans
+
+
+def intersect_intervals(left: list[Interval], right: list[Interval]) -> list[Interval]:
+    """Every span present in both lists."""
+    found: list[Interval] = []
+    for one in left:
+        for other in right:
+            start = max(one.start, other.start)
+            end = min(one.end, other.end)
+            if end > start:
+                found.append(Interval(start, end))
+    return sorted(found, key=lambda span: span.start)
+
+
+def astro_shooting_window(
+    night_of: datetime,
+    lat: float,
+    lon: float,
+    ra_deg: float = GALACTIC_CORE_RA_DEG,
+    dec_deg: float = GALACTIC_CORE_DEC_DEG,
+    min_target_altitude: float = MIN_CORE_ALTITUDE_DEG,
+    max_moon_illumination: float = MOON_SUPPRESSION_ILLUMINATION,
+) -> ShootingWindow | None:
+    """The span where darkness, target elevation and moonlight all cooperate.
+
+    Three conditions, all of which must hold simultaneously:
+
+    - **Darkness**: the Sun below -18 degrees, true astronomical night.
+    - **Elevation**: the target above ``min_target_altitude``, clearing the
+      worst atmospheric extinction and any realistic ridgeline.
+    - **Moonlight**: the Moon below the horizon, or too thin a crescent to
+      matter.
+
+    Returns the longest span satisfying all three, or None when there is no
+    such span - which is the correct answer on a bright-moon night, and one the
+    old dusk-to-dawn window could never give.
+    """
+    # Noon to noon: exactly one dusk and the dawn that follows it. A wider
+    # span would contain two nights, and picking the longest window across it
+    # silently reports *tomorrow's* window under today's date - and pairs it
+    # with the wrong night's moon.
+    search_start = night_of.replace(hour=12, minute=0, second=0, microsecond=0)
+    search_end = search_start + timedelta(hours=24)
+
+    dark = intervals_where(
+        lambda moment: sun_altitude(moment, lat, lon),
+        search_start,
+        search_end,
+        ASTRONOMICAL_TWILIGHT,
+        above=False,
+    )
+    if not dark:
+        return None
+
+    target_ra = math.radians(ra_deg)
+    target_dec = math.radians(dec_deg)
+
+    def target_altitude(moment: datetime) -> float:
+        return horizontal(target_ra, target_dec, moment, lat, lon)[0]
+
+    high = intervals_where(
+        target_altitude,
+        search_start,
+        search_end,
+        math.radians(min_target_altitude),
+        above=True,
+    )
+    if not high:
+        return None
+
+    # Illumination barely moves across one night, so it is read once, at the
+    # middle of the darkness, rather than sampled.
+    midpoint = dark[0].start + (dark[0].end - dark[0].start) / 2
+    illumination, _, _ = moon_illumination(midpoint)
+
+    if illumination < max_moon_illumination:
+        moon_ok = [Interval(search_start, search_end)]
+        moon_rises = None
+    else:
+        moon_ok = intervals_where(
+            lambda moment: moon_altitude(moment, lat, lon),
+            search_start,
+            search_end,
+            0.0,
+            above=False,
+        )
+        rises = find_altitude_crossings(
+            lambda moment: moon_altitude(moment, lat, lon),
+            search_start,
+            search_end,
+            0.0,
+        )
+        moon_rises = next((c.moment for c in rises if c.rising), None)
+    if not moon_ok:
+        return None
+
+    usable = intersect_intervals(intersect_intervals(dark, high), moon_ok)
+    if not usable:
+        return None
+
+    best = max(usable, key=lambda span: span.minutes)
+    # Report the illumination at the window actually chosen, so the figure on
+    # the card always describes the night it is printed against.
+    illumination, _, _ = moon_illumination(best.start + (best.end - best.start) / 2)
+
+    # Which constraint actually closed the window - the difference between
+    # "come back later tonight" and "come back in a week".
+    target_span = next((span for span in high if span.start <= best.end <= span.end + timedelta(seconds=1)), None)
+    dark_span = next((span for span in dark if span.start <= best.end <= span.end + timedelta(seconds=1)), None)
+    target_sets = target_span.end if target_span else None
+    darkness_ends = dark_span.end if dark_span else None
+
+    limited_by = "moonrise"
+    if target_sets is not None and abs((best.end - target_sets).total_seconds()) < 60:
+        limited_by = "target"
+    elif darkness_ends is not None and abs((best.end - darkness_ends).total_seconds()) < 60:
+        limited_by = "dawn"
+
+    peak = max_altitude_in_window(ra_deg, dec_deg, best.start, best.end, lat, lon)
+
+    return ShootingWindow(
+        start=best.start,
+        end=best.end,
+        limited_by=limited_by,
+        target_sets=target_sets,
+        darkness_ends=darkness_ends,
+        moon_rises=moon_rises,
+        moon_illumination=illumination,
+        peak_target_altitude=peak,
+    )
+
+
+def _sun_moon_elongation(moment: datetime) -> float:
+    """Moon minus Sun in ecliptic longitude, wrapped to +/-180 degrees."""
+    days = days_since_j2000(moment)
+    separation = math.degrees(moon_ecliptic(days)[0] - sun_ecliptic_longitude(days))
+    return (separation + 180) % 360 - 180
+
+
+def new_moons_between(start: datetime, end: datetime) -> list[datetime]:
+    """Every new moon in a span, in order."""
+    found: list[datetime] = []
+    step = timedelta(hours=6)
+    previous = start
+    previous_value = _sun_moon_elongation(previous)
+    moment = start + step
+    while moment <= end:
+        value = _sun_moon_elongation(moment)
+        if previous_value <= 0 <= value or previous_value >= 0 >= value:
+            low, high = previous, moment
+            for _ in range(40):
+                middle = low + (high - low) / 2
+                if (_sun_moon_elongation(low) <= 0 <= _sun_moon_elongation(middle)) or (
+                    _sun_moon_elongation(low) >= 0 >= _sun_moon_elongation(middle)
+                ):
+                    high = middle
+                else:
+                    low = middle
+            found.append(low + (high - low) / 2)
+        previous, previous_value, moment = moment, value, moment + step
+    return found
+
+
+def next_new_moon(after: datetime, horizon_days: int = 40) -> datetime | None:
+    """When the Moon next goes new.
+
+    Answers the question that matters more than tonight's cloud cover: is a
+    dramatically better night coming soon?
+    """
+    found = new_moons_between(after, after + timedelta(days=horizon_days))
+    return found[0] if found else None
+
+
+def nearest_new_moon(moment: datetime) -> tuple[datetime | None, float]:
+    """The closest new moon in either direction, and signed days to it.
+
+    Negative days mean it has already passed. Every new moon in a window
+    straddling the date is collected and the closest chosen - taking "the first
+    one after a month ago" instead would skip the most recent one entirely and
+    report a date two weeks out as the nearest.
+
+    Illumination cannot answer this on its own: it is symmetric about new, so
+    it gives the distance but never the direction, and the direction is what
+    decides whether to go tonight or wait.
+    """
+    found = new_moons_between(moment - timedelta(days=20), moment + timedelta(days=20))
+    if not found:
+        return None, float("inf")
+    closest = min(found, key=lambda when: abs((when - moment).total_seconds()))
+    return closest, (closest - moment).total_seconds() / 86400

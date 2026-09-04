@@ -66,7 +66,8 @@
         "birds": "Rare birds \u2014 needs an eBird key",
         "blooms": "Wildflower blooms",
         "foliage": "Autumn colour",
-        "parks": "National parks and monuments"
+        "parks": "National parks and monuments",
+        "rare_phenomena": "Rare phenomena \u2014 firefall, grunion runs, monarch roosts, crane fly-ins"
       }
     },
     "routing_mode": {

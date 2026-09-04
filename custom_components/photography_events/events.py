@@ -161,6 +161,8 @@ class Opportunity:
                 row["source_url"] = self.source_url
 
         # Everything the expandable detail needs, and nothing it does not.
+        if self.extra.get("verify_urls"):
+            row["verify"] = self.extra["verify_urls"]
         for key in (
             "precision",
             "season_range",
@@ -665,6 +667,9 @@ def build_seasonal_opportunities(
                     "best_time_of_day": window.best_time_of_day,
                     "confirm": window.confirm,
                     "lunar_dependent": window.lunar_dependent,
+                    # Who actually counts these animals, so a date can be
+                    # checked against the surveyors before a trip is booked.
+                    "verify_urls": list(window.verify_urls),
                 },
             )
         )

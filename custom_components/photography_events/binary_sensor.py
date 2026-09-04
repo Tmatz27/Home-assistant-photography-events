@@ -95,6 +95,9 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
             "primary_locations": top.extra.get("primary_locations"),
             "best_time_of_day": top.extra.get("best_time_of_day"),
             "season_range": top.extra.get("season_range"),
+            "evidence": top.extra.get("evidence"),
+            "verification": top.extra.get("verification"),
+            "verify_urls": top.extra.get("verify_urls"),
             "sources": (self.coordinator.data or {}).get("sources", {}),
         }
 

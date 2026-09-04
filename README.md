@@ -60,6 +60,24 @@ is whether something is being seen right now, what the tide is doing, and
 whether the road in is open - and for anything biological those are the better
 questions anyway.
 
+### Where the ground truth comes from
+
+Every entry names the people who actually survey it, and the card links them
+under **Check before you book**:
+
+| Source | What it gives |
+| --- | --- |
+| [Whale Safe](https://whalesafe.com/) | Daily whale-presence rating for the Santa Barbara Channel and San Francisco, from hydrophones, trained observers and a habitat model |
+| [NOAA Fisheries](https://www.fisheries.noaa.gov/west-coast/science-data/gray-whale-population-abundance) | Gray whale abundance from Granite Canyon and mother-calf counts from Piedras Blancas |
+| [Whale Alert](https://www.fisheries.noaa.gov/resource/tool-app/whale-alert) · [Pacific Whale Foundation](https://pacificwhale.org/what-we-do/research/learn-about-marine-life/whale-dolphin-tracker-live-sightins-map/) | Crowdsourced sightings from operators and citizen scientists |
+| [CDFW](https://wildlife.ca.gov/Conservation/Mammals/Black-Bear) · [Bear Tracker](https://keepbearswild.org/bear-tracker/) | Black bear denning and emergence timing, and live sightings |
+| [Western Monarch Count](https://westernmonarchcount.org/) · [eBird](https://ebird.org/) | Roost counts and week-by-week arrival charts |
+
+**Whale Safe is linked rather than read.** Its API is real but not public -
+access is by request to the Benioff Ocean Science Lab. Rather than invent an
+endpoint, the integration links to it and is shaped so a key drops straight in;
+if you obtain one it is the single best corroboration source on this coast.
+
 ### Seasons versus peak windows
 
 Every natural event carries two different facts, and the integration keeps them

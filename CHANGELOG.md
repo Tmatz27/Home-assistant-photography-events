@@ -1,5 +1,32 @@
 # Changelog
 
+## 0.7.1
+
+Every claim now names who to check it against, and two corrections to the data.
+
+- **Verification sources on every entry.** The honest answer to "are these
+  dates right" is "here are the people who actually count the animals", so each
+  window carries them and the card links them under *Check before you book*:
+  Whale Safe's daily acoustic-plus-visual presence rating, NOAA Fisheries'
+  gray whale abundance and calf-production counts, Whale Alert, the Pacific
+  Whale Foundation tracker, CDFW, the Western Monarch Count, eBird bar charts
+- **Whale Safe is linked, not read.** Its API exists but is not public - access
+  is by request to the Benioff Ocean Science Lab. Rather than invent an
+  endpoint, the integration links to it and is shaped so a real key drops in.
+  It is the strongest corroboration source on this coast
+- **Common dolphin calving added.** Unlike the baleen whales, which calve in the
+  Baja lagoons, common dolphins give birth off California, peaking in winter,
+  with newborns in pods running to thousands. A genuine California birthing
+  event that was missing
+- **Gray whale northbound is described as what it is** - a nursery corridor
+  rather than a birthing ground, with mothers hugging the kelp and surf to keep
+  calves from the transient orcas waiting in deeper water
+- **Black bear cubs corrected.** CDFW puts den emergence at March to May; the
+  window opened on 10 May and missed most of it. Now 15 April
+- Humpback and blue whale background seasons corrected to NOAA's feeding
+  seasons (March-November and May-October)
+- 137 Python tests and 73 JavaScript ones
+
 ## 0.7.0
 
 Answers one question: what stops this integration sending you on a trip that

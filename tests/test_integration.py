@@ -1647,3 +1647,60 @@ class TestParkClosures(unittest.TestCase):
     def test_malformed_payloads_never_raise(self):
         for bad in (None, {}, [], "text", {"data": None}, {"data": [None, 3]}):
             self.assertEqual(verification.parse_nps_alerts(bad), [])
+
+
+class TestVerificationSources(unittest.TestCase):
+    """Every claim carries who to check it against.
+
+    The point is not decoration: the honest answer to "are these dates right"
+    is "here are the people who actually count the animals", and that has to
+    reach the card, not sit in a comment.
+    """
+
+    def test_live_backed_entries_name_who_to_check(self):
+        for window in phenomena.PEAK_WINDOWS:
+            if window.evidence != phenomena.EVIDENCE_LIVE:
+                continue
+            self.assertTrue(
+                window.verify_urls,
+                f"{window.key} depends on live confirmation but names no source",
+            )
+
+    def test_sources_are_real_urls(self):
+        for window in phenomena.PEAK_WINDOWS:
+            for url in window.verify_urls:
+                self.assertTrue(url.startswith("https://"), f"{window.key}: {url}")
+
+    def test_marine_entries_point_at_the_surveyors(self):
+        """Whale Safe, NOAA and the sightings networks are the ground truth on
+        this coast."""
+        marine = [w for w in phenomena.PEAK_WINDOWS if w.category == const.CATEGORY_MARINE]
+        self.assertTrue(marine)
+        for window in marine:
+            joined = " ".join(window.verify_urls)
+            self.assertTrue(
+                any(host in joined for host in ("whalesafe.com", "fisheries.noaa.gov", "pacificwhale.org")),
+                f"{window.key} has no marine survey source",
+            )
+
+    def test_sources_reach_the_card(self):
+        now = datetime(2026, 9, 4, tzinfo=UTC)
+        rows = [item.compact() for item in events.build_seasonal_opportunities(now, 365)]
+        with_sources = [row for row in rows if row.get("verify")]
+        self.assertTrue(with_sources, "verification links never reached the card payload")
+
+    def test_common_dolphins_calve_here_and_are_tracked(self):
+        """Unlike the baleen whales, which calve in Baja, common dolphins give
+        birth off this coast in winter."""
+        dolphin = phenomena.WINDOWS_BY_KEY["common_dolphin_calving"]
+        self.assertEqual(dolphin.category, const.CATEGORY_MARINE)
+        self.assertIn(dolphin.peak_start[0], (12, 1))
+        self.assertEqual(dolphin.evidence, phenomena.EVIDENCE_LIVE)
+        self.assertIn("Delphinus delphis", dolphin.live_taxa)
+
+    def test_bear_cubs_follow_the_cdfw_emergence_window(self):
+        """CDFW puts den emergence at March to May; the old window opened in
+        the second week of May and missed most of it."""
+        bears = phenomena.WINDOWS_BY_KEY["black_bear_cubs"]
+        self.assertLessEqual(bears.peak_start, (4, 30))
+        self.assertIn("wildlife.ca.gov", " ".join(bears.verify_urls))

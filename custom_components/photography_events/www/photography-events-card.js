@@ -1645,6 +1645,33 @@ const WINDOW_LIMIT_REASON = Object.freeze({
   moonrise: "before the moon rises",
 });
 
+// The organisations that actually count these animals, by hostname. Shown as
+// names rather than URLs, because "NOAA Fisheries" tells you whether to trust
+// the link and "fisheries.noaa.gov/west-coast/science-data/..." does not.
+const SOURCE_LABELS = Object.freeze({
+  "whalesafe.com": "Whale Safe (daily acoustic + visual rating)",
+  "fisheries.noaa.gov": "NOAA Fisheries",
+  "pacificwhale.org": "Pacific Whale Foundation sightings",
+  "wildlife.ca.gov": "California Fish and Wildlife",
+  "keepbearswild.org": "Bear Tracker sightings",
+  "tahoebears.org": "Tahoe Interagency Bear Team",
+  "theodorepayne.org": "Theodore Payne wildflower hotline",
+  "californiafallcolor.com": "California Fall Color",
+  "westernmonarchcount.org": "Western Monarch Count",
+  "nps.gov": "National Park Service",
+  "ebird.org": "eBird regional bar charts",
+});
+
+/** A readable name for a verification source. */
+function sourceLabel(url) {
+  try {
+    const host = new URL(url).hostname.replace(/^www\./, "");
+    return SOURCE_LABELS[host] || host;
+  } catch (error) {
+    return url;
+  }
+}
+
 /** First entity whose id starts with a domain and contains a marker. */
 function findEntity(hass, domain, marker) {
   if (!hass?.states) return "";
@@ -2675,6 +2702,14 @@ class PhotographyEventsCard extends HTMLElement {
           <a class="outlook-source" href="${escapeHtml(event.source_url)}" target="_blank" rel="noopener noreferrer">
             <ha-icon icon="mdi:open-in-new"></ha-icon>Original report
           </a>` : ""}
+        ${Array.isArray(event.verify) && event.verify.length ? `
+          <div class="outlook-verify">
+            <span class="outlook-verify-label">Check before you book</span>
+            ${event.verify.map((url) => `
+              <a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">
+                <ha-icon icon="mdi:check-decagram-outline"></ha-icon>${escapeHtml(sourceLabel(url))}
+              </a>`).join("")}
+          </div>` : ""}
       </div>
     `;
   }
@@ -3145,6 +3180,33 @@ class PhotographyEventsCard extends HTMLElement {
         text-decoration: none;
       }
       .outlook-source ha-icon { --mdc-icon-size: 15px; }
+
+      .outlook-verify {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        margin-top: 10px;
+        padding-top: 9px;
+        border-top: 1px dashed var(--pe-border);
+        font-size: 12px;
+      }
+      .outlook-verify-label {
+        flex-basis: 100%;
+        font-size: 10px;
+        text-transform: uppercase;
+        letter-spacing: .09em;
+        font-weight: 700;
+        color: var(--pe-muted);
+      }
+      .outlook-verify a {
+        display: inline-flex;
+        align-items: center;
+        gap: 4px;
+        color: var(--pe-excellent);
+        text-decoration: none;
+      }
+      .outlook-verify a ha-icon { --mdc-icon-size: 14px; }
 
       .pe-legend {
         display: flex;

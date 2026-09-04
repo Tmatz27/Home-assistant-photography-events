@@ -74,6 +74,40 @@ MAX_TRUE_PEAK_DAYS = 40
 LIVE_CORROBORATION_DAYS = 14
 LIVE_CORROBORATION_KM = 120.0
 
+# --- Where to check ---------------------------------------------------------
+#
+# Every entry carries the sources that can confirm or contradict it, because the
+# honest answer to "are these dates right" is "here is who actually counts the
+# animals - go and look before you book".
+#
+# Whale Safe is the strongest of these: a daily whale-presence rating for the
+# Santa Barbara Channel and San Francisco built from hydrophone detections,
+# trained observers and a habitat model. Its API is not public - access is by
+# request to the Benioff Ocean Science Lab - so this integration links to it
+# rather than pretending to read it. If you obtain a key, it is the single best
+# corroboration source on this coast and slots straight into ``verification``.
+SOURCE_WHALE_SAFE = "https://whalesafe.com/"
+SOURCE_NOAA_WHALEWATCH = "https://www.fisheries.noaa.gov/west-coast/marine-mammal-protection/whalewatch"
+SOURCE_WHALE_ALERT = "https://www.fisheries.noaa.gov/resource/tool-app/whale-alert"
+SOURCE_PWF_TRACKER = (
+    "https://pacificwhale.org/what-we-do/research/learn-about-marine-life/"
+    "whale-dolphin-tracker-live-sightins-map/"
+)
+SOURCE_NOAA_GRAY_WHALE = "https://www.fisheries.noaa.gov/west-coast/science-data/gray-whale-population-abundance"
+SOURCE_NOAA_CALF = "https://www.fisheries.noaa.gov/west-coast/science-data/gray-whale-condition-and-calf-production"
+SOURCE_CDFW_BEAR = "https://wildlife.ca.gov/Conservation/Mammals/Black-Bear"
+SOURCE_BEAR_TRACKER = "https://keepbearswild.org/bear-tracker/"
+SOURCE_TAHOE_BEARS = "https://www.tahoebears.org/learn-more"
+SOURCE_THEODORE_PAYNE = "https://theodorepayne.org/wildflower-hotline/"
+SOURCE_CA_FALL_COLOR = "https://www.californiafallcolor.com/"
+SOURCE_NPS_YOSEMITE_FIREFALL = "https://www.nps.gov/yose/planyourvisit/horsetailfall.htm"
+SOURCE_CDFW_GRUNION = "https://wildlife.ca.gov/Fishing/Ocean/Regulations/Grunion"
+SOURCE_MONARCH_COUNT = "https://westernmonarchcount.org/"
+SOURCE_CDFW_WOODBRIDGE = "https://wildlife.ca.gov/Lands/Places-to-Visit/Woodbridge-ER"
+# eBird's regional bar charts show arrival and departure week by week, which is
+# the closest thing to a published peak for a bird that nobody surveys daily.
+SOURCE_EBIRD_CRANE = "https://ebird.org/species/sancra"
+
 # Inside this many days the calendar stops speaking in seasons and starts
 # giving concrete windows, locations and gear. Beyond it, a vague answer is the
 # honest one - weather models do not reach, and animals do not read calendars.
@@ -101,6 +135,9 @@ class PeakWindow:
     evidence: str = EVIDENCE_STATIC
     # Scientific names whose recent sightings corroborate this window.
     live_taxa: tuple[str, ...] = ()
+    # Who actually counts these animals. Shown on the card so a date can be
+    # checked against the people doing the surveying before a trip is booked.
+    verify_urls: tuple[str, ...] = ()
 
     @property
     def peak_days(self) -> int:
@@ -150,6 +187,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Sunset, roughly 17:15-17:40",
         confirm=True,
         evidence=EVIDENCE_STATIC,
+        verify_urls=(SOURCE_NPS_YOSEMITE_FIREFALL,),
     ),
     PeakWindow(
         key="grunion_run",
@@ -186,6 +224,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         # on their own, which is the only honest way to represent a phenomenon
         # that happens on four nights a month, not across seventy-five days.
         evidence=EVIDENCE_STATIC,
+        verify_urls=(SOURCE_CDFW_GRUNION,),
     ),
     PeakWindow(
         key="pismo_monarchs",
@@ -206,6 +245,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Cold mornings before the roost warms and disperses",
         evidence=EVIDENCE_LIVE,
         live_taxa=("Danaus plexippus",),
+        verify_urls=(SOURCE_MONARCH_COUNT,),
     ),
     PeakWindow(
         key="sandhill_crane_flyin",
@@ -229,6 +269,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Last hour of light and the half hour after",
         evidence=EVIDENCE_LIVE,
         live_taxa=("Antigone canadensis",),
+        verify_urls=(SOURCE_CDFW_WOODBRIDGE, SOURCE_EBIRD_CRANE),
     ),
     # --- Marine -------------------------------------------------------------
     PeakWindow(
@@ -250,6 +291,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Morning, before the afternoon wind builds chop",
         evidence=EVIDENCE_LIVE,
         live_taxa=("Eschrichtius robustus",),
+        verify_urls=(SOURCE_NOAA_GRAY_WHALE, SOURCE_WHALE_SAFE, SOURCE_WHALE_ALERT),
     ),
     PeakWindow(
         key="gray_whale_northbound",
@@ -263,13 +305,18 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         primary_locations=("Shell Beach", "Morro Bay bluffs", "Big Sur coastal turnouts"),
         recommended_gear="100-400mm telephoto, polariser, tripod or monopod on the bluff",
         photo_tips=(
-            "Mothers hug the shallows and the surf kelp to keep calves away from orcas, which "
-            "puts them far closer to shore than the southbound adults. This is the best "
-            "land-based whale photography of the year on this coast."
+            "California is a nursery corridor rather than a birthing ground - the calves are born "
+            "in the Baja lagoons and brought north past here. Mothers hug the shallows and the surf "
+            "kelp to keep them away from the transient orcas waiting in the deeper water, which puts "
+            "them far closer to shore than the southbound adults and makes this the best land-based "
+            "whale photography of the year on this coast. NOAA counts the mother-calf pairs from "
+            "Piedras Blancas Light Station, so their season totals are the ground truth for how the "
+            "year is actually going."
         ),
         best_time_of_day="Morning through early afternoon",
         evidence=EVIDENCE_LIVE,
         live_taxa=("Eschrichtius robustus",),
+        verify_urls=(SOURCE_NOAA_CALF, SOURCE_NOAA_GRAY_WHALE, SOURCE_WHALE_ALERT),
     ),
     PeakWindow(
         key="transient_orca_hunt",
@@ -290,12 +337,13 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Full-day boat charter; hunts run late morning onward",
         evidence=EVIDENCE_LIVE,
         live_taxa=("Orcinus orca",),
+        verify_urls=(SOURCE_WHALE_SAFE, SOURCE_WHALE_ALERT, SOURCE_PWF_TRACKER),
     ),
     PeakWindow(
         key="blue_whale_feeding",
         name="Blue whale feeding aggregation",
         category=CATEGORY_MARINE,
-        season_range="June to October; watch window mid-Jul to mid-Sep",
+        season_range="May to October (NOAA feeding season); watch window mid-Jul to mid-Sep",
         peak_start=(7, 15),
         peak_end=(9, 10),
         latitude=34.2486,
@@ -310,12 +358,13 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Full-day boat charter",
         evidence=EVIDENCE_LIVE,
         live_taxa=("Balaenoptera musculus",),
+        verify_urls=(SOURCE_WHALE_SAFE, SOURCE_NOAA_WHALEWATCH, SOURCE_WHALE_ALERT),
     ),
     PeakWindow(
         key="humpback_lunge_feeding",
         name="Humpback lunge feeding",
         category=CATEGORY_MARINE,
-        season_range="May to November; watch window Aug-mid Oct",
+        season_range="March to November (NOAA feeding season); watch window Aug-mid Oct",
         peak_start=(8, 1),
         peak_end=(10, 15),
         latitude=35.1780,
@@ -330,6 +379,33 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Morning, calm water",
         evidence=EVIDENCE_LIVE,
         live_taxa=("Megaptera novaeangliae",),
+        verify_urls=(SOURCE_WHALE_SAFE, SOURCE_WHALE_ALERT, SOURCE_PWF_TRACKER),
+    ),
+    PeakWindow(
+        key="common_dolphin_calving",
+        name="Common dolphin calving in the mega-pods",
+        category=CATEGORY_MARINE,
+        season_range="Winter, after a 10-11 month gestation",
+        peak_start=(12, 15),
+        peak_end=(2, 28),
+        latitude=34.2486,
+        longitude=-119.2642,
+        primary_locations=(
+            "Santa Barbara Channel (boat from Ventura or Santa Barbara)",
+            "Channel Islands crossings",
+        ),
+        recommended_gear="70-200mm on a fast body, second body at 24-70mm, no tripod on a boat",
+        photo_tips=(
+            "Unlike the big baleen whales, which calve in the Baja lagoons, common dolphins give "
+            "birth off this coast - calving peaks in winter and newborns are barely a metre long, "
+            "swimming in echelon position beside the mother inside pods that can run to thousands. "
+            "Shoot the pod for scale and the calf pairs for the story. Fast shutter and continuous "
+            "AF; the bow-riders come close enough for a wide lens."
+        ),
+        best_time_of_day="Morning boat trips, calm water",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Delphinus delphis", "Delphinus capensis"),
+        verify_urls=(SOURCE_PWF_TRACKER, SOURCE_WHALE_ALERT),
     ),
     # --- Terrestrial mammals ------------------------------------------------
     PeakWindow(
@@ -423,8 +499,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         key="black_bear_cubs",
         name="Black bear sows with new cubs",
         category=CATEGORY_MAMMALS,
-        season_range="April to July",
-        peak_start=(5, 10),
+        season_range="March to July; CDFW puts den emergence at March-May",
+        peak_start=(4, 15),
         peak_end=(6, 10),
         latitude=37.7460,
         longitude=-119.5930,
@@ -434,13 +510,16 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         recommended_gear="400mm+ telephoto; keep the legal 50 yards and let the lens close it",
         photo_tips=(
-            "Sows bring newborn cubs onto the fresh meadow sedge to graze. Shoot from the "
-            "boardwalks and roads at dawn before the meadows fill with people. Never position "
-            "yourself between a sow and her cubs."
+            "Cubs are born in the den in January and February and emerge with the sow between "
+            "March and May at roughly five to seven pounds, per CDFW - later in Yosemite Valley "
+            "than at lower elevations. They graze the fresh meadow sedge and stay very close to "
+            "the sow, climbing at any alarm. Shoot from the boardwalks and roads at dawn before "
+            "the meadows fill. Never position yourself between a sow and her cubs."
         ),
         best_time_of_day="Dawn, before the meadows fill",
         evidence=EVIDENCE_STATIC,
         live_taxa=("Ursus americanus",),
+        verify_urls=(SOURCE_CDFW_BEAR, SOURCE_BEAR_TRACKER, SOURCE_TAHOE_BEARS),
     ),
     # --- Autumn colour, by elevation tier -----------------------------------
     PeakWindow(
@@ -466,6 +545,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Dawn for still reflections, backlight late afternoon",
         confirm=True,
         evidence=EVIDENCE_LIVE,
+        verify_urls=(SOURCE_CA_FALL_COLOR,),
     ),
     PeakWindow(
         key="aspen_tier2_mid",
@@ -486,6 +566,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Dawn for reflections",
         confirm=True,
         evidence=EVIDENCE_LIVE,
+        verify_urls=(SOURCE_CA_FALL_COLOR,),
     ),
     PeakWindow(
         key="aspen_tier3_north",
@@ -506,6 +587,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Overcast is fine; backlit late afternoon is better",
         confirm=True,
         evidence=EVIDENCE_LIVE,
+        verify_urls=(SOURCE_CA_FALL_COLOR,),
     ),
     # --- Blooms -------------------------------------------------------------
     PeakWindow(
@@ -527,6 +609,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="First and last hour of light",
         confirm=True,
         evidence=EVIDENCE_LIVE,
+        verify_urls=(SOURCE_THEODORE_PAYNE,),
     ),
     PeakWindow(
         key="bloom_death_valley",
@@ -547,6 +630,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="First and last hour of light",
         confirm=True,
         evidence=EVIDENCE_LIVE,
+        verify_urls=(SOURCE_THEODORE_PAYNE,),
     ),
     PeakWindow(
         key="bloom_antelope_valley",
@@ -570,6 +654,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="Still mid-morning for open flowers, backlit at sunset",
         confirm=True,
         evidence=EVIDENCE_LIVE,
+        verify_urls=(SOURCE_THEODORE_PAYNE,),
     ),
     PeakWindow(
         key="bloom_carrizo_plain",
@@ -595,6 +680,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         best_time_of_day="First and last hour; the ridges band best in low side light",
         confirm=True,
         evidence=EVIDENCE_LIVE,
+        verify_urls=(SOURCE_THEODORE_PAYNE,),
     ),
 )
 

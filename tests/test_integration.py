@@ -12,7 +12,7 @@ import math
 import sys
 import types
 import unittest
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 PACKAGE = "photography_events"
@@ -26,6 +26,7 @@ PURE_MODULES = (
     "wildlife",
     "field_reports",
     "routing",
+    "verification",
     "throttle",
     "events",
 )
@@ -61,6 +62,7 @@ const = _pkg.const
 wildlife = _pkg.wildlife
 field_reports = _pkg.field_reports
 routing = _pkg.routing
+verification = _pkg.verification
 throttle = _pkg.throttle
 parks = _pkg.parks
 
@@ -390,18 +392,30 @@ class TestOpportunities(unittest.TestCase):
         with a short limit. Not gating the latter would alert about a bighorn
         rut six hours away to someone who will not drive two.
         """
-        built = events.build_seasonal_opportunities(NOW, 365)
+        # Corroborated windows are the ones that behave like trips; give the
+        # builder the evidence it needs so there are some to gate.
+        confirmations = [
+            wildlife.Sighting(
+                species=window.name, scientific_name=window.live_taxa[0], place=window.name,
+                latitude=window.latitude, longitude=window.longitude,
+                latest=NOW - timedelta(days=1), earliest=NOW - timedelta(days=1),
+                source="iNaturalist", category=window.category, reports=2,
+            )
+            for window in phenomena.PEAK_WINDOWS
+            if window.evidence == phenomena.EVIDENCE_LIVE and window.live_taxa
+        ]
+        built = events.build_seasonal_opportunities(NOW, 365, sightings=confirmations)
         self.assertTrue(built)
         near = events.within_drive(built, 2.0)
 
         far_peaks = [
             item for item in built
-            if item.extra["precision"] == "peak" and item.drive_hours > 2.0
+            if not item.planning_only and item.drive_hours > 2.0
         ]
         self.assertTrue(far_peaks, "expected at least one distant peak window to gate")
         self.assertTrue(all(item.key not in {n.key for n in near} for item in far_peaks))
 
-        seasons = [item for item in built if item.extra["precision"] == "season"]
+        seasons = [item for item in built if item.planning_only]
         self.assertTrue(seasons)
         self.assertTrue(all(item.key in {n.key for n in near} for item in seasons))
 
@@ -473,14 +487,92 @@ class TestPeakWindows(unittest.TestCase):
             [i for i in events.build_seasonal_opportunities(now, 365)
              if i.extra["precision"] == "season"], now), [])
 
-    def test_a_peak_window_underway_can_reach_the_alert_threshold(self):
+    def test_nothing_alerts_on_a_calendar_date_alone(self):
+        """The expensive failure: a confident date, a booked trip, and an
+        animal that moved three weeks ago."""
         now = datetime(2026, 9, 4, tzinfo=UTC)
-        underway = [
+        for item in events.build_seasonal_opportunities(now, 365):
+            self.assertLess(
+                item.score, const.DEFAULT_ALERT_SCORE,
+                f"{item.title} alerted with nothing confirming it",
+            )
+
+    def test_a_sighting_releases_the_window_it_corroborates(self):
+        """And the claim is checkable: what was seen, when, and how far away."""
+        now = datetime(2026, 9, 4, 12, tzinfo=UTC)
+        humpback = phenomena.WINDOWS_BY_KEY["humpback_lunge_feeding"]
+        seen = wildlife.Sighting(
+            species="Humpback whale",
+            scientific_name="Megaptera novaeangliae",
+            place="Port San Luis",
+            latitude=humpback.latitude,
+            longitude=humpback.longitude,
+            latest=now - timedelta(days=2),
+            earliest=now - timedelta(days=2),
+            source="iNaturalist",
+            category=const.CATEGORY_MARINE,
+            reports=3,
+        )
+
+        without = next(
             item for item in events.build_seasonal_opportunities(now, 365)
-            if item.extra["precision"] == "peak" and item.start.date() <= now.date() <= item.end.date()
-        ]
-        self.assertTrue(underway, "early September should have peak windows running")
-        self.assertTrue(any(item.score >= const.DEFAULT_ALERT_SCORE for item in underway))
+            if item.zone_id == "humpback_lunge_feeding"
+        )
+        self.assertLessEqual(without.score, events.UNVERIFIED_CEILING)
+        self.assertEqual(without.extra["verification"], "watching")
+        self.assertTrue(without.planning_only)
+
+        with_evidence = next(
+            item for item in events.build_seasonal_opportunities(now, 365, sightings=[seen])
+            if item.zone_id == "humpback_lunge_feeding"
+        )
+        self.assertGreaterEqual(with_evidence.score, const.DEFAULT_ALERT_SCORE)
+        self.assertEqual(with_evidence.extra["verification"], "corroborated")
+        self.assertFalse(with_evidence.planning_only)
+        self.assertTrue(any("confirmed:" in reason for reason in with_evidence.reasons))
+
+    def test_a_stale_or_distant_sighting_does_not_corroborate(self):
+        now = datetime(2026, 9, 4, 12, tzinfo=UTC)
+        humpback = phenomena.WINDOWS_BY_KEY["humpback_lunge_feeding"]
+
+        def sighting(**overrides):
+            base = dict(
+                species="Humpback whale", scientific_name="Megaptera novaeangliae",
+                place="x", latitude=humpback.latitude, longitude=humpback.longitude,
+                latest=now - timedelta(days=2), earliest=now - timedelta(days=2),
+                source="iNaturalist", category=const.CATEGORY_MARINE,
+            )
+            base.update(overrides)
+            return wildlife.Sighting(**base)
+
+        stale = sighting(latest=now - timedelta(days=40), earliest=now - timedelta(days=40))
+        far = sighting(latitude=humpback.latitude + 6.0)
+        wrong = sighting(scientific_name="Orcinus orca")
+
+        for bad, label in ((stale, "stale"), (far, "distant"), (wrong, "a different species")):
+            item = next(
+                entry for entry in events.build_seasonal_opportunities(now, 365, sightings=[bad])
+                if entry.zone_id == "humpback_lunge_feeding"
+            )
+            self.assertLessEqual(item.score, events.UNVERIFIED_CEILING, f"{label} sighting corroborated")
+
+    def test_a_window_too_broad_to_be_a_peak_can_never_alert_on_its_dates(self):
+        """Length is a symptom; verifiability is the rule."""
+        for window in phenomena.PEAK_WINDOWS:
+            if window.peak_days <= phenomena.MAX_TRUE_PEAK_DAYS:
+                continue
+            self.assertIn(
+                window.evidence,
+                (phenomena.EVIDENCE_LIVE, phenomena.EVIDENCE_STATIC),
+                f"{window.key} spans {window.peak_days} days and can alert unaided",
+            )
+
+    def test_static_entries_never_alert_even_when_underway(self):
+        now = datetime(2026, 9, 4, tzinfo=UTC)
+        for item in events.build_seasonal_opportunities(now, 365):
+            if item.extra.get("evidence") == phenomena.EVIDENCE_STATIC:
+                self.assertLessEqual(item.score, events.UNVERIFIED_CEILING, item.title)
+                self.assertEqual(item.extra["verification"], "unverified")
 
     def test_near_entries_carry_what_you_need_to_actually_go(self):
         now = datetime(2026, 9, 4, tzinfo=UTC)
@@ -1340,3 +1432,218 @@ class TestPrunedParks(unittest.TestCase):
             self.assertIn(required, keys)
         for pruned in ("cesar_chavez_nm", "sand_to_snow_nm", "mojave_preserve", "muir_woods_nm"):
             self.assertNotIn(pruned, keys)
+
+
+class TestLunarPhaseFinding(unittest.TestCase):
+    """A wrapped angle jumps 360 degrees at its discontinuity, and a plain
+    sign-change test reads that as a crossing. Searching for new moons on the
+    signed elongation therefore returned every full moon as well - plausible
+    dates, silently wrong, and enough to let the brightest night of the month
+    score as though it were the darkest."""
+
+    def test_new_moons_are_actually_new(self):
+        found = astronomy.new_moons_between(
+            datetime(2026, 1, 1, tzinfo=UTC), datetime(2027, 1, 1, tzinfo=UTC)
+        )
+        self.assertGreaterEqual(len(found), 12)
+        self.assertLessEqual(len(found), 13)
+        for moment in found:
+            illumination, _, _ = astronomy.moon_illumination(moment)
+            self.assertLess(illumination, 0.02, f"{moment} is {illumination:.0%} lit, not new")
+
+    def test_full_moons_are_actually_full(self):
+        found = astronomy.full_moons_between(
+            datetime(2026, 1, 1, tzinfo=UTC), datetime(2027, 1, 1, tzinfo=UTC)
+        )
+        self.assertGreaterEqual(len(found), 12)
+        for moment in found:
+            illumination, _, _ = astronomy.moon_illumination(moment)
+            self.assertGreater(illumination, 0.98, f"{moment} is {illumination:.0%} lit, not full")
+
+    def test_full_moons_match_published_instants(self):
+        for expected in (datetime(2026, 1, 3, 10, 4, tzinfo=UTC), datetime(2026, 3, 3, 11, 38, tzinfo=UTC)):
+            found = astronomy.full_moons_between(
+                expected - timedelta(days=3), expected + timedelta(days=3)
+            )
+            self.assertEqual(len(found), 1)
+            self.assertLess(abs((found[0] - expected).total_seconds()) / 60, 10)
+
+    def test_the_two_are_never_the_same_moment(self):
+        span = (datetime(2026, 1, 1, tzinfo=UTC), datetime(2026, 7, 1, tzinfo=UTC))
+        news = {moment.date() for moment in astronomy.new_moons_between(*span)}
+        fulls = {moment.date() for moment in astronomy.full_moons_between(*span)}
+        self.assertFalse(news & fulls, "a date cannot be both new and full")
+
+    def test_nearest_new_moon_never_returns_a_full_one(self):
+        for day in range(1, 29):
+            moment = datetime(2026, 9, day, 12, tzinfo=UTC)
+            when, _ = astronomy.nearest_new_moon(moment)
+            illumination, _, _ = astronomy.moon_illumination(when)
+            self.assertLess(illumination, 0.02, f"from Sep {day} the 'new' moon was {illumination:.0%} lit")
+
+
+class TestGrunionRuns(unittest.TestCase):
+    def test_runs_are_nights_not_a_season(self):
+        """A grunion run is four nights a month, not seventy-five days."""
+        built = events.build_grunion_runs(datetime(2027, 3, 1, 12, tzinfo=UTC), 100)
+        self.assertTrue(built)
+        for item in built:
+            span = (item.end - item.start).days
+            self.assertLessEqual(span, events.GRUNION_RUN_NIGHTS)
+            self.assertEqual(item.extra["evidence"], phenomena.EVIDENCE_COMPUTED)
+
+    def test_runs_follow_both_new_and_full_moons(self):
+        built = events.build_grunion_runs(datetime(2027, 3, 1, 12, tzinfo=UTC), 100)
+        phases = {item.extra["lunar_phase"] for item in built}
+        self.assertEqual(phases, {"new moon", "full moon"})
+
+    def test_runs_stay_inside_the_season(self):
+        built = events.build_grunion_runs(datetime(2027, 1, 1, 12, tzinfo=UTC), 365)
+        for item in built:
+            self.assertTrue(3 <= item.start.month <= 8, f"{item.start:%b} is outside the run season")
+
+    def test_the_hour_is_not_invented(self):
+        """Run timing depends on the tide. Until a tide table is wired in, it
+        says so rather than guessing a time."""
+        built = events.build_grunion_runs(datetime(2027, 3, 1, 12, tzinfo=UTC), 100)
+        for item in built:
+            self.assertTrue(item.extra["needs_tide_table"])
+            self.assertTrue(any("tide" in reason for reason in item.reasons))
+
+
+PACIFIC_TZ = timezone(timedelta(hours=-7))
+
+TIDE_PAYLOAD = {
+    "predictions": [
+        {"t": "2026-04-08 09:14", "v": "4.812", "type": "H"},
+        {"t": "2026-04-08 15:40", "v": "1.203", "type": "L"},
+        {"t": "2026-04-08 21:52", "v": "5.331", "type": "H"},
+        {"t": "2026-04-09 03:31", "v": "0.442", "type": "L"},
+        {"t": "not a date", "v": "x", "type": "?"},
+    ]
+}
+
+
+class TestTideVerification(unittest.TestCase):
+    """The nights are lunar geometry; the hour is the tide. Guessing the hour
+    for a phenomenon that lasts under an hour means missing it."""
+
+    def _tides(self):
+        return verification.parse_tide_predictions(TIDE_PAYLOAD, PACIFIC_TZ)
+
+    def test_malformed_entries_are_dropped_not_fatal(self):
+        self.assertEqual(len(self._tides()), 4)
+
+    def test_the_run_window_follows_the_night_high_tide(self):
+        window = verification.grunion_run_window(self._tides(), date(2026, 4, 8))
+        self.assertIsNotNone(window)
+        start, end = window
+        self.assertEqual(start.hour, 22, "expected 1 h after the 21:52 high")
+        self.assertEqual(end.hour, 23)
+
+    def test_a_daytime_high_tide_is_never_used(self):
+        """Grunion come ashore in darkness; the 09:14 high is irrelevant
+        however big it is."""
+        window = verification.grunion_run_window(self._tides(), date(2026, 4, 8))
+        self.assertGreater(window[0].hour, 12)
+
+    def test_a_night_with_no_predictions_returns_nothing(self):
+        self.assertIsNone(verification.grunion_run_window(self._tides(), date(2026, 5, 1)))
+
+    def test_the_request_asks_only_for_turning_points(self):
+        url, params = verification.build_tide_request("9411340", date(2026, 4, 1), date(2026, 4, 30))
+        self.assertIn("tidesandcurrents", url)
+        self.assertEqual(params["interval"], "hilo")
+        self.assertEqual(params["begin_date"], "20260401")
+        self.assertTrue(params["application"], "NOAA requires an application identifier")
+
+    def test_grunion_runs_use_a_real_hour_when_one_is_available(self):
+        tides = self._tides()
+        # A horizon wide enough to actually contain a run: the nights come from
+        # the lunar cycle, so a ten-day window can legitimately hold none.
+        start = datetime(2026, 3, 20, 12, tzinfo=PACIFIC_TZ)
+        with_tide = events.build_grunion_runs(start, 60, tides=tides)
+        without = events.build_grunion_runs(start, 60)
+        self.assertTrue(without)
+        self.assertTrue(all(item.extra["needs_tide_table"] for item in without))
+        self.assertTrue(any("check a local tide table" in r for item in without for r in item.reasons))
+        matched = [item for item in with_tide if not item.extra["needs_tide_table"]]
+        if matched:
+            self.assertTrue(any("high tide" in r for r in matched[0].reasons))
+
+    def test_malformed_payloads_never_raise(self):
+        for bad in (None, {}, [], "text", {"predictions": None}, {"predictions": [None, 3]}):
+            self.assertEqual(verification.parse_tide_predictions(bad, PACIFIC_TZ), [])
+
+
+class TestParkClosures(unittest.TestCase):
+    """The failure nothing else can catch: right window, animals present, road
+    shut."""
+
+    ALERTS = {
+        "data": [
+            {"parkCode": "yose", "title": "Tioga Road closed for the season",
+             "category": "Closure", "url": "https://nps.gov/x"},
+            {"parkCode": "yose", "title": "Shuttle on reduced hours", "category": "Information"},
+            {"parkCode": "deva", "title": "Flooding on Badwater Road", "category": "Closure"},
+        ]
+    }
+
+    def test_only_blocking_categories_count_as_closures(self):
+        alerts = verification.parse_nps_alerts(self.ALERTS)
+        blocking = verification.alerts_for(alerts, "yose")
+        self.assertEqual([alert.title for alert in blocking], ["Tioga Road closed for the season"])
+        self.assertEqual(len(verification.alerts_for(alerts, "yose", blocking_only=False)), 2)
+
+    def test_a_closure_demotes_the_park_and_says_why(self):
+        alerts = verification.parse_nps_alerts(self.ALERTS)
+        now = datetime(2026, 9, 20, tzinfo=UTC)
+
+        clean = [item for item in events.build_park_opportunities(now, 365) if item.zone_id == "yosemite_np"]
+        flagged = [
+            item for item in events.build_park_opportunities(now, 365, park_alerts=alerts)
+            if item.zone_id == "yosemite_np"
+        ]
+        self.assertTrue(clean and flagged)
+        self.assertLess(max(i.score for i in flagged), max(i.score for i in clean))
+        self.assertTrue(all("CLOSURE" in item.detail for item in flagged))
+        self.assertTrue(all(item.extra["closures"] for item in flagged))
+
+    def test_a_closure_at_one_park_does_not_touch_another(self):
+        alerts = verification.parse_nps_alerts(self.ALERTS)
+        now = datetime(2026, 9, 20, tzinfo=UTC)
+        others = [
+            item for item in events.build_park_opportunities(now, 365, park_alerts=alerts)
+            if item.zone_id not in ("yosemite_np", "death_valley_np")
+        ]
+        self.assertTrue(others)
+        self.assertTrue(all(not item.extra["closures"] for item in others))
+
+    def test_every_park_is_either_checkable_or_declared_unchecked(self):
+        """"No closures reported" and "nothing can report closures here" are
+        very different things to show somebody planning a drive."""
+        for park in parks.PARKS:
+            covered = park.key in verification.NPS_PARK_CODES
+            declared = verification.closure_coverage(park.key) is not None
+            self.assertTrue(
+                covered or declared,
+                f"{park.key} is silently unmonitored for closures",
+            )
+            self.assertFalse(covered and declared, f"{park.key} is both covered and excluded")
+
+    def test_unmonitored_units_say_so_rather_than_implying_all_clear(self):
+        now = datetime(2026, 3, 20, tzinfo=UTC)
+        alerts = verification.parse_nps_alerts(self.ALERTS)
+        built = events.build_park_opportunities(now, 365, park_alerts=alerts)
+        carrizo = [item for item in built if item.zone_id == "carrizo_plain_nm"]
+        self.assertTrue(carrizo)
+        self.assertIn("Bureau of Land Management", carrizo[0].extra["closure_source"])
+
+    def test_without_a_key_nothing_claims_to_have_been_checked(self):
+        now = datetime(2026, 9, 20, tzinfo=UTC)
+        for item in events.build_park_opportunities(now, 365):
+            self.assertIn("not checked", item.extra["closure_source"])
+
+    def test_malformed_payloads_never_raise(self):
+        for bad in (None, {}, [], "text", {"data": None}, {"data": [None, 3]}):
+            self.assertEqual(verification.parse_nps_alerts(bad), [])

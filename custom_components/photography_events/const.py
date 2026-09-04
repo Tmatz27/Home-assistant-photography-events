@@ -13,6 +13,7 @@ CONF_ALERT_SCORE: Final = "alert_score"
 CONF_SUNSET_SCORE: Final = "sunset_score"
 CONF_EBIRD_API_KEY: Final = "ebird_api_key"
 CONF_GOOGLE_API_KEY: Final = "google_api_key"
+CONF_NPS_API_KEY: Final = "nps_api_key"
 CONF_ROUTING_MODE: Final = "routing_mode"
 CONF_ENABLE_FIELD_REPORTS: Final = "enable_field_reports"
 CONF_ENABLED_CATEGORIES: Final = "enabled_categories"
@@ -33,6 +34,9 @@ MIN_INTERVAL_WEATHER: Final = 60
 MIN_INTERVAL_EBIRD: Final = 60
 MIN_INTERVAL_INATURALIST: Final = 60
 MIN_INTERVAL_ROUTING: Final = 30
+# Tide predictions are published well ahead and park alerts change slowly.
+MIN_INTERVAL_TIDES: Final = 60 * 12
+MIN_INTERVAL_PARK_ALERTS: Final = 60 * 6
 MIN_INTERVAL_FIELD_REPORTS: Final = 60 * 24
 
 # Google routing strategy. "auto" tries the current Routes API first and falls

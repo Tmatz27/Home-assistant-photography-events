@@ -22,9 +22,18 @@ from .const import (
     ZONES_BY_ID,
 )
 from .parks import active_windows as active_park_windows
-from .phenomena import PRECISION_HORIZON_DAYS, active_windows
+from .phenomena import (
+    EVIDENCE_COMPUTED,
+    EVIDENCE_LIVE,
+    EVIDENCE_STATIC,
+    LIVE_CORROBORATION_DAYS,
+    LIVE_CORROBORATION_KM,
+    PRECISION_HORIZON_DAYS,
+    active_windows,
+)
 from .weather_scoring import score_sky
-from .wildlife import describe_drive, estimate_drive_hours, nearest_zone
+from .verification import grunion_run_window
+from .wildlife import describe_drive, estimate_drive_hours, haversine_km, nearest_zone
 
 # Only showers worth a drive; the spec's ZHR floor.
 MIN_METEOR_ZHR = 60
@@ -520,11 +529,43 @@ PEAK_UPCOMING_SCORE = 65
 PEAK_UNDERWAY_SCORE = 78
 UNCONFIRMED_PENALTY = 8
 
+# The hard ceiling on anything a calendar alone is claiming. Below the default
+# alert threshold by construction, so a date that nothing has confirmed can
+# reach the planning view and never the notification.
+UNVERIFIED_CEILING = 60
+# What a live-confirmed window may reach once something has actually been seen.
+CORROBORATED_SCORE = 82
+
+
+def corroborating_sightings(window, sightings, now) -> list:
+    """Recent, nearby sightings of the species this window is about.
+
+    This is the difference between "the calendar says whales" and "four people
+    saw whales off that point this week". Only the second is a reason to drive.
+    """
+    if not window.live_taxa or not sightings:
+        return []
+    wanted = {name.lower() for name in window.live_taxa}
+    cutoff = now - timedelta(days=LIVE_CORROBORATION_DAYS)
+    found = []
+    for sighting in sightings:
+        name = (getattr(sighting, "scientific_name", "") or "").lower()
+        if not any(name.startswith(target.lower()) for target in wanted):
+            continue
+        if sighting.latest < cutoff:
+            continue
+        distance = haversine_km(window.latitude, window.longitude, sighting.latitude, sighting.longitude)
+        if distance <= LIVE_CORROBORATION_KM:
+            found.append(sighting)
+    return found
+
 
 def build_seasonal_opportunities(
     now: datetime,
     horizon_days: int,
     home: tuple[float, float] | None = None,
+    sightings: list | None = None,
+    field_reports: list | None = None,
 ) -> list[Opportunity]:
     """Natural phenomena, told at the precision the distance justifies.
 
@@ -556,6 +597,11 @@ def build_seasonal_opportunities(
                 f"{PRECISION_HORIZON_DAYS} days."
             )
             reasons = [f"season: {window.season_range}", "too far out for specifics"]
+            # Even at season range, say what the dates would ultimately rest on.
+            verification = {
+                EVIDENCE_COMPUTED: "computed",
+                EVIDENCE_LIVE: "watching",
+            }.get(window.evidence, "unverified")
         else:
             score = PEAK_UNDERWAY_SCORE if entry["underway"] else PEAK_UPCOMING_SCORE
             if window.confirm:
@@ -575,6 +621,14 @@ def build_seasonal_opportunities(
             if window.confirm:
                 reasons.append("timing shifts year to year - confirm before driving")
 
+            # The guard against booking a trip around a date nothing has
+            # confirmed. A calendar entry may fill the planning view; only
+            # evidence may raise a notification.
+            score, verification, extra_reasons = _apply_evidence(
+                window, entry, score, sightings, field_reports, now
+            )
+            reasons.extend(extra_reasons)
+
         found.append(
             Opportunity(
                 key=entry["key"],
@@ -592,10 +646,15 @@ def build_seasonal_opportunities(
                 latitude=window.latitude,
                 longitude=window.longitude,
                 drive_source="estimate",
-                # A background season is never something to act on today.
-                planning_only=not near,
+                # A background season is never something to act on today, and
+                # neither is an unconfirmed window.
+                planning_only=not near or score <= UNVERIFIED_CEILING,
                 extra={
                     "precision": entry["precision"],
+                    "evidence": window.evidence,
+                    "verification": verification,
+                    "search_season": window.is_search_season,
+                    "peak_days": window.peak_days,
                     "season_range": window.season_range,
                     "peak_start": entry["start"].isoformat(),
                     "peak_end": entry["end"].isoformat(),
@@ -610,6 +669,64 @@ def build_seasonal_opportunities(
             )
         )
     return found
+
+
+def _apply_evidence(window, entry, score, sightings, field_reports, now):
+    """Hold a score down to what the evidence actually supports.
+
+    Three bases, three ceilings:
+
+    - **Computed.** Geometry, verifiable to the minute. Scores on its merits.
+    - **Live.** The dates are a search season: they say when to start watching,
+      not when to go. Capped at planning level until something is actually
+      seen, then released - and the text names what was seen, when, and how far
+      away, so the claim is checkable rather than asserted.
+    - **Static.** A calendar estimate with nothing behind it. Never alerts, at
+      any time of year, however confident the date looks.
+
+    The failure this prevents is the expensive one: a confident date, a booked
+    trip, and an animal that moved three weeks ago.
+    """
+    if window.evidence == EVIDENCE_COMPUTED:
+        return score, "computed", []
+
+    if window.evidence == EVIDENCE_STATIC:
+        return min(score, UNVERIFIED_CEILING), "unverified", [
+            "calendar estimate - no live source confirms this one",
+        ]
+
+    matches = corroborating_sightings(window, sightings, now)
+    reports = [
+        report for report in (field_reports or [])
+        if getattr(report, "category", None) == window.category
+        and haversine_km(window.latitude, window.longitude, *_report_point(report, window)) <= LIVE_CORROBORATION_KM
+    ] if field_reports else []
+
+    if matches:
+        freshest = max(item.latest for item in matches)
+        age_days = max(0, round((now - freshest).total_seconds() / 86400))
+        observers = sum(max(1, item.reports) for item in matches)
+        return max(score, CORROBORATED_SCORE), "corroborated", [
+            f"confirmed: {observers} report{'s' if observers != 1 else ''} within "
+            f"{round(LIVE_CORROBORATION_KM)} km, most recent {age_days} day{'s' if age_days != 1 else ''} ago",
+        ]
+
+    if reports:
+        return max(score, CORROBORATED_SCORE - 5), "corroborated", [
+            f"confirmed by {reports[0].source_name}",
+        ]
+
+    return min(score, UNVERIFIED_CEILING), "watching", [
+        "watch window - nothing reported yet, so this is where to look, not when to go",
+    ]
+
+
+def _report_point(report, window) -> tuple[float, float]:
+    """Field reports are zone-scoped; fall back to the window's own position."""
+    zone = ZONES_BY_ID.get(getattr(report, "zone_id", ""))
+    if zone:
+        return zone["latitude"], zone["longitude"]
+    return window.latitude, window.longitude
 
 
 def within_drive(opportunities: list[Opportunity], max_hours: float) -> list[Opportunity]:
@@ -802,6 +919,28 @@ def build_field_report_opportunities(reports: list, now: datetime) -> list[Oppor
     return found
 
 
+def _closure_source(park_key: str, park_alerts) -> str:
+    """Whether closures were actually checked, and by what."""
+    from .verification import closure_coverage
+
+    agency = closure_coverage(park_key)
+    if agency:
+        return f"not checked - {agency} unit, outside the NPS alerts feed"
+    if not park_alerts:
+        return "not checked - no National Park Service key configured"
+    return "National Park Service alerts"
+
+
+def _closures_for(park_key: str, park_alerts) -> list:
+    """Blocking alerts published by the park itself, if any were fetched."""
+    if not park_alerts:
+        return []
+    from .verification import NPS_PARK_CODES, alerts_for
+
+    code = NPS_PARK_CODES.get(park_key)
+    return alerts_for(park_alerts, code) if code else []
+
+
 def _slug(text: str) -> str:
     cleaned = "".join(char.lower() if char.isalnum() else "-" for char in text)
     return "-".join(part for part in cleaned.split("-") if part)[:60]
@@ -813,7 +952,11 @@ PARK_OPTIMAL_SCORE = 55
 PARK_GOOD_SCORE = 40
 
 
-def build_park_opportunities(now: datetime, horizon_days: int) -> list[Opportunity]:
+def build_park_opportunities(
+    now: datetime,
+    horizon_days: int,
+    park_alerts: list | None = None,
+) -> list[Opportunity]:
     """National park and monument seasons, for the year view.
 
     Scored well below the alert threshold and flagged ``planning_only``, because
@@ -832,6 +975,13 @@ def build_park_opportunities(now: datetime, horizon_days: int) -> list[Opportuni
         tier_text = "Best window" if optimal else "Good window"
         reasons = [f"{tier_text.lower()} for this park", park.drive_label, park.dog_label]
 
+        # A closure is the one thing a calendar can never infer and that ends a
+        # trip outright: right window, animals present, road shut.
+        closures = _closures_for(park.key, park_alerts)
+        if closures:
+            score = min(score, 35)
+            reasons.insert(0, f"CLOSURE: {closures[0].title}")
+
         found.append(
             Opportunity(
                 key=window["key"],
@@ -842,7 +992,10 @@ def build_park_opportunities(now: datetime, horizon_days: int) -> list[Opportuni
                 start=datetime.combine(window["start"], datetime.min.time()).replace(tzinfo=now.tzinfo),
                 end=datetime.combine(window["end"], datetime.max.time()).replace(tzinfo=now.tzinfo),
                 score=score,
-                detail=f"{tier_text} to visit {park.name} ({park.drive_label}). Dogs: {park.dog_detail}",
+                detail=(
+                    (f"CLOSURE REPORTED: {closures[0].title}. " if closures else "")
+                    + f"{tier_text} to visit {park.name} ({park.drive_label}). Dogs: {park.dog_detail}"
+                ),
                 drive_hours=park.drive_hours,
                 reasons=reasons,
                 gear=_gear_for(CATEGORY_PARKS),
@@ -851,6 +1004,10 @@ def build_park_opportunities(now: datetime, horizon_days: int) -> list[Opportuni
                 planning_only=True,
                 extra={
                     "tier": window["tier"],
+                    "closures": [alert.title for alert in closures],
+                    # Says "nothing can check this" rather than implying "all clear".
+                    "closure_source": _closure_source(park.key, park_alerts),
+                    "closure_urls": [alert.url for alert in closures if alert.url],
                     "miles": park.miles,
                     "dogs": park.dogs,
                     "dog_label": park.dog_label,
@@ -859,3 +1016,113 @@ def build_park_opportunities(now: datetime, horizon_days: int) -> list[Opportuni
             )
         )
     return found
+
+
+# --- Grunion runs -----------------------------------------------------------
+
+# Runs follow the full and new moons, for a few nights each.
+GRUNION_RUN_NIGHTS = 4
+GRUNION_LAG_NIGHTS = 1
+GRUNION_SEASON = ((3, 1), (8, 31))
+
+
+def build_grunion_runs(
+    now: datetime,
+    horizon_days: int,
+    home: tuple[float, float] | None = None,
+    tides: list | None = None,
+) -> list[Opportunity]:
+    """The actual run nights, computed rather than assumed.
+
+    A grunion run is not a season - it is a handful of nights a month, on the
+    nights following a full or new moon, for about an hour. Storing it as
+    "1 April to 15 June" describes seventy-five nights of which perhaps sixteen
+    are right, which is the difference between a plan and a wasted drive.
+
+    The nights come from lunar geometry and are exact. The *hour* comes from the
+    tide, which needs a tide table - until one is wired in, each night says so
+    rather than guessing a time.
+    """
+    origin = home or DEFAULT_HOME
+    window = None
+    from .phenomena import WINDOWS_BY_KEY
+
+    window = WINDOWS_BY_KEY.get("grunion_run")
+    if window is None:
+        return []
+
+    horizon = now + timedelta(days=horizon_days)
+    found: list[Opportunity] = []
+
+    anchors = [("new moon", moment) for moment in astro.new_moons_between(now - timedelta(days=2), horizon)]
+    anchors += [("full moon", moment) for moment in astro.full_moons_between(now - timedelta(days=2), horizon)]
+    anchors.sort(key=lambda pair: pair[1])
+
+    for phase_name, moment in anchors:
+        if True:
+            first_night = (moment + timedelta(days=GRUNION_LAG_NIGHTS)).date()
+            last_night = first_night + timedelta(days=GRUNION_RUN_NIGHTS - 1)
+            if last_night < now.date() or first_night > horizon.date():
+                continue
+            if not _in_grunion_season(first_night):
+                continue
+
+            start = datetime.combine(first_night, datetime.min.time()).replace(tzinfo=now.tzinfo)
+            end = datetime.combine(last_night, datetime.max.time()).replace(tzinfo=now.tzinfo)
+
+            # The nights come from lunar geometry; the hour comes from the tide.
+            # With a tide table the window is a real time to stand on the sand;
+            # without one it stays a night, and says so.
+            tide_window = grunion_run_window(tides, first_night) if tides else None
+            hour_note = (
+                f"first night's window {tide_window[0]:%H:%M}-{tide_window[1]:%H:%M} "
+                f"(1-2 h after the {tide_window[0].strftime('%H:%M')} high tide)"
+                if tide_window
+                else "exact hour depends on the tide - check a local tide table"
+            )
+            found.append(
+                Opportunity(
+                    key=f"grunion-{first_night.isoformat()}",
+                    title="Grunion run nights",
+                    category=window.category,
+                    zone_id="grunion_run",
+                    zone_name=window.primary_locations[0],
+                    start=start,
+                    end=end,
+                    score=76,
+                    detail=(
+                        f"Runs expected on the {GRUNION_RUN_NIGHTS} nights following the "
+                        f"{phase_name} of {moment.strftime('%d %b')}, starting one to two hours "
+                        f"after high tide and lasting under an hour. {window.photo_tips}"
+                    ),
+                    drive_hours=round(estimate_drive_hours(window.latitude, window.longitude, origin), 2),
+                    reasons=[
+                        f"{GRUNION_RUN_NIGHTS} nights after the {phase_name}",
+                        hour_note,
+                        window.primary_locations[0],
+                    ],
+                    gear={"glass": window.recommended_gear, "settings": window.photo_tips},
+                    latitude=window.latitude,
+                    longitude=window.longitude,
+                    drive_source="estimate",
+                    extra={
+                        "precision": "peak",
+                        "evidence": EVIDENCE_COMPUTED,
+                        "verification": "computed",
+                        "lunar_phase": phase_name,
+                        "primary_locations": list(window.primary_locations),
+                        "recommended_gear": window.recommended_gear,
+                        "photo_tips": window.photo_tips,
+                        "best_time_of_day": window.best_time_of_day,
+                        "needs_tide_table": tide_window is None,
+                        "tide_window_start": tide_window[0].isoformat() if tide_window else None,
+                        "tide_window_end": tide_window[1].isoformat() if tide_window else None,
+                    },
+                )
+            )
+    return found
+
+
+def _in_grunion_season(day) -> bool:
+    (first_month, first_day), (last_month, last_day) = GRUNION_SEASON
+    return (first_month, first_day) <= (day.month, day.day) <= (last_month, last_day)

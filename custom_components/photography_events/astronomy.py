@@ -757,28 +757,60 @@ def _sun_moon_elongation(moment: datetime) -> float:
     return (separation + 180) % 360 - 180
 
 
-def new_moons_between(start: datetime, end: datetime) -> list[datetime]:
-    """Every new moon in a span, in order."""
+def _phase_angle_deg(moment: datetime) -> float:
+    """Moon minus Sun in ecliptic longitude, 0-360. Zero is new, 180 is full."""
+    days = days_since_j2000(moment)
+    return math.degrees(moon_ecliptic(days)[0] - sun_ecliptic_longitude(days)) % 360
+
+
+def _phase_crossings(start: datetime, end: datetime, target_deg: float) -> list[datetime]:
+    """Moments the lunar phase angle passes a given value.
+
+    The subtlety that earns this its own function: every wrapped angular measure
+    has a discontinuity somewhere, and at that point it jumps a full 360
+    degrees - which a plain sign-change test reads as a crossing. Hunting for
+    new moons on the signed elongation therefore returns every *full* moon as
+    well, because the wrap sits exactly there.
+
+    That bug hides in plain sight, since both answers are plausible dates, and
+    it corrupts everything downstream: a full moon mistaken for a new one lets
+    the most washed-out night of the month score as though it were the darkest.
+
+    So a crossing only counts when consecutive samples moved a *small* amount.
+    The Moon covers about three degrees in six hours; the wrap covers 360.
+    """
+
+    def offset(moment: datetime) -> float:
+        return ((_phase_angle_deg(moment) - target_deg + 180) % 360) - 180
+
     found: list[datetime] = []
     step = timedelta(hours=6)
-    previous = start
-    previous_value = _sun_moon_elongation(previous)
+    previous, previous_value = start, offset(start)
     moment = start + step
     while moment <= end:
-        value = _sun_moon_elongation(moment)
-        if previous_value <= 0 <= value or previous_value >= 0 >= value:
+        value = offset(moment)
+        crossed = previous_value <= 0 <= value or previous_value >= 0 >= value
+        if crossed and abs(value - previous_value) < 180:
             low, high = previous, moment
             for _ in range(40):
                 middle = low + (high - low) / 2
-                if (_sun_moon_elongation(low) <= 0 <= _sun_moon_elongation(middle)) or (
-                    _sun_moon_elongation(low) >= 0 >= _sun_moon_elongation(middle)
-                ):
+                if (offset(low) <= 0 <= offset(middle)) or (offset(low) >= 0 >= offset(middle)):
                     high = middle
                 else:
                     low = middle
             found.append(low + (high - low) / 2)
         previous, previous_value, moment = moment, value, moment + step
     return found
+
+
+def new_moons_between(start: datetime, end: datetime) -> list[datetime]:
+    """Every new moon in a span, in order."""
+    return _phase_crossings(start, end, 0.0)
+
+
+def full_moons_between(start: datetime, end: datetime) -> list[datetime]:
+    """Every full moon in a span, in order."""
+    return _phase_crossings(start, end, 180.0)
 
 
 def next_new_moon(after: datetime, horizon_days: int = 40) -> datetime | None:
@@ -799,8 +831,8 @@ def nearest_new_moon(moment: datetime) -> tuple[datetime | None, float]:
     one after a month ago" instead would skip the most recent one entirely and
     report a date two weeks out as the nearest.
 
-    Illumination cannot answer this on its own: it is symmetric about new, so
-    it gives the distance but never the direction, and the direction is what
+    Illumination cannot answer this on its own: it is symmetric about new, so it
+    gives the distance but never the direction, and the direction is what
     decides whether to go tonight or wait.
     """
     found = new_moons_between(moment - timedelta(days=20), moment + timedelta(days=20))

@@ -1,6 +1,6 @@
 {
   "name": "home-assistant-photography-events",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "private": true,
   "description": "Home Assistant integration and Lovelace card for photography-worthy sky and nature events",
   "type": "module",

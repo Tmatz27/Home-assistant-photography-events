@@ -1,5 +1,47 @@
 # Changelog
 
+## 0.7.0
+
+Answers one question: what stops this integration sending you on a trip that
+misses the thing?
+
+**Nothing may alert on a calendar date alone.** Every entry now declares what
+its dates rest on, and that decides what it is allowed to do. *Computed* -
+geometry, verifiable to the minute - alerts on its merits. *Live* - a search
+season, not a promise - is capped at planning level until real sightings
+corroborate it, then released, with the confirming evidence named. *Static* - a
+calendar estimate with nothing behind it - can fill the planning view and never
+notify, at any time of year.
+
+So the humpback window that ran 1 August to 15 October now says "watch window -
+nothing reported yet, so this is where to look, not when to go", and only
+becomes a 82-scoring alert when something is actually seen: *"confirmed: 3
+reports within 120 km, most recent 2 days ago"*.
+
+**A serious bug fixed in shipped code.** Every wrapped angle has a
+discontinuity, and at that point it jumps 360 degrees - which a plain
+sign-change test reads as a crossing. The new-moon finder was therefore
+returning every *full* moon as well. Both are plausible dates, so it was
+invisible, and it fed the lunar look-ahead: a full moon mistaken for a new one
+would let the most washed-out night of the month score as though it were the
+darkest. Crossings now require consecutive samples to have moved a small amount;
+the Moon covers three degrees in six hours and the wrap covers 360.
+
+**Two real verification sources**, replacing guesses with facts:
+
+- **NOAA CO-OPS tide predictions** (free, no key, official). Grunion runs are
+  four nights a month following a full or new moon, not the 75-day window they
+  used to be - the nights are computed from lunar geometry, and the tide sets
+  the hour. Without a tide table it says the hour is unknown rather than
+  inventing one
+- **National Park Service alerts** (free key). A closure demotes a park window
+  and says which road. Carrizo Plain and Giant Sequoia are BLM and Forest
+  Service units the NPS feed cannot see, so they report "not checked" rather
+  than implying all clear - and without a key, nothing claims to have been
+  checked at all
+
+131 Python tests and 73 JavaScript ones.
+
 ## 0.6.0
 
 A trust release. Three things were wrong enough to make the rest not worth

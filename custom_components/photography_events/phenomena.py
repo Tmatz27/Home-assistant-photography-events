@@ -42,6 +42,38 @@ from .const import (
     CATEGORY_RARE,
 )
 
+# --- Evidence basis ---------------------------------------------------------
+#
+# The question that matters is not "is my calendar date right" but "is it
+# actually happening", and those need different answers. So every entry states
+# what its dates rest on, and that decides what it is allowed to do.
+#
+# No API publishes peak windows. Nobody serves "gray whale southbound peak =
+# 5-25 January" as data; it does not exist in machine-readable form anywhere.
+# What can be verified is whether something is being seen right now - and for
+# anything biological that is the better question anyway.
+
+# Derived from geometry. Verifiable to the minute, alerts freely.
+EVIDENCE_COMPUTED = "computed"
+# A search season, not a promise. May plan, and may only alert once live
+# sightings corroborate it.
+EVIDENCE_LIVE = "live"
+# A calendar estimate with no live source. Plans only, never alerts.
+EVIDENCE_STATIC = "static"
+
+# A window longer than this is a season wearing a peak's clothes. The rule it
+# triggers is about verifiability rather than length: a window this broad may
+# never alert on its date alone, whether because a live source can confirm it
+# (EVIDENCE_LIVE) or because nothing can and it stays planning-only
+# (EVIDENCE_STATIC). Tightening these dates by guesswork would be worse than
+# admitting their width - a confidently wrong three-week window is exactly how
+# somebody books a trip and misses the thing.
+MAX_TRUE_PEAK_DAYS = 40
+
+# How fresh and how near a sighting has to be to corroborate a window.
+LIVE_CORROBORATION_DAYS = 14
+LIVE_CORROBORATION_KM = 120.0
+
 # Inside this many days the calendar stops speaking in seasons and starts
 # giving concrete windows, locations and gear. Beyond it, a vague answer is the
 # honest one - weather models do not reach, and animals do not read calendars.
@@ -66,6 +98,20 @@ class PeakWindow:
     best_time_of_day: str = ""
     confirm: bool = False
     lunar_dependent: bool = False
+    evidence: str = EVIDENCE_STATIC
+    # Scientific names whose recent sightings corroborate this window.
+    live_taxa: tuple[str, ...] = ()
+
+    @property
+    def peak_days(self) -> int:
+        start = date(2001, *self.peak_start)
+        end = date(2001, *self.peak_end)
+        return (end - start).days if end >= start else (date(2002, *self.peak_end) - start).days
+
+    @property
+    def is_search_season(self) -> bool:
+        """Whether these dates say "start watching" rather than "go"."""
+        return self.evidence == EVIDENCE_LIVE
 
     def occurrences(self, year: int) -> list[tuple[date, date]]:
         """Concrete dates, splitting a window that crosses New Year."""
@@ -103,6 +149,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="Sunset, roughly 17:15-17:40",
         confirm=True,
+        evidence=EVIDENCE_STATIC,
     ),
     PeakWindow(
         key="grunion_run",
@@ -129,8 +176,16 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "the density of fish, not any single one."
         ),
         best_time_of_day="Late night, 1-2 hours after high tide",
+        # Runs are not spread across the season: they fall on the nights after
+        # a full or new moon, at a tide-determined hour. The season below is the
+        # search range; ``events.build_grunion_runs`` computes the actual nights.
         lunar_dependent=True,
         confirm=True,
+        # The season is static and cannot alert. The *runs* inside it are
+        # computed from moon phase by ``events.build_grunion_runs`` and alert
+        # on their own, which is the only honest way to represent a phenomenon
+        # that happens on four nights a month, not across seventy-five days.
+        evidence=EVIDENCE_STATIC,
     ),
     PeakWindow(
         key="pismo_monarchs",
@@ -149,6 +204,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "boughs empty. Backlight the clusters to separate wings from eucalyptus."
         ),
         best_time_of_day="Cold mornings before the roost warms and disperses",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Danaus plexippus",),
     ),
     PeakWindow(
         key="sandhill_crane_flyin",
@@ -170,6 +227,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "than trying to light them. Woodbridge runs docent tours; check access first."
         ),
         best_time_of_day="Last hour of light and the half hour after",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Antigone canadensis",),
     ),
     # --- Marine -------------------------------------------------------------
     PeakWindow(
@@ -189,6 +248,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "off the swell and is the difference between a grey lump and a visible animal."
         ),
         best_time_of_day="Morning, before the afternoon wind builds chop",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Eschrichtius robustus",),
     ),
     PeakWindow(
         key="gray_whale_northbound",
@@ -207,6 +268,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "land-based whale photography of the year on this coast."
         ),
         best_time_of_day="Morning through early afternoon",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Eschrichtius robustus",),
     ),
     PeakWindow(
         key="transient_orca_hunt",
@@ -225,12 +288,14 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "Shutter 1/2000s or faster, continuous AF, and keep both eyes open."
         ),
         best_time_of_day="Full-day boat charter; hunts run late morning onward",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Orcinus orca",),
     ),
     PeakWindow(
         key="blue_whale_feeding",
         name="Blue whale feeding aggregation",
         category=CATEGORY_MARINE,
-        season_range="June to October",
+        season_range="June to October; watch window mid-Jul to mid-Sep",
         peak_start=(7, 15),
         peak_end=(9, 10),
         latitude=34.2486,
@@ -243,12 +308,14 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "a 600mm frame of a blue whale is a photograph of grey skin."
         ),
         best_time_of_day="Full-day boat charter",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Balaenoptera musculus",),
     ),
     PeakWindow(
         key="humpback_lunge_feeding",
         name="Humpback lunge feeding",
         category=CATEGORY_MARINE,
-        season_range="May to November",
+        season_range="May to November; watch window Aug-mid Oct",
         peak_start=(8, 1),
         peak_end=(10, 15),
         latitude=35.1780,
@@ -261,6 +328,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "gulls and pelicans mark the bait ball seconds before the lunge."
         ),
         best_time_of_day="Morning, calm water",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Megaptera novaeangliae",),
     ),
     # --- Terrestrial mammals ------------------------------------------------
     PeakWindow(
@@ -284,6 +353,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "the shot worth driving for."
         ),
         best_time_of_day="Dawn, 06:00-08:30",
+        evidence=EVIDENCE_STATIC,
+        live_taxa=("Cervus canadensis nannodes",),
     ),
     PeakWindow(
         key="desert_bighorn_rut",
@@ -305,6 +376,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "genuinely dangerous - treat the trip as a desert expedition, not a drive."
         ),
         best_time_of_day="First light at the springs",
+        evidence=EVIDENCE_STATIC,
+        live_taxa=("Ovis canadensis nelsoni",),
     ),
     PeakWindow(
         key="sierra_bighorn_rut",
@@ -323,6 +396,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "walls is the window."
         ),
         best_time_of_day="Morning, east-facing slopes",
+        evidence=EVIDENCE_STATIC,
+        live_taxa=("Ovis canadensis sierrae",),
     ),
     PeakWindow(
         key="elephant_seal_battles",
@@ -341,6 +416,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "Overcast is your friend; harsh sun blows out the wet hides."
         ),
         best_time_of_day="Any daylight; overcast preferred",
+        evidence=EVIDENCE_STATIC,
+        live_taxa=("Mirounga angustirostris",),
     ),
     PeakWindow(
         key="black_bear_cubs",
@@ -362,6 +439,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "yourself between a sow and her cubs."
         ),
         best_time_of_day="Dawn, before the meadows fill",
+        evidence=EVIDENCE_STATIC,
+        live_taxa=("Ursus americanus",),
     ),
     # --- Autumn colour, by elevation tier -----------------------------------
     PeakWindow(
@@ -386,6 +465,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="Dawn for still reflections, backlight late afternoon",
         confirm=True,
+        evidence=EVIDENCE_LIVE,
     ),
     PeakWindow(
         key="aspen_tier2_mid",
@@ -405,6 +485,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="Dawn for reflections",
         confirm=True,
+        evidence=EVIDENCE_LIVE,
     ),
     PeakWindow(
         key="aspen_tier3_north",
@@ -424,6 +505,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="Overcast is fine; backlit late afternoon is better",
         confirm=True,
+        evidence=EVIDENCE_LIVE,
     ),
     # --- Blooms -------------------------------------------------------------
     PeakWindow(
@@ -444,6 +526,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="First and last hour of light",
         confirm=True,
+        evidence=EVIDENCE_LIVE,
     ),
     PeakWindow(
         key="bloom_death_valley",
@@ -463,6 +546,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="First and last hour of light",
         confirm=True,
+        evidence=EVIDENCE_LIVE,
     ),
     PeakWindow(
         key="bloom_antelope_valley",
@@ -485,6 +569,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="Still mid-morning for open flowers, backlit at sunset",
         confirm=True,
+        evidence=EVIDENCE_LIVE,
     ),
     PeakWindow(
         key="bloom_carrizo_plain",
@@ -509,6 +594,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="First and last hour; the ridges band best in low side light",
         confirm=True,
+        evidence=EVIDENCE_LIVE,
     ),
 )
 

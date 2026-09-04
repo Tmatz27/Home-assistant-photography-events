@@ -37,6 +37,7 @@ from homeassistant.util import dt as dt_util
 from . import events as event_builder
 from . import field_reports as reports_module
 from . import routing as routing_module
+from . import verification as verify_module
 from . import wildlife as wildlife_module
 from .const import (
     ALL_CATEGORIES,
@@ -46,6 +47,7 @@ from .const import (
     CATEGORY_FOLIAGE,
     CATEGORY_MARINE,
     CATEGORY_PARKS,
+    CATEGORY_RARE,
     CATEGORY_SUNSET,
     CONF_ALERT_SCORE,
     CONF_EBIRD_API_KEY,
@@ -55,6 +57,7 @@ from .const import (
     CONF_HOME_LATITUDE,
     CONF_HOME_LONGITUDE,
     CONF_MAX_DRIVE_HOURS,
+    CONF_NPS_API_KEY,
     CONF_ROUTING_MODE,
     CONF_SUNSET_SCORE,
     DEFAULT_ALERT_SCORE,
@@ -69,7 +72,9 @@ from .const import (
     MIN_INTERVAL_EBIRD,
     MIN_INTERVAL_FIELD_REPORTS,
     MIN_INTERVAL_INATURALIST,
+    MIN_INTERVAL_PARK_ALERTS,
     MIN_INTERVAL_ROUTING,
+    MIN_INTERVAL_TIDES,
     MIN_INTERVAL_WEATHER,
     OPEN_METEO_URL,
     ROUTING_AUTO,
@@ -122,6 +127,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "inaturalist": Source("iNaturalist", MIN_INTERVAL_INATURALIST),
             "field_reports": Source("Wildflower and colour hotlines", MIN_INTERVAL_FIELD_REPORTS),
             "routing": Source("Google routing", MIN_INTERVAL_ROUTING),
+            "tides": Source("NOAA tide predictions", MIN_INTERVAL_TIDES),
+            "park_alerts": Source("National Park Service alerts", MIN_INTERVAL_PARK_ALERTS),
         }
         self._routing_cache: dict[tuple[float, float], routing_module.DriveTime] = {}
         self._routing_endpoint: str | None = None
@@ -171,6 +178,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         return (self._options.get(CONF_GOOGLE_API_KEY) or "").strip()
 
     @property
+    def nps_key(self) -> str:
+        return (self._options.get(CONF_NPS_API_KEY) or "").strip()
+
+    @property
     def routing_mode(self) -> str:
         return self._options.get(CONF_ROUTING_MODE, ROUTING_AUTO)
 
@@ -210,6 +221,13 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 await self._refresh(
                     self._sources["field_reports"], now, lambda: self._fetch_field_reports(session, now)
                 )
+
+        # Group 4: verification. Tide predictions turn a run night into an hour,
+        # and park alerts are the only source that can say the road is shut.
+        if CATEGORY_RARE in categories:
+            await self._refresh(self._sources["tides"], now, lambda: self._fetch_tides(session, now))
+        if CATEGORY_PARKS in categories and self.nps_key:
+            await self._refresh(self._sources["park_alerts"], now, lambda: self._fetch_park_alerts(session))
 
         opportunities = await self._build(now, zones, forecasts, categories)
         opportunities = await self._apply_routing(session, now, opportunities)
@@ -262,6 +280,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 )
 
         sightings = list(self._sources["ebird"].value or []) + list(self._sources["inaturalist"].value or [])
+        digested: list = []
         if sightings:
             digested = await self.hass.async_add_executor_job(wildlife_module.digest, sightings, now)
             opportunities.extend(
@@ -278,15 +297,36 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 )
             )
 
+        # The evidence gate needs the live signals, so the phenomena are built
+        # after the wildlife and hotline sources rather than in isolation.
         seasonal = await self.hass.async_add_executor_job(
-            event_builder.build_seasonal_opportunities, now, CALENDAR_HORIZON_DAYS, self.home
+            event_builder.build_seasonal_opportunities,
+            now,
+            CALENDAR_HORIZON_DAYS,
+            self.home,
+            digested if sightings else None,
+            reports or None,
         )
         opportunities.extend(seasonal)
+
+        if CATEGORY_RARE in categories:
+            opportunities.extend(
+                await self.hass.async_add_executor_job(
+                    event_builder.build_grunion_runs,
+                    now,
+                    CALENDAR_HORIZON_DAYS,
+                    self.home,
+                    self._sources["tides"].value,
+                )
+            )
 
         if CATEGORY_PARKS in categories:
             opportunities.extend(
                 await self.hass.async_add_executor_job(
-                    event_builder.build_park_opportunities, now, CALENDAR_HORIZON_DAYS
+                    event_builder.build_park_opportunities,
+                    now,
+                    CALENDAR_HORIZON_DAYS,
+                    self._sources["park_alerts"].value,
                 )
             )
 
@@ -388,6 +428,34 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             except Exception:  # noqa: BLE001 - a layout change must not break the update
                 _LOGGER.warning("Could not parse %s; skipping it this cycle", source["name"], exc_info=True)
         return found
+
+    async def _fetch_tides(self, session, now: datetime) -> list:
+        """High and low water for the stations the coastal plans depend on."""
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        start = now.date() - timedelta(days=1)
+        end = start + timedelta(days=45)
+
+        found: list = []
+        for index, station in enumerate(verify_module.TIDE_STATIONS.values()):
+            if index:
+                await asyncio.sleep(0.5)
+            url, params = verify_module.build_tide_request(station["station"], start, end)
+            payload = await self._get_json(session, url, params=params, label=f"NOAA {station['name']}")
+            if payload:
+                found.extend(verify_module.parse_tide_predictions(payload, local_tz))
+        if not found:
+            raise RuntimeError("no tide predictions returned")
+        return sorted(found, key=lambda tide: tide.moment)
+
+    async def _fetch_park_alerts(self, session) -> list:
+        """Closures and warnings straight from the parks."""
+        url, params = verify_module.build_nps_alerts_request(
+            list(verify_module.NPS_PARK_CODES.values()), self.nps_key
+        )
+        payload = await self._get_json(session, url, params=params, label="NPS alerts")
+        if payload is None:
+            raise RuntimeError("NPS alerts unavailable")
+        return verify_module.parse_nps_alerts(payload)
 
     # --- Google routing -----------------------------------------------------
 

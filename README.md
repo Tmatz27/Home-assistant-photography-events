@@ -38,6 +38,28 @@ is the whole point.
   that are not at a zone, from a distance estimate calibrated against those
   baselines. See [Drive times](#drive-times).
 
+### What is allowed to wake you up
+
+Every entry declares what its dates rest on, and that decides what it can do.
+The rule exists to prevent one specific failure: booking a trip around a
+confident date that nothing has actually confirmed.
+
+| Basis | What it means | What it can do |
+| --- | --- | --- |
+| **Computed** | Geometry - darkness, moon phase, radiant altitude | Alerts on its merits, verifiable to the minute |
+| **Live** | A search season. The dates say when to start watching | Planning only until sightings corroborate it, then it can alert and names the evidence |
+| **Static** | A calendar estimate with no live source | Planning only, always. Never notifies |
+
+So a humpback window reads *"watch window - nothing reported yet, so this is
+where to look, not when to go"* until something is seen, and then becomes
+*"confirmed: 3 reports within 120 km, most recent 2 days ago"*.
+
+**No API verifies peak windows.** Nobody publishes "gray whale southbound peak =
+5-25 January" as machine-readable data; it does not exist. What can be verified
+is whether something is being seen right now, what the tide is doing, and
+whether the road in is open - and for anything biological those are the better
+questions anyway.
+
 ### Seasons versus peak windows
 
 Every natural event carries two different facts, and the integration keeps them
@@ -68,6 +90,8 @@ peak announces itself once rather than thirty-five times.
 | DesertUSA Wildflower Reports | none | daily | Desert bloom reports |
 | California Fall Color | none | daily | Autumn colour reports |
 | [Google Routes / Distance Matrix](https://developers.google.com/maps/documentation/routes) | yours | on demand, ≤2×/hour | Traffic-aware drive times |
+| [NOAA CO-OPS](https://api.tidesandcurrents.noaa.gov/api/prod/) | none | 12-hourly | Tide predictions - sets the grunion run hour |
+| [NPS alerts](https://www.nps.gov/subjects/developer/) | free | 6-hourly | Park closures, so a planned trip is checked against reality |
 
 Every service carries its own minimum interval, independent of the coordinator
 cycle, so raising the update frequency cannot make any one of them be polled

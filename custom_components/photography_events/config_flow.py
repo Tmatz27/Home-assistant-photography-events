@@ -33,6 +33,7 @@ from .const import (
     CONF_ENABLE_FIELD_REPORTS,
     CONF_ENABLED_CATEGORIES,
     CONF_GOOGLE_API_KEY,
+    CONF_NPS_API_KEY,
     CONF_MAX_DRIVE_HOURS,
     CONF_ROUTING_MODE,
     CONF_SUNSET_SCORE,
@@ -94,7 +95,14 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             # against the zone table when this is empty.
             vol.Optional(
                 CONF_GOOGLE_API_KEY,
+    CONF_NPS_API_KEY,
                 description={"suggested_value": defaults.get(CONF_GOOGLE_API_KEY, "")},
+            ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
+            # Free from nps.gov/subjects/developer. Without it the calendar
+            # cannot warn that the road into a park is closed.
+            vol.Optional(
+                CONF_NPS_API_KEY,
+                description={"suggested_value": defaults.get(CONF_NPS_API_KEY, "")},
             ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
             vol.Required(
                 CONF_ROUTING_MODE,
@@ -128,7 +136,7 @@ def _clean(user_input: dict[str, Any]) -> dict[str, Any]:
             cleaned[key] = int(cleaned[key])
     if CONF_MAX_DRIVE_HOURS in cleaned:
         cleaned[CONF_MAX_DRIVE_HOURS] = float(cleaned[CONF_MAX_DRIVE_HOURS])
-    for key in (CONF_EBIRD_API_KEY, CONF_GOOGLE_API_KEY):
+    for key in (CONF_EBIRD_API_KEY, CONF_GOOGLE_API_KEY, CONF_NPS_API_KEY):
         if not (cleaned.get(key) or "").strip():
             cleaned.pop(key, None)
         else:

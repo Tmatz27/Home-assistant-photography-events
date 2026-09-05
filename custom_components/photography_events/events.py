@@ -808,9 +808,15 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
         )
 
     matches = corroborating_sightings(window, sightings, now)
+    # Corroboration expires. A report that never goes stale is not evidence
+    # about today - and once reports can arrive by email rather than from a page
+    # re-read every morning, "when did somebody actually see this" becomes a
+    # real question with a real answer, so it is asked.
+    stale_before = now - timedelta(days=LIVE_CORROBORATION_DAYS)
     reports = [
         report for report in (field_reports or [])
         if getattr(report, "category", None) == window.category
+        and (getattr(report, "fetched", None) is None or report.fetched >= stale_before)
         and haversine_km(window.latitude, window.longitude, *_report_point(report, window)) <= LIVE_CORROBORATION_KM
     ] if field_reports else []
 
@@ -851,12 +857,19 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
     )
 
 
+# Far enough that no corroboration test can pass. Used for a report whose
+# location could not be resolved: defaulting such a report to the window's own
+# coordinates made its distance zero, so it corroborated every window in the
+# table at once - which is the opposite of what a location-scoped check is for.
+_NOWHERE = (0.0, 0.0)
+
+
 def _report_point(report, window) -> tuple[float, float]:
-    """Field reports are zone-scoped; fall back to the window's own position."""
+    """Where a field report actually is, or nowhere at all."""
     zone = ZONES_BY_ID.get(getattr(report, "zone_id", ""))
     if zone:
         return zone["latitude"], zone["longitude"]
-    return window.latitude, window.longitude
+    return _NOWHERE
 
 
 def within_drive(opportunities: list[Opportunity], max_hours: float) -> list[Opportunity]:

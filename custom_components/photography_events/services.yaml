@@ -1,0 +1,69 @@
+ingest_report:
+  name: Ingest a field report
+  description: >-
+    Hand the integration the text of a subscription email (or any other
+    observation) so it can corroborate a watch window. Intended to be called
+    from an automation triggered by the built-in IMAP integration. The text is
+    read the same way the wildflower hotlines are read - place names matched to
+    zones, signal phrases scored, negation honoured - and anything that does not
+    clearly say something happened somewhere recognisable is discarded.
+  fields:
+    source:
+      name: Source
+      description: Who sent it. Shown on the card as the thing that confirmed the window.
+      required: true
+      example: Whale Safe daily alert
+      selector:
+        text:
+    body:
+      name: Message body
+      description: The plain-text body of the email.
+      required: true
+      example: High whale presence in the Santa Barbara Channel today.
+      selector:
+        text:
+          multiline: true
+    subject:
+      name: Subject
+      description: The subject line. Daily digests usually put their headline here.
+      required: false
+      selector:
+        text:
+    category:
+      name: Category
+      description: >-
+        What the report is about. Leave empty to infer it from the text, which
+        works for anything that names a whale, a dolphin, an elk, aspen or a
+        bloom.
+      required: false
+      selector:
+        select:
+          options:
+            - marine
+            - mammals
+            - blooms
+            - foliage
+    zone_id:
+      name: Zone
+      description: >-
+        Force the report onto one zone. Leave empty to match place names in the
+        text. Set it when you subscribe to a single-region digest - you know the
+        region better than a keyword table does.
+      required: false
+      selector:
+        text:
+    received:
+      name: Received
+      description: >-
+        When the message arrived, as an ISO timestamp. Defaults to now.
+        Corroboration expires, so this is what decides whether the report still
+        counts.
+      required: false
+      selector:
+        text:
+    url:
+      name: Source URL
+      description: Optional link shown alongside the report.
+      required: false
+      selector:
+        text:

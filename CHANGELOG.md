@@ -1,5 +1,29 @@
 # Changelog
 
+## 0.8.1
+
+A way in for the sources that publish a mailing list instead of an API, and two
+corroboration bugs it turned up.
+
+- **`photography_events.ingest_report` service.** Point Home Assistant's
+  built-in IMAP integration at a subscription email and hand the body to this;
+  the text is read the same way the wildflower hotlines are, and corroborates a
+  live window the same way. No third-party AI reading your inbox, and nothing
+  leaves the machine. A landing report triggers an immediate refresh rather than
+  waiting for the next hourly cycle
+- **The email is data, never instruction.** The body is matched against a fixed
+  vocabulary and discarded if it does not fit. Nothing written in a message can
+  add a zone, move a window, or raise a score by saying so
+- **Corroboration expires.** It never did - a report released a window's score
+  forever, so a stale "whales are here" would have kept a window alerting
+  indefinitely. Now 14 days, matching the sighting rule it sits beside
+- **A report with an unresolvable location corroborated everything.** It fell
+  back to the window's own coordinates, making its distance zero and passing the
+  120 km test against every window in the table. It now corroborates nothing,
+  which is the correct answer for a report nobody can place
+- Marine place names added to the zone table - Santa Barbara Channel, Point
+  Conception, Monterey Bay, Morro Bay - so a whale digest lands on a real zone
+
 ## 0.8.0
 
 A hard look at everything: the sunset model rebuilt around physics, meteor peaks

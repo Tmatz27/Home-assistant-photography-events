@@ -255,6 +255,8 @@ rows = [
      f"every {const.MIN_INTERVAL_PARK_ALERTS // 60} h"),
     ("Google Routes API", "Traffic-aware drive times", "yours, optional",
      f"every {const.MIN_INTERVAL_ROUTING} min"),
+    ("Any subscription email", "Whatever a mailing list reports, via the IMAP integration "
+     "and `photography_events.ingest_report`", "none", "whenever it arrives"),
 ]
 for row in rows:
     out("| " + " | ".join(row) + " |")

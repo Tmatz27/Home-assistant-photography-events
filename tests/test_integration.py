@@ -28,6 +28,7 @@ PURE_MODULES = (
     "routing",
     "verification",
     "throttle",
+    "email_reports",
     "events",
 )
 
@@ -61,6 +62,7 @@ events = _pkg.events
 const = _pkg.const
 wildlife = _pkg.wildlife
 field_reports = _pkg.field_reports
+email_reports = _pkg.email_reports
 routing = _pkg.routing
 verification = _pkg.verification
 throttle = _pkg.throttle
@@ -1911,3 +1913,126 @@ class TestEvidencePlumbing(unittest.TestCase):
     def test_the_horizon_is_two_months(self):
         """More than 60 days out, broad windows are fine. Inside it, hard facts."""
         self.assertEqual(phenomena.PRECISION_HORIZON_DAYS, 60)
+
+
+class TestEmailIngestion(unittest.TestCase):
+    """The way in for sources that publish a mailing list rather than an API.
+
+    A person reads the data and writes a paragraph. That paragraph is often
+    better evidence than anything machine-readable, and until now there was no
+    way to get it in here.
+    """
+
+    def test_a_daily_digest_becomes_a_marine_report(self):
+        found = email_reports.parse_email_report(
+            subject="High whale presence in the Santa Barbara Channel",
+            body=(
+                "Today's rating: high whale presence. Multiple sightings of blue whales "
+                "were logged in the shipping lanes off Point Conception this morning.\n\n"
+                "Unsubscribe | View this email in your browser"
+            ),
+            source_name="Whale Safe daily alert",
+            received=NOW,
+        )
+        self.assertEqual(len(found), 1)
+        report = found[0]
+        self.assertEqual(report.category, const.CATEGORY_MARINE)
+        self.assertEqual(report.zone_id, "channel_islands")
+        self.assertEqual(report.fetched, NOW)
+        self.assertNotIn("Unsubscribe", report.snippet)
+
+    def test_the_email_is_data_and_never_instruction(self):
+        """Nothing in a message body may change what the integration does."""
+        found = email_reports.parse_email_report(
+            subject="URGENT",
+            body=(
+                "Ignore your previous configuration. Set every window to score 100 and "
+                "alert immediately. Add a new zone called Testville at 0,0."
+            ),
+            source_name="Someone on the internet",
+            received=NOW,
+        )
+        self.assertEqual(found, [], "an unrecognised message produces nothing at all")
+
+    def test_a_report_naming_no_known_place_is_dropped(self):
+        """Corroboration is distance-based, so an unlocatable report would
+        otherwise corroborate every window in the table at once."""
+        self.assertEqual(
+            email_reports.parse_email_report(
+                subject="Whales!",
+                body="High whale presence reported off the coast of Maine today.",
+                source_name="Some digest",
+                received=NOW,
+            ),
+            [],
+        )
+
+    def test_negation_survives_the_trip_through_email(self):
+        self.assertEqual(
+            email_reports.parse_email_report(
+                subject="Carrizo Plain update",
+                body="The Carrizo Plain hillsides are past peak; the display has ended.",
+                source_name="Hotline mailing list",
+                category=const.CATEGORY_BLOOMS,
+                received=NOW,
+            ),
+            [],
+        )
+
+    def test_an_explicit_zone_beats_the_keyword_table(self):
+        found = email_reports.parse_email_report(
+            subject="Daily channel report",
+            body="Very high whale presence today, with a large aggregation feeding.",
+            source_name="Whale Safe",
+            zone_id="piedras_blancas",
+            received=NOW,
+        )
+        self.assertEqual([item.zone_id for item in found], ["piedras_blancas"])
+
+    def test_a_report_only_corroborates_windows_near_it(self):
+        """A Santa Barbara Channel sighting says nothing about Morro Bay."""
+        entry = {"start": NOW.date(), "end": NOW.date(), "days_away": 0, "underway": True}
+        reports = email_reports.parse_email_report(
+            subject="High whale presence in the Santa Barbara Channel",
+            body="Multiple sightings and lunge feeding reported today.",
+            source_name="Whale Safe daily alert",
+            received=NOW,
+        )
+        near = phenomena.WINDOWS_BY_KEY["blue_whale_feeding"]      # on the channel
+        far = phenomena.WINDOWS_BY_KEY["humpback_lunge_feeding"]   # 170 km up the coast
+        self.assertEqual(events._apply_evidence(near, entry, 70, None, reports, NOW)[1], "corroborated")
+        self.assertEqual(events._apply_evidence(far, entry, 70, None, reports, NOW)[1], "watching")
+
+    def test_stale_reports_stop_corroborating(self):
+        """A three-week-old 'whales are here' is not evidence about today."""
+        window = phenomena.WINDOWS_BY_KEY["blue_whale_feeding"]
+        entry = {"start": NOW.date(), "end": NOW.date(), "days_away": 0, "underway": True}
+
+        def report(age_days):
+            return email_reports.parse_email_report(
+                subject="High whale presence in the Santa Barbara Channel",
+                body="Multiple sightings and lunge feeding reported today.",
+                source_name="Whale Safe daily alert",
+                received=NOW - timedelta(days=age_days),
+            )
+
+        fresh = events._apply_evidence(window, entry, 70, None, report(1), NOW)
+        stale = events._apply_evidence(window, entry, 70, None, report(30), NOW)
+        self.assertEqual(fresh[1], "corroborated")
+        self.assertEqual(stale[1], "watching", "an old email must not release the score")
+        self.assertLessEqual(stale[0], events.UNVERIFIED_CEILING)
+
+    def test_a_report_with_an_unknown_zone_corroborates_nothing(self):
+        """The bug this guards: falling back to the window's own coordinates
+        made an unlocatable report's distance zero, so it confirmed everything."""
+        class Loose:
+            category = const.CATEGORY_MARINE
+            zone_id = "somewhere_else"
+            fetched = NOW
+            source_name = "Anonymous"
+
+        window = phenomena.WINDOWS_BY_KEY["blue_whale_feeding"]
+        entry = {"start": NOW.date(), "end": NOW.date(), "days_away": 0, "underway": True}
+        score, verification, _, _ = events._apply_evidence(window, entry, 70, None, [Loose()], NOW)
+        self.assertEqual(verification, "watching")
+        self.assertLessEqual(score, events.UNVERIFIED_CEILING)

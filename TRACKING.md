@@ -185,6 +185,7 @@ biology, which is genuinely a matter of months. Closures are live.
 | NOAA CO-OPS tide predictions | The hour of a grunion run | none | every 12 h |
 | NPS alerts API | Road and area closures - the trip-killer nothing else sees | free | every 6 h |
 | Google Routes API | Traffic-aware drive times | yours, optional | every 30 min |
+| Any subscription email | Whatever a mailing list reports, via the IMAP integration and `photography_events.ingest_report` | none | whenever it arrives |
 
 Requests are staggered into groups on startup so a Home Assistant restart does not
 fire everything at once, and each source backs off on its own after a failure.

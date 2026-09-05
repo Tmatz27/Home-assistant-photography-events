@@ -36,6 +36,11 @@ from homeassistant.util import dt as dt_util
 
 from . import events as event_builder
 from . import field_reports as reports_module
+
+# An ingested report is held a little longer than it can corroborate for, so it
+# still shows on the card as context after it has stopped counting as evidence.
+INGESTED_REPORT_TTL_DAYS = 21
+MAX_INGESTED_REPORTS = 200
 from . import routing as routing_module
 from . import verification as verify_module
 from . import wildlife as wildlife_module
@@ -135,6 +140,11 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "tides": Source("NOAA tide predictions", MIN_INTERVAL_TIDES),
             "park_alerts": Source("National Park Service alerts", MIN_INTERVAL_PARK_ALERTS),
         }
+        # Reports handed in by an automation rather than fetched. Kept here
+        # rather than in a Source because they arrive on somebody else's
+        # schedule - an email lands when it lands - so there is nothing to poll
+        # and nothing to throttle, only something to expire.
+        self._ingested_reports: list = []
         self._routing_cache: dict[tuple[float, float], routing_module.DriveTime] = {}
         self._routing_endpoint: str | None = None
         self._cold_start = True
@@ -309,7 +319,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 )
             )
 
-        reports = self._sources["field_reports"].value or []
+        reports = list(self._sources["field_reports"].value or []) + self._fresh_ingested(now)
         if reports:
             opportunities.extend(
                 await self.hass.async_add_executor_job(
@@ -361,6 +371,37 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         except Exception as err:  # noqa: BLE001 - one dead service must not stop the rest
             source.fail(now, f"{type(err).__name__}: {err}")
             _LOGGER.warning("%s update failed (%s); keeping last known data", source.name, err)
+
+    # --- Reports handed in from outside ------------------------------------
+
+    async def async_add_ingested_reports(self, reports: list) -> None:
+        """Accept reports from the ingest service and rebuild immediately.
+
+        Refreshing rather than waiting for the next cycle is the point: an email
+        that says whales are in the channel today is worth acting on today, and
+        an hour is a long time when the animals are moving.
+        """
+        if not reports:
+            return
+        now = dt_util.utcnow()
+        # One report per source per zone. A daily digest arriving every morning
+        # should replace yesterday's, not stack up beside it.
+        keyed = {
+            (report.source_id, report.zone_id): report
+            for report in [*self._fresh_ingested(now), *reports]
+        }
+        self._ingested_reports = list(keyed.values())
+        _LOGGER.debug("Ingested %d report(s); %d held", len(reports), len(self._ingested_reports))
+        await self.async_request_refresh()
+
+    def _fresh_ingested(self, now: datetime) -> list:
+        """Drop what has gone stale, and keep the list from growing forever."""
+        cutoff = now - timedelta(days=INGESTED_REPORT_TTL_DAYS)
+        self._ingested_reports = [
+            report for report in self._ingested_reports
+            if report.fetched is None or report.fetched >= cutoff
+        ][-MAX_INGESTED_REPORTS:]
+        return list(self._ingested_reports)
 
     async def _async_deferred_field_reports(self) -> None:
         """Scrape the hotlines after setup has finished, then publish."""

@@ -653,6 +653,84 @@ Letting you name and switch between several saved locations (e.g. for an
 upcoming trip) is a natural next step but is intentionally not built yet -
 tracked as a future enhancement.
 
+## Getting a mailing list into this
+
+Some of the best sources on this coast do not publish an API. They publish a
+mailing list: a person reads the data and writes a paragraph, once a day, and
+sends it to whoever signed up. That paragraph is often *better* evidence than
+anything machine-readable, because a human already decided what mattered.
+
+You do not need a third-party AI reading your inbox to use it. Home Assistant
+has a built-in IMAP integration, and this integration has a service to hand
+text to.
+
+**1. Add the IMAP integration** (Settings → Devices & Services → Add → IMAP).
+Point it at the mailbox, and set the search to match just the sender you care
+about, so nothing else in your inbox is ever read:
+
+```
+FROM "alerts@example.org" UNSEEN
+```
+
+**2. Add this automation.** It passes the body of each matching message to the
+integration and nothing else happens to it:
+
+```yaml
+alias: Whale digest into Photography Events
+mode: queued
+triggers:
+  - trigger: event
+    event_type: imap_content
+    event_data:
+      sender: alerts@example.org
+actions:
+  - action: photography_events.ingest_report
+    data:
+      source: "Whale Safe daily alert"
+      subject: "{{ trigger.event.data.subject }}"
+      body: "{{ trigger.event.data.text }}"
+      received: "{{ trigger.event.data.date }}"
+      # Optional. Leave both out and the text is read for a category and a
+      # place name; set them when you subscribe to a single-region digest.
+      category: marine
+      zone_id: channel_islands
+```
+
+That is the whole setup. The integration refreshes as soon as a report lands
+rather than waiting for the next hourly cycle, because an email saying the
+whales are in the channel today is worth acting on today.
+
+### What happens to the text
+
+It is read exactly the way the wildflower hotlines are read - place names
+matched to zones, signal phrases scored, negation honoured - and three rules
+make it safe to point at an inbox:
+
+- **The email is data, never instruction.** Nothing in a message body changes
+  what the integration does. The text is matched against a fixed vocabulary and
+  discarded if it does not fit. A sentence in an email cannot add a zone, move a
+  window, or raise a score by saying so
+- **A report naming no recognisable place is dropped.** Corroboration is
+  distance-based, so a report that cannot be located would otherwise corroborate
+  every window at once. Most days a digest produces nothing, and that is correct
+- **It expires.** A report stops counting as evidence after 14 days and is
+  forgotten after 21. A three-week-old "whales are here" is not evidence about
+  today
+
+A report that does land corroborates any live window of the same category within
+120 km, which releases that window from planning-only to something that can
+actually alert - and the card names the source that did it.
+
+### Why not have an AI read the inbox
+
+It would work, and it is the wrong shape for this. An email routed through a
+model comes back as prose that has to be trusted; the path above never leaves
+your machine, produces a report or produces nothing, and cannot be talked into
+inventing a sighting by anything written in the message. The parser being narrow
+is the feature - if a digest changes format it goes quiet rather than confidently
+wrong, and quiet is the failure mode you want in something you book trips
+against.
+
 ## Data accuracy and limitations
 
 **[TRACKING.md](TRACKING.md) is the full inventory** - every phenomenon watched,

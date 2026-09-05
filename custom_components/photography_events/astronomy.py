@@ -840,3 +840,98 @@ def nearest_new_moon(moment: datetime) -> tuple[datetime | None, float]:
         return None, float("inf")
     closest = min(found, key=lambda when: abs((when - moment).total_seconds()))
     return closest, (closest - moment).total_seconds() / 86400
+
+
+def sun_azimuth(moment: datetime, lat: float, lon: float) -> float:
+    """Where on the horizon the sun is, in radians from north through east."""
+    ra, dec = sun_equatorial(days_since_j2000(moment))
+    return horizontal(ra, dec, moment, lat, lon)[1] % (2 * math.pi)
+
+
+def offset_point(lat_deg: float, lon_deg: float, bearing_rad: float, km: float) -> tuple[float, float]:
+    """Walk a great circle from a point and report where you land.
+
+    Used to find where the sunset beam grazes the surface. The light that
+    reddens cloud overhead entered the atmosphere a long way toward the sun -
+    roughly ``sqrt(2 * R * h)``, which is 140km for a low deck and over 300km
+    for cirrus - so whether the show happens is decided by the weather out
+    there, not by the weather above your head.
+    """
+    radius = 6371.0088
+    angular = km / radius
+    lat = math.radians(lat_deg)
+    lon = math.radians(lon_deg)
+    sin_lat = math.sin(lat) * math.cos(angular) + math.cos(lat) * math.sin(angular) * math.cos(bearing_rad)
+    end_lat = math.asin(_clamp(sin_lat, -1.0, 1.0))
+    end_lon = lon + math.atan2(
+        math.sin(bearing_rad) * math.sin(angular) * math.cos(lat),
+        math.cos(angular) - math.sin(lat) * math.sin(end_lat),
+    )
+    return math.degrees(end_lat), (math.degrees(end_lon) + 540) % 360 - 180
+
+
+def solar_longitude_deg(moment: datetime) -> float:
+    """Apparent solar longitude in degrees - the meteor astronomer's calendar."""
+    return math.degrees(sun_ecliptic_longitude(days_since_j2000(moment))) % 360.0
+
+
+def precession_in_longitude_deg(moment: datetime) -> float:
+    """General precession in ecliptic longitude since J2000, in degrees.
+
+    The published solar longitude of a meteor shower is referred to the
+    J2000.0 equinox, while the Sun's longitude computed for a date is referred
+    to the equinox of that date. The two drift apart at about 50 arcseconds a
+    year, which sounds negligible and is not: by 2025 it is 0.35 degrees, and
+    the Sun covers 0.35 degrees in roughly eight and a half hours. Ignoring it
+    puts every peak most of a night early. Meeus chapter 21.
+    """
+    t = days_since_j2000(moment) / 36525.0
+    return (5029.0966 * t + 1.11113 * t * t - 0.000006 * t * t * t) / 3600.0
+
+
+def solar_longitude_crossing(
+    year: int, target_deg: float, tz=timezone.utc, j2000: bool = True
+) -> datetime | None:
+    """When the Earth reaches a given point in its orbit, in a given year.
+
+    Meteor shower maxima are defined by solar longitude and not by a date,
+    because a stream sits at a fixed place in the Earth's orbit: the planet
+    arrives at the same longitude every year, but the calendar it arrives on
+    slides by up to a day with the leap cycle. Storing "Geminids, 13 December"
+    is therefore wrong roughly one year in two - by a whole night, which for an
+    event that peaks over a few hours is the difference between the shower and
+    the night after it.
+
+    So the peaks are stored as longitudes and the date is computed. Solar
+    longitude increases monotonically through the year apart from the single
+    wrap at the March equinox, which is handled by unwrapping the offset before
+    the search rather than by special-casing the equinox.
+    """
+    def offset(moment: datetime) -> float:
+        target = target_deg
+        if j2000:
+            target += precession_in_longitude_deg(moment)
+        return ((solar_longitude_deg(moment) - target + 180.0) % 360.0) - 180.0
+
+    start = datetime(year, 1, 1, tzinfo=tz)
+    step = timedelta(days=1)
+    previous_moment = start
+    previous_value = offset(previous_moment)
+    for index in range(1, 368):
+        moment = start + index * step
+        if moment.year > year:
+            break
+        value = offset(moment)
+        # A sign change with a small step is a real crossing. The 360-degree
+        # jump at the wrap is not, and is what the magnitude test excludes.
+        if (previous_value <= 0.0 <= value or previous_value >= 0.0 >= value) and abs(value - previous_value) < 180.0:
+            low, high = previous_moment, moment
+            for _ in range(48):
+                middle = low + (high - low) / 2
+                if (offset(low) <= 0.0) == (offset(middle) <= 0.0):
+                    low = middle
+                else:
+                    high = middle
+            return low + (high - low) / 2
+        previous_moment, previous_value = moment, value
+    return None

@@ -10,6 +10,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import ALL_CATEGORIES, GEAR_PROFILES, CATEGORY_SUNSET, DOMAIN
 from .parks import PARKS
+from .phenomena import PRECISION_HORIZON_DAYS
 from .coordinator import PhotographyEventsCoordinator
 
 
@@ -162,6 +163,9 @@ class PlanningOutlookSensor(_BaseSensor):
                 }
                 for park in PARKS
             },
+            # Published rather than hardcoded in the card, so the two can never
+            # disagree about when a season becomes a plan.
+            "precision_horizon_days": PRECISION_HORIZON_DAYS,
             "truncated": len(self._opportunities) > self.MAX_EVENTS,
             "generated": (self.coordinator.data or {}).get("generated"),
         }

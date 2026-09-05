@@ -185,36 +185,74 @@ without a score.
 
 ## Scoring the sky
 
-Most sunsets are pleasant. A few times a year the cloud is exactly right and
-the whole sky goes up in colour. This card tries to tell those apart rather
+Most sunsets are pleasant. A few times a year the cloud is exactly right and the
+whole sky goes up in colour. The point of this is to tell those apart rather
 than reporting "sunset: 7:14pm" every night.
 
-Vivid sunsets need the low sun's light to reach cloud from underneath without
-first crossing the hazy air near the ground, and they need mid- or high-level
-cloud up there to catch it (NOAA's Storm Prediction Center has a good write-up
-in "The Colors of Twilight and Sunset"). So the ingredients are: a clear path
-to the horizon, **broken** rather than flat cloud, no rain-bearing deck, and
-clean air - haze and smoke mute colour rather than enhancing it, contrary to
-the popular belief.
+### Where the light actually comes from
 
-Almost every Home Assistant weather integration reports a single aggregate
-cloud percentage rather than per-layer cloud, so the card infers structure from
-how much that number *moves* across the hours either side of the event:
+The obvious way to score a sunset - look at the cloud above your head - is
+wrong, and wrong in a way that fails on this coast's most common evening. At
+sunset the beam that reddens a cloud at height `h` above you grazes the surface
+roughly `sqrt(2Rh)` away toward the sun: about 140 km for a low deck, 230 km for
+mid-level cloud, over 300 km for cirrus. So a sunset has **two separate
+requirements in two separate places**:
 
-| Signal | Effect |
+| | Where | What it needs |
+| --- | --- | --- |
+| **The canvas** | Overhead | Cloud to catch the light. High cirrus is best; mid-level adds depth; even a solid low deck lights up from underneath. No cloud at all is a plain evening, not a photograph. |
+| **The light path** | ~200 km toward the sun | A gap. This is a **gate**, not a bonus - if it is shut, nothing above you matters however beautiful. |
+
+Conflating the two is what makes a sunset model unreliable. The textbook local
+failure is 55% cirrus overhead, clear sky above the tripod, and a solid marine
+layer sitting 200 km out over the Pacific. An overhead-only model scores that in
+the eighties. Nothing happens, because the light was absorbed far to the west
+where nobody was looking. Scoring the light path separately drops the same
+evening to about 10.
+
+So the integration fetches **three points per zone** in a single request - the
+zone, the point 200 km toward sunset, and the point 200 km toward sunrise, each
+on the sun's own azimuth at the event, which swings through about sixty degrees
+across the year. When the upstream forecast is unavailable the score falls back
+to the local deck, is capped at 88, and says so on the card rather than passing
+a guess off as a measurement.
+
+### What it measures
+
+All from Open-Meteo, free and keyless:
+
+| Input | Role |
 | --- | --- |
-| Mean cloud cover in the broken sweet spot (~25-65%) | Best base score; empty and overcast skies both score low |
-| Large spread across the sampled hours | Bonus - broken, dynamic cloud is what catches light |
-| Flat, unchanging cloud | Penalty - a uniform deck rarely lights up |
-| High precipitation probability | Penalty - rain-bearing low cloud blocks the show |
-| Unsettled earlier, clearing by sunset | Bonus - the classic "sky on fire" setup |
-| Very high humidity | Penalty - haze mutes saturation |
+| `cloud_cover_high` / `_mid` / `_low`, at the zone | The canvas |
+| `cloud_cover_low` / `_mid`, at the upstream probes | The light path gate |
+| `aerosol_optical_depth`, `dust` | Saturation. Aerosol scatters the short wavelengths that give a sunset its range and leaves a flat orange smear - dirty air makes sunsets worse, not better, contrary to the folklore |
+| `visibility` | Near-field haze |
+| `relative_humidity_2m` | Weighted lowest on purpose: marine air here is humid on the clearest evenings of the year |
+| `precipitation_probability` | Rain overhead ends it; rain *earlier* that clears is the best setup there is, and is the only route to a score in the high nineties |
 
-Scores land in five tiers. The top one, **epic**, needs several signals to line
-up at once, gets its own alert banner at the top of the card, and is meant to
-be rare - if it fired every week it would not be worth acting on. Each score
-also shows its reasoning ("47% cloud, clearing after an unsettled afternoon"),
-so you can start recognising the pattern yourself.
+### Alerting on "just right" rather than "good"
+
+A fixed threshold answers "is this a good sunset". The question you are actually
+asking is "is this the one to go out for", and that is comparative: an 85 is
+worth rearranging an evening for when the rest of the week is in the fifties,
+and worth ignoring when tomorrow is a 96.
+
+So every candidate in the forecast window is scored before any is filtered, and
+a sky is flagged a **standout** when it is at least 82 *and* within three points
+of the best in that window. Only a standout with a modelled light path can turn
+on the drop-everything sensor. A good sunset happens most weeks; being told
+about every one is how a notification gets muted, and a muted notification is
+worth nothing on the evening that matters.
+
+### The card on its own
+
+Used standalone against a Home Assistant weather entity - no integration - the
+card only has a single aggregate cloud percentage to work with, because that is
+all such entities expose. It infers structure from how much that number moves
+across the hours either side of the event: the broken sweet spot around 25-65%
+scores best, a large spread is a bonus, a flat unchanging deck is a penalty. It
+is a decent proxy and it is not the model above. With the integration installed,
+the layered and upstream version is what you get.
 
 ## Get notified when the sky is worth chasing
 
@@ -617,6 +655,28 @@ tracked as a future enhancement.
 
 ## Data accuracy and limitations
 
+**[TRACKING.md](TRACKING.md) is the full inventory** - every phenomenon watched,
+the dates it uses, what evidence those dates rest on, and who to check them
+against before you book anything. It is generated from the code by
+`tools/generate_tracking_inventory.py`, so it cannot drift from what actually
+ships. Read it before trusting any window in here.
+
+- **Nothing biological alerts on a date alone.** Every entry carries an evidence
+  level - `computed` (geometry, exact), `live` (a search season, which may only
+  alert once a sighting of the named species turns up within 120 km in the last
+  14 days), or `static` (a calendar estimate that **never** alerts, because no
+  feed anywhere publishes it). The card states which, and what is still missing
+- **Meteor peaks are derived, not stored.** A stream sits at a fixed solar
+  longitude; the calendar date slides by up to a day with the leap cycle, so a
+  stored date is wrong about one year in two by a whole night. Longitudes are
+  the IMO Working List values, precessed from the J2000 equinox the IMO
+  publishes them for - worth 0.35 degrees today, which is eight hours of Sun.
+  Cross-checked: the derived 2025 Perseid maximum lands at 12 August 19h UT,
+  which is the hour the IMO published
+- **Rates are what you will see, not the ZHR.** A zenithal hourly rate assumes
+  the radiant overhead and perfect skies. The quoted figure is scaled by the
+  sine of the radiant altitude at your site, so the Geminids' 150 becomes about
+  80 with the radiant at 32 degrees
 - **Sun and Moon are computed locally**, not read from an external ephemeris
   service. The Sun uses Meeus chapter 25 apparent longitude (better than a
   hundredth of a degree) and the Moon the chapter 47 truncated ELP series with

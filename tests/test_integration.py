@@ -245,6 +245,17 @@ def _uniform(high, mid, low, humidity, precip):
     return _forecast([(o, high, mid, low, humidity, precip) for o in range(-8, 3)])
 
 
+def _aerosol(depth):
+    """An air-quality payload on the same hourly grid as the forecast fixtures."""
+    start = EVENT_TIME - timedelta(hours=8)
+    return {
+        "hourly": {
+            "time": [(start + timedelta(hours=h)).replace(tzinfo=None).isoformat() for h in range(11)],
+            "aerosol_optical_depth": [depth] * 11,
+        }
+    }
+
+
 class TestSkyScoring(unittest.TestCase):
     def test_textbook_conditions_score_high(self):
         result = weather_scoring.score_sky(_uniform(50, 30, 5, 45, 0), EVENT_TIME)
@@ -294,6 +305,119 @@ class TestSkyScoring(unittest.TestCase):
         params = weather_scoring.build_open_meteo_params(34.742, -120.5724)
         for field in ("cloud_cover_low", "cloud_cover_mid", "cloud_cover_high", "relative_humidity_2m"):
             self.assertIn(field, params["hourly"])
+        self.assertIn("visibility", params["hourly"], "requested and, until now, never read")
+
+    def test_multi_location_requests_and_responses(self):
+        """One request carries the zone and both its light-path probes."""
+        params = weather_scoring.build_open_meteo_params([34.742, 33.9], [-120.57, -122.5])
+        self.assertEqual(params["latitude"], "34.7420,33.9000")
+        self.assertEqual(params["longitude"], "-120.5700,-122.5000")
+        self.assertEqual(len(weather_scoring.split_multi_location([{"a": 1}, {"b": 2}])), 2)
+        self.assertEqual(len(weather_scoring.split_multi_location({"a": 1})), 1)
+        self.assertEqual(weather_scoring.split_multi_location(None), [])
+
+
+class TestLightPathScoring(unittest.TestCase):
+    """The rework's whole reason for existing.
+
+    The old model scored the cloud above the tripod. On this coast the thing
+    that decides whether a sunset happens is a stratus deck a couple of hundred
+    kilometres out over the Pacific, which is invisible from the zone's own
+    forecast - so the old model kept promising sunsets the marine layer had
+    already eaten.
+    """
+
+    def test_a_blocked_light_path_kills_a_perfect_canvas(self):
+        canvas = _uniform(55, 20, 15, 70, 0)
+        blocked = weather_scoring.score_sky(canvas, EVENT_TIME, upstream=_uniform(0, 0, 95, 80, 0))
+        open_path = weather_scoring.score_sky(canvas, EVENT_TIME, upstream=_uniform(0, 0, 8, 60, 0))
+
+        self.assertLess(blocked.score, 20)
+        self.assertGreater(open_path.score, 80)
+        self.assertIn("light path", blocked.limited_by)
+        self.assertEqual(blocked.light_path, "modelled")
+
+    def test_without_upstream_data_the_score_is_capped_and_labelled(self):
+        """A number built on a proxy must never be presented as one built on fact."""
+        local_only = weather_scoring.score_sky(_uniform(50, 25, 5, 45, 0), EVENT_TIME)
+        self.assertEqual(local_only.light_path, "local")
+        self.assertLessEqual(local_only.score, weather_scoring.LOCAL_ONLY_CEILING)
+
+    def test_a_cloudless_sky_is_not_a_photograph(self):
+        """The old model gave an empty sky about fifty. It is worth almost nothing."""
+        empty = weather_scoring.score_sky(_uniform(0, 0, 0, 40, 0), EVENT_TIME, upstream=_uniform(0, 0, 0, 40, 0))
+        self.assertLess(empty.score, 15)
+        self.assertIn("cloud", empty.limited_by)
+
+    def test_a_low_deck_lit_from_underneath_still_counts(self):
+        """Overcast overhead with a horizon gap open is a real sunset, not a dud.
+
+        This is the case the split matters for in both directions: local low
+        cloud is a subject, upstream low cloud is a blocker, and a model that
+        treats them as one thing gets one of the two badly wrong.
+        """
+        lit = weather_scoring.score_sky(_uniform(10, 20, 95, 80, 0), EVENT_TIME, upstream=_uniform(0, 0, 12, 60, 0))
+        dead = weather_scoring.score_sky(_uniform(10, 20, 95, 80, 0), EVENT_TIME, upstream=_uniform(0, 0, 95, 85, 0))
+        self.assertGreater(lit.score, 55)
+        self.assertLess(dead.score, 15)
+
+    def test_aerosol_load_mutes_colour(self):
+        canvas = _uniform(50, 25, 10, 40, 0)
+        path = _uniform(0, 0, 8, 50, 0)
+        clean = weather_scoring.score_sky(canvas, EVENT_TIME, upstream=path, air_quality=_aerosol(0.06))
+        smoke = weather_scoring.score_sky(canvas, EVENT_TIME, upstream=path, air_quality=_aerosol(0.85))
+        self.assertGreater(clean.score, smoke.score + 15)
+        self.assertIn("aerosol", smoke.limited_by)
+
+    def test_probe_points_follow_the_sun_and_mirror_at_sunrise(self):
+        winter = weather_scoring.light_path_probes(34.742, -120.5724, datetime(2026, 1, 15, 12, tzinfo=timezone.utc))
+        summer = weather_scoring.light_path_probes(34.742, -120.5724, datetime(2026, 7, 15, 12, tzinfo=timezone.utc))
+
+        # Sunset probes go out over the Pacific, sunrise probes inland.
+        self.assertLess(winter["sunset"][1], -122.0)
+        self.assertGreater(winter["sunrise"][1], -119.0)
+        # And the bearing swings with the season, which a fixed compass point
+        # could not follow: the January sunset is well south of the July one.
+        self.assertLess(winter["sunset"][0], summer["sunset"][0] - 1.0)
+
+    def test_standout_is_comparative_not_a_fixed_bar(self):
+        """'Go tonight' is a question about the week, not about a threshold."""
+        scores = [weather_scoring.SkyScore(score=value) for value in (91, 89, 60, 40)]
+        weather_scoring.mark_standouts(scores)
+        self.assertEqual([item.standout for item in scores], [True, True, False, False])
+
+        # An 85 is a standout in a quiet week and not in a spectacular one.
+        quiet = [weather_scoring.SkyScore(score=value) for value in (85, 52, 48)]
+        weather_scoring.mark_standouts(quiet)
+        self.assertTrue(quiet[0].standout)
+        busy = [weather_scoring.SkyScore(score=value) for value in (85, 97)]
+        weather_scoring.mark_standouts(busy)
+        self.assertFalse(busy[0].standout)
+
+        # Nothing good enough means nothing flagged, rather than a best-of-a-bad-lot.
+        poor = [weather_scoring.SkyScore(score=value) for value in (44, 30)]
+        weather_scoring.mark_standouts(poor)
+        self.assertFalse(any(item.standout for item in poor))
+
+    def test_only_a_modelled_standout_may_raise_an_alert(self):
+        """Clearing the score bar is necessary and, for a sky, not sufficient."""
+        def sky(score, **extra):
+            return events.Opportunity(
+                key="k", title="t", category=const.CATEGORY_SUNSET, zone_id="z", zone_name="Z",
+                start=NOW, end=NOW, score=score, detail="", drive_hours=1.0, extra=extra,
+            )
+
+        self.assertTrue(events.alert_candidate(sky(90, standout=True, light_path="modelled"), 85))
+        self.assertFalse(events.alert_candidate(sky(90, standout=False, light_path="modelled"), 85))
+        self.assertFalse(events.alert_candidate(sky(90, standout=True, light_path="local"), 85))
+        self.assertFalse(events.alert_candidate(sky(70, standout=True, light_path="modelled"), 85))
+
+        # Everything else keeps the plain score gate.
+        meteor = events.Opportunity(
+            key="k", title="t", category=const.CATEGORY_ASTRO, zone_id="z", zone_name="Z",
+            start=NOW, end=NOW, score=90, detail="", drive_hours=1.0,
+        )
+        self.assertTrue(events.alert_candidate(meteor, 85))
 
 
 NOW = datetime(2026, 9, 5, 18, 0, tzinfo=timezone.utc)
@@ -360,7 +484,7 @@ class TestOpportunities(unittest.TestCase):
         shower = next(item for item in events.METEOR_SHOWERS if item["name"] == "Geminids")
 
         for year in (2026, 2027, 2028):
-            peak = datetime(year, shower["month"], shower["day"], 12, tzinfo=timezone.utc)
+            peak = astronomy.solar_longitude_crossing(year, shower["lambda_sun"], tz=timezone.utc)
             window = astronomy.astro_shooting_window(
                 peak, lat, lon, shower["ra_deg"], shower["dec_deg"],
                 min_target_altitude=events.MIN_RADIANT_ALTITUDE,
@@ -469,7 +593,7 @@ class TestPeakWindows(unittest.TestCase):
             self.assertTrue(32.0 < window.latitude < 42.5, window.key)
             self.assertTrue(-125.0 < window.longitude < -114.0, window.key)
 
-    def test_precision_escalates_inside_thirty_days(self):
+    def test_precision_escalates_inside_the_published_horizon(self):
         now = datetime(2026, 9, 4, tzinfo=UTC)
         built = events.build_seasonal_opportunities(now, 365)
         for item in built:
@@ -1415,11 +1539,50 @@ class TestMeteorPeakNights(unittest.TestCase):
         self.assertEqual(rates["Perseids"], 100)
         self.assertEqual(rates["Geminids"], 150)
 
-    def test_peak_dates_are_the_night_of_maximum(self):
-        dates = {item["name"]: (item["month"], item["day"]) for item in events.METEOR_SHOWERS}
-        self.assertEqual(dates["Quadrantids"], (1, 3))
-        self.assertEqual(dates["Perseids"], (8, 12))
-        self.assertEqual(dates["Geminids"], (12, 13))
+    def test_peaks_are_derived_from_solar_longitude_not_a_fixed_date(self):
+        """The stream sits at a fixed orbital longitude; the date does not.
+
+        Checked against the published maximum the IMO gives for the 2025
+        Perseids - 12 August, 19h UT - because the whole point of deriving the
+        date is that it must land on the right night in every year, including
+        the ones where a fixed 12 August would be a night out.
+        """
+        perseids = next(i for i in events.METEOR_SHOWERS if i["name"] == "Perseids")
+        peak = astronomy.solar_longitude_crossing(2025, perseids["lambda_sun"], tz=timezone.utc)
+        self.assertEqual((peak.month, peak.day), (8, 12))
+        self.assertLess(abs(peak.hour - 19), 2, f"published 19h UT, computed {peak:%H}h")
+
+        # Leap years pull the peak most of a day earlier. A stored date cannot.
+        by_year = {
+            year: astronomy.solar_longitude_crossing(year, perseids["lambda_sun"], tz=timezone.utc)
+            for year in (2025, 2026, 2027, 2028)
+        }
+        self.assertEqual((by_year[2027].month, by_year[2027].day), (8, 13))
+        self.assertEqual((by_year[2028].month, by_year[2028].day), (8, 12))
+        self.assertNotEqual(by_year[2027].day, by_year[2028].day)
+
+    def test_solar_longitudes_are_read_as_j2000_and_precessed(self):
+        """The IMO publishes lambda for equinox J2000.0, not equinox of date.
+
+        Skipping the precession puts every peak about eight hours early by the
+        2020s - which for the Quadrantids, whose maximum lasts a few hours, is
+        the difference between the shower and an empty sky.
+        """
+        shift = astronomy.precession_in_longitude_deg(datetime(2025, 1, 1, tzinfo=timezone.utc))
+        self.assertAlmostEqual(shift, 0.349, places=2)
+
+        precessed = astronomy.solar_longitude_crossing(2025, 140.0, tz=timezone.utc)
+        raw = astronomy.solar_longitude_crossing(2025, 140.0, tz=timezone.utc, j2000=False)
+        hours = (precessed - raw).total_seconds() / 3600
+        self.assertGreater(hours, 7.5)
+        self.assertLess(hours, 9.5)
+
+    def test_quoted_rate_is_what_you_will_see_not_the_zenithal_ideal(self):
+        """ZHR assumes the radiant overhead. It never is."""
+        self.assertEqual(events.expected_meteor_rate(150, 90), 150)
+        self.assertEqual(events.expected_meteor_rate(150, 30), 75)
+        self.assertLess(events.expected_meteor_rate(150, 32), 150)
+        self.assertGreaterEqual(events.expected_meteor_rate(10, 5), 1)
 
 
 class TestPrunedParks(unittest.TestCase):
@@ -1704,3 +1867,47 @@ class TestVerificationSources(unittest.TestCase):
         bears = phenomena.WINDOWS_BY_KEY["black_bear_cubs"]
         self.assertLessEqual(bears.peak_start, (4, 30))
         self.assertIn("wildlife.ca.gov", " ".join(bears.verify_urls))
+
+
+class TestEvidencePlumbing(unittest.TestCase):
+    """A window that says it is waiting for a sighting must be one we look for.
+
+    The failure this guards was silent and total: four windows advertised live
+    verification while nothing ever queried their species, so corroboration
+    could never arrive, they were permanently capped at planning level, and they
+    behaved exactly like the static estimates they were supposed to improve on.
+    Nothing failed; the integration simply quietly never worked for them.
+    """
+
+    def test_every_live_window_names_a_species_that_is_actually_queried(self):
+        queried = set(phenomena.corroboration_taxa())
+        for window in phenomena.PEAK_WINDOWS:
+            if window.evidence != phenomena.EVIDENCE_LIVE:
+                continue
+            if not window.live_taxa:
+                # Rainfall-driven windows are corroborated by the hotline
+                # scrapers instead, which are keyed on category not species.
+                self.assertIn(window.category, (const.CATEGORY_BLOOMS, const.CATEGORY_FOLIAGE), window.key)
+                continue
+            for name in window.live_taxa:
+                self.assertIn(name, queried, f"{window.key} waits on {name}, which nothing fetches")
+
+    def test_every_window_names_somewhere_to_check_it(self):
+        """No entry may be a bare assertion with nothing behind it."""
+        for window in phenomena.PEAK_WINDOWS:
+            self.assertTrue(window.verify_urls, f"{window.key} cites no source at all")
+            for url in window.verify_urls:
+                self.assertTrue(url.startswith("https://"), url)
+
+    def test_a_near_window_always_says_what_it_is_still_missing(self):
+        """Inside the horizon, 'what would make this a fact' is not optional."""
+        now = datetime(2026, 9, 5, 12, tzinfo=timezone.utc)
+        built = events.build_seasonal_opportunities(now, 365)
+        near = [item for item in built if item.extra.get("precision") == "peak"]
+        self.assertTrue(near)
+        for item in built:
+            self.assertTrue(item.extra.get("awaiting"), f"{item.key} says nothing about its evidence")
+
+    def test_the_horizon_is_two_months(self):
+        """More than 60 days out, broad windows are fine. Inside it, hard facts."""
+        self.assertEqual(phenomena.PRECISION_HORIZON_DAYS, 60)

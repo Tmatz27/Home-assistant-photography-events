@@ -95,7 +95,6 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
             # against the zone table when this is empty.
             vol.Optional(
                 CONF_GOOGLE_API_KEY,
-    CONF_NPS_API_KEY,
                 description={"suggested_value": defaults.get(CONF_GOOGLE_API_KEY, "")},
             ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
             # Free from nps.gov/subjects/developer. Without it the calendar

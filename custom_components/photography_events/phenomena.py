@@ -96,6 +96,17 @@ SOURCE_PWF_TRACKER = (
 SOURCE_NOAA_GRAY_WHALE = "https://www.fisheries.noaa.gov/west-coast/science-data/gray-whale-population-abundance"
 SOURCE_NOAA_CALF = "https://www.fisheries.noaa.gov/west-coast/science-data/gray-whale-condition-and-calf-production"
 SOURCE_CDFW_BEAR = "https://wildlife.ca.gov/Conservation/Mammals/Black-Bear"
+SOURCE_CDFW_DESERT_BIGHORN = (
+    "https://wildlife.ca.gov/Conservation/Mammals/Bighorn-Sheep/Desert/Natural-History/life-history"
+)
+SOURCE_CDFW_SIERRA_BIGHORN = (
+    "https://wildlife.ca.gov/Conservation/Mammals/Bighorn-Sheep/Sierra-Nevada/Recovery-Program"
+)
+# Friends of the Elephant Seal run the Piedras Blancas rookery interpretation
+# and publish what is happening on the beach week by week - which for a colony
+# 45 minutes up the coast is about as close to ground truth as this gets.
+SOURCE_ELEPHANT_SEAL = "https://elephantseal.org/whats-happening-now/"
+SOURCE_BLM_CARRIZO = "https://www.blm.gov/visit/carrizo-plain-national-monument"
 SOURCE_BEAR_TRACKER = "https://keepbearswild.org/bear-tracker/"
 SOURCE_TAHOE_BEARS = "https://www.tahoebears.org/learn-more"
 SOURCE_THEODORE_PAYNE = "https://theodorepayne.org/wildflower-hotline/"
@@ -109,9 +120,34 @@ SOURCE_CDFW_WOODBRIDGE = "https://wildlife.ca.gov/Lands/Places-to-Visit/Woodbrid
 SOURCE_EBIRD_CRANE = "https://ebird.org/species/sancra"
 
 # Inside this many days the calendar stops speaking in seasons and starts
-# giving concrete windows, locations and gear. Beyond it, a vague answer is the
-# honest one - weather models do not reach, and animals do not read calendars.
-PRECISION_HORIZON_DAYS = 30
+# giving concrete windows, locations, gear - and, above all, a plain statement
+# of what has actually been confirmed and what has not. Beyond it, a vague
+# answer is the honest one: weather models do not reach that far and animals do
+# not read calendars, so a broad window is not a failure, it is the truth.
+#
+# Two months is the number because that is roughly when a trip stops being an
+# idea and starts involving bookings. Past that point "gray whales, December to
+# May" is genuinely all anyone can say; inside it, a window that nothing can
+# confirm needs to say so in as many words rather than looking like an
+# appointment.
+PRECISION_HORIZON_DAYS = 60
+
+
+def corroboration_taxa() -> tuple[str, ...]:
+    """Every species some window's corroboration actually depends on.
+
+    Derived rather than listed by hand, because the two got out of step and the
+    failure was silent and total: four windows declared themselves live-verified
+    while nothing ever queried their species, so they could never be confirmed,
+    were permanently capped at planning level, and behaved exactly like the
+    static estimates they were meant to be better than. A window that says it is
+    waiting for a sighting has to be one somebody is actually looking for.
+    """
+    seen: dict[str, None] = {}
+    for window in PEAK_WINDOWS:
+        for name in window.live_taxa:
+            seen.setdefault(name, None)
+    return tuple(seen)
 
 
 @dataclass(frozen=True)
@@ -413,8 +449,8 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         name="Tule elk rut",
         category=CATEGORY_MAMMALS,
         season_range="August to October",
-        peak_start=(8, 20),
-        peak_end=(9, 30),
+        peak_start=(9, 15),
+        peak_end=(10, 10),
         latitude=35.1914,
         longitude=-119.7929,
         primary_locations=(
@@ -429,8 +465,13 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "the shot worth driving for."
         ),
         best_time_of_day="Dawn, 06:00-08:30",
-        evidence=EVIDENCE_STATIC,
+        # Promoted from a calendar estimate once the herd's species was actually
+        # being queried. Carrizo carries California's largest free-roaming tule
+        # elk herd on open grassland beside a public road, so sightings do get
+        # logged - which is the whole condition for calling a window live.
+        evidence=EVIDENCE_LIVE,
         live_taxa=("Cervus canadensis nannodes",),
+        verify_urls=(SOURCE_BLM_CARRIZO,),
     ),
     PeakWindow(
         key="desert_bighorn_rut",
@@ -452,16 +493,21 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "genuinely dangerous - treat the trip as a desert expedition, not a drive."
         ),
         best_time_of_day="First light at the springs",
+        # Left static deliberately. The species is queried, but desert bighorn
+        # are sparse and cryptic on ground almost nobody walks, so corroboration
+        # would arrive rarely and late. Calling this live would advertise a
+        # confirmation that in practice never comes.
         evidence=EVIDENCE_STATIC,
         live_taxa=("Ovis canadensis nelsoni",),
+        verify_urls=(SOURCE_CDFW_DESERT_BIGHORN,),
     ),
     PeakWindow(
         key="sierra_bighorn_rut",
         name="Sierra bighorn sheep rut",
         category=CATEGORY_MAMMALS,
         season_range="October to December",
-        peak_start=(10, 20),
-        peak_end=(11, 30),
+        peak_start=(11, 1),
+        peak_end=(12, 10),
         latitude=37.9500,
         longitude=-119.2200,
         primary_locations=("Lee Vining Canyon", "Pine Creek canyon bluffs"),
@@ -472,8 +518,11 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "walls is the window."
         ),
         best_time_of_day="Morning, east-facing slopes",
+        # Static for the same reason as the desert herds, more so: an endangered
+        # population of a few hundred animals on high, steep ground.
         evidence=EVIDENCE_STATIC,
         live_taxa=("Ovis canadensis sierrae",),
+        verify_urls=(SOURCE_CDFW_SIERRA_BIGHORN,),
     ),
     PeakWindow(
         key="elephant_seal_battles",
@@ -492,8 +541,12 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "Overcast is your friend; harsh sun blows out the wet hides."
         ),
         best_time_of_day="Any daylight; overcast preferred",
-        evidence=EVIDENCE_STATIC,
+        # The best-corroborated window in the table. Thousands of animals on one
+        # beach beside Highway 1, a boardwalk full of people photographing them,
+        # and interpreters posting what is on the sand week by week.
+        evidence=EVIDENCE_LIVE,
         live_taxa=("Mirounga angustirostris",),
+        verify_urls=(SOURCE_ELEPHANT_SEAL,),
     ),
     PeakWindow(
         key="black_bear_cubs",

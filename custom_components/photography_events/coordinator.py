@@ -75,7 +75,9 @@ from .const import (
     MIN_INTERVAL_PARK_ALERTS,
     MIN_INTERVAL_ROUTING,
     MIN_INTERVAL_TIDES,
+    MIN_INTERVAL_AIR_QUALITY,
     MIN_INTERVAL_WEATHER,
+    OPEN_METEO_AIR_QUALITY_URL,
     OPEN_METEO_URL,
     ROUTING_AUTO,
     ROUTING_LEGACY,
@@ -84,7 +86,9 @@ from .const import (
     TARGET_ZONES,
 )
 from .throttle import Source
-from .weather_scoring import build_open_meteo_params
+from . import phenomena as phenomena_module
+from . import weather_scoring
+from .weather_scoring import build_air_quality_params, build_open_meteo_params
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -123,6 +127,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self._sources: dict[str, Source] = {
             "weather": Source("Open-Meteo", MIN_INTERVAL_WEATHER),
+            "air_quality": Source("Open-Meteo air quality", MIN_INTERVAL_AIR_QUALITY),
             "ebird": Source("eBird", MIN_INTERVAL_EBIRD),
             "inaturalist": Source("iNaturalist", MIN_INTERVAL_INATURALIST),
             "field_reports": Source("Wildflower and colour hotlines", MIN_INTERVAL_FIELD_REPORTS),
@@ -200,8 +205,11 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         # Group 1: weather. Everything that can raise a drop-everything alert in
         # the next 48 hours depends on it, so it goes first and alone.
         if categories & {CATEGORY_SUNSET, CATEGORY_ASTRO}:
-            await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, zones))
+            await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, zones, now))
         forecasts = self._sources["weather"].value or {}
+        if CATEGORY_SUNSET in categories:
+            await self._refresh(self._sources["air_quality"], now, lambda: self._fetch_air_quality(session, zones))
+        air_quality = self._sources["air_quality"].value or {}
 
         # Group 2: the wildlife APIs, spaced away from the weather burst.
         if categories & {CATEGORY_BIRDS, CATEGORY_MARINE}:
@@ -229,12 +237,12 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if CATEGORY_PARKS in categories and self.nps_key:
             await self._refresh(self._sources["park_alerts"], now, lambda: self._fetch_park_alerts(session))
 
-        opportunities = await self._build(now, zones, forecasts, categories)
+        opportunities = await self._build(now, zones, forecasts, air_quality, categories)
         opportunities = await self._apply_routing(session, now, opportunities)
 
         opportunities = event_builder.within_drive(opportunities, self.max_drive_hours)
         action = event_builder.action_window(opportunities, now)
-        top = next((item for item in action if item.score >= self.alert_score), None)
+        top = next((item for item in action if event_builder.alert_candidate(item, self.alert_score)), None)
         self._cold_start = False
 
         return {
@@ -248,18 +256,30 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "routing_endpoint": self._routing_endpoint,
         }
 
-    async def _build(self, now, zones, forecasts, categories) -> list:
+    async def _build(self, now, zones, forecasts, air_quality, categories) -> list:
         """Assemble opportunities. All pure CPU, so it runs off the event loop."""
         opportunities: list = []
 
         for zone in zones:
-            forecast = forecasts.get(zone["id"])
+            bundle = forecasts.get(zone["id"]) or {}
+            # A value cached from before the bundle shape existed is a flat
+            # forecast. Tolerating it costs a line and saves a cycle of missing
+            # sunsets after an upgrade.
+            forecast = bundle.get("local") or (bundle if "hourly" in bundle else None)
+            upstream = bundle.get("upstream") or {}
             cloud_lookup = _make_cloud_lookup(forecast)
 
             if CATEGORY_SUNSET in categories and forecast:
                 opportunities.extend(
                     await self.hass.async_add_executor_job(
-                        event_builder.build_sunset_opportunities, zone, forecast, now, self.sunset_score
+                        event_builder.build_sunset_opportunities,
+                        zone,
+                        forecast,
+                        now,
+                        self.sunset_score,
+                        3,
+                        upstream,
+                        air_quality.get(zone["id"]),
                     )
                 )
 
@@ -353,15 +373,36 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
     # --- Fetchers -----------------------------------------------------------
 
-    async def _fetch_forecasts(self, session, zones: list[dict]) -> dict[str, dict]:
-        """Hourly layered-cloud forecasts per zone, tolerating single failures."""
+    async def _fetch_forecasts(self, session, zones: list[dict], now: datetime) -> dict[str, dict]:
+        """Layered cloud at each zone *and* on its two light paths.
+
+        Three coordinates go out per zone in a single request: the zone itself,
+        the point 200km toward sunset, and the point 200km toward sunrise. The
+        upstream pair is what makes a sky score trustworthy - the deck sitting
+        offshore is what decides whether the light ever gets under the cirrus,
+        and it is invisible from the zone's own forecast.
+
+        Still one request per zone rather than one for everything, so a single
+        bad response costs one zone instead of the whole map.
+        """
         semaphore = asyncio.Semaphore(WEATHER_CONCURRENCY)
 
         async def fetch(zone: dict) -> tuple[str, dict | None]:
-            params = build_open_meteo_params(zone["latitude"], zone["longitude"])
+            probes = weather_scoring.light_path_probes(zone["latitude"], zone["longitude"], now)
+            order = [key for key in ("sunset", "sunrise") if key in probes]
+            latitudes = [zone["latitude"]] + [probes[key][0] for key in order]
+            longitudes = [zone["longitude"]] + [probes[key][1] for key in order]
+            params = build_open_meteo_params(latitudes, longitudes)
             async with semaphore:
                 payload = await self._get_json(session, OPEN_METEO_URL, params=params, label=zone["name"])
-            return zone["id"], payload
+            parts = weather_scoring.split_multi_location(payload)
+            if not parts:
+                return zone["id"], None
+            bundle = {"local": parts[0], "upstream": {}}
+            for index, key in enumerate(order, start=1):
+                if index < len(parts):
+                    bundle["upstream"][key] = parts[index]
+            return zone["id"], bundle
 
         results = await asyncio.gather(*(fetch(zone) for zone in zones))
         found = {zone_id: payload for zone_id, payload in results if payload}
@@ -370,6 +411,23 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             # up as a failed source rather than as an empty forecast set.
             raise RuntimeError("no zone returned a forecast")
         return found
+
+    async def _fetch_air_quality(self, session, zones: list[dict]) -> dict[str, dict]:
+        """Aerosol optical depth per zone - one request for the whole map.
+
+        This decides saturation rather than whether anything happens at all, so
+        unlike the forecast it is allowed to fail entirely: the score falls back
+        to visibility and humidity and carries on.
+        """
+        if not zones:
+            return {}
+        params = build_air_quality_params(
+            [zone["latitude"] for zone in zones],
+            [zone["longitude"] for zone in zones],
+        )
+        payload = await self._get_json(session, OPEN_METEO_AIR_QUALITY_URL, params=params, label="air quality")
+        parts = weather_scoring.split_multi_location(payload)
+        return {zone["id"]: parts[index] for index, zone in enumerate(zones) if index < len(parts)}
 
     async def _fetch_ebird(self, session) -> list:
         """Notable observations across the covered counties, one region at a time."""
@@ -393,12 +451,20 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         return sightings
 
     async def _fetch_inaturalist(self, session, now: datetime) -> list:
-        """Recent whale observations, one taxon at a time and deliberately slowly."""
+        """Recent observations, one taxon at a time and deliberately slowly.
+
+        The list is the union of the marine species worth a drive on their own
+        and every species some peak window is waiting on for corroboration. The
+        second half is derived from the windows themselves: a hand-kept list
+        drifted, and the result was four windows that advertised live
+        verification while nothing ever looked for them.
+        """
         headers = wildlife_module.build_inaturalist_headers()
         local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        taxa = list(dict.fromkeys((*MARINE_TAXA, *phenomena_module.corroboration_taxa())))
 
         sightings: list = []
-        for index, taxon in enumerate(MARINE_TAXA):
+        for index, taxon in enumerate(taxa):
             if index:
                 await asyncio.sleep(INATURALIST_SPACING_SECONDS)
             payload = await self._get_json(

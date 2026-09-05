@@ -1401,3 +1401,76 @@ test("the suppression can be turned off", async () => {
   quiet.disconnectedCallback();
   loud.disconnectedCallback();
 });
+
+test("the brief says whether anything has actually confirmed the dates", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 20 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        {
+          key: "grays", title: "Gray whale southbound", category: "marine",
+          zone_id: "gray_whale_southbound", zone: "Piedras Blancas",
+          start: soon, end: soon, score: 60, precision: "peak",
+          verification: "watching",
+          awaiting: "A sighting of Eschrichtius robustus within 120 km in the last 14 days. None yet.",
+        },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  card._root.querySelectorAll("[data-expand]")[0].click();
+
+  const html = card._root.innerHTML;
+  assert.match(html, /Confirmed\?/, "the question is asked on the row itself");
+  assert.match(html, /Watching/);
+  assert.match(html, /None yet/, "and it names what is missing, not just a state");
+  card.disconnectedCallback();
+});
+
+test("a sky scored without a light path is marked optimistic", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 1 * 86400000).toISOString().slice(0, 10);
+  const later = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        { key: "sky1", title: "Sunset", category: "sunset", zone_id: "z", zone: "Coast",
+          start: soon, end: soon, score: 88, precision: "peak", light_path: "local" },
+        { key: "sky2", title: "Sunset two", category: "sunset", zone_id: "z2", zone: "Inland",
+          start: later, end: later, score: 92, precision: "peak", light_path: "modelled",
+          standout: true },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  const rows = card._root.querySelectorAll("[data-expand]");
+  rows[0].click();
+  assert.match(card._root.innerHTML, /Light path/);
+  assert.match(card._root.innerHTML, /optimistic/);
+
+  assert.match(card._root.innerHTML, /Best of the week/, "the standout is badged in the list");
+  card.disconnectedCallback();
+});
+
+test("the season caption quotes the horizon the backend published", () => {
+  const now = new Date();
+  const far = new Date(now.getTime() + 200 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  const state = outlookState([
+    { key: "s", title: "Gray whales (season)", category: "marine", zone_id: "x", zone: "Coast",
+      start: far, end: far, score: 45, precision: "season", season_range: "December to May" },
+  ]);
+  state.attributes.precision_horizon_days = 60;
+  card.hass = { states: { "sensor.outlook": state } };
+  card.connectedCallback();
+  card._root.querySelectorAll("[data-expand]")[0].click();
+  assert.match(card._root.innerHTML, /inside 60 days/,
+    "the card must never carry its own copy of the horizon");
+  card.disconnectedCallback();
+});

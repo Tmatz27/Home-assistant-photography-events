@@ -31,6 +31,8 @@ DEFAULT_UPDATE_MINUTES: Final = 60
 # Open-Meteo, eBird and iNaturalist are all free and all rate limited; the
 # hotlines are small volunteer sites that update weekly at best.
 MIN_INTERVAL_WEATHER: Final = 60
+# Aerosol moves slowly compared with cloud, and it only tunes saturation.
+MIN_INTERVAL_AIR_QUALITY: Final = 60 * 3
 MIN_INTERVAL_EBIRD: Final = 60
 MIN_INTERVAL_INATURALIST: Final = 60
 MIN_INTERVAL_ROUTING: Final = 30
@@ -245,6 +247,10 @@ ZONES_BY_ID: Final = {zone["id"]: zone for zone in TARGET_ZONES}
 EBIRD_REGIONS: Final = ("US-CA-083", "US-CA-079", "US-CA-053", "US-CA-029")
 
 OPEN_METEO_URL: Final = "https://api.open-meteo.com/v1/forecast"
+# Aerosol load lives on a separate free, keyless Open-Meteo endpoint. It is
+# what separates a sunset that holds magenta from one that goes flat orange,
+# and no weather forecast carries it.
+OPEN_METEO_AIR_QUALITY_URL: Final = "https://air-quality-api.open-meteo.com/v1/air-quality"
 EBIRD_NOTABLE_URL: Final = "https://api.ebird.org/v2/data/obs/{region}/recent/notable"
 INATURALIST_URL: Final = "https://api.inaturalist.org/v1/observations"
 

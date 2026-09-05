@@ -1558,9 +1558,26 @@ function outlookFromState(state) {
       ? attributes.all_categories
       : Array.isArray(attributes.categories) ? attributes.categories : [],
     truncated: Boolean(attributes.truncated),
+    horizonDays: Number.isFinite(attributes.precision_horizon_days)
+      ? attributes.precision_horizon_days
+      : 60,
     missing: !state,
   };
 }
+
+/**
+ * What each verification state actually means for somebody about to book.
+ *
+ * This is the difference between a card that shows a number and one that shows
+ * whether the number is worth anything. "Watching" and "corroborated" can carry
+ * the same score; only one of them is a reason to drive.
+ */
+const VERIFICATION_META = {
+  computed: { label: "Computed", tone: "ok", text: "Derived from geometry. Exact." },
+  corroborated: { label: "Confirmed", tone: "ok", text: "Live reports back this up right now." },
+  watching: { label: "Watching", tone: "warn", text: "Nothing reported yet - this is where to look, not when to go." },
+  unverified: { label: "Estimate", tone: "warn", text: "A calendar estimate. No live source can confirm it." },
+};
 
 /**
  * Which categories the toggles currently allow.
@@ -2624,7 +2641,10 @@ class PhotographyEventsCard extends HTMLElement {
       return `<span class="outlook-badge peak">Best window</span>`;
     }
     const tone = event.score >= 90 ? "high" : event.score >= 75 ? "good" : "fair";
-    return `<span class="outlook-badge ${tone}">${event.score}% score</span>`;
+    // A sky that nothing in the forecast window beats. The score alone cannot
+    // say that, and it is the only version of the question worth answering.
+    const best = event.standout ? `<span class="outlook-badge peak">Best of the week</span>` : "";
+    return `${best}<span class="outlook-badge ${tone}">${event.score}% score</span>`;
   }
 
   _outlookRowHtml(event, outlook, now) {
@@ -2662,7 +2682,8 @@ class PhotographyEventsCard extends HTMLElement {
 
     if (event.precision === "season") {
       rows.push(["Extended season", event.season_range || "-"]);
-      rows.push(["Peak window", `${rangeLabel(event.startDate, event.endDate)} - specifics firm up inside 30 days`]);
+      rows.push(["Peak window",
+        `${rangeLabel(event.startDate, event.endDate)} - specifics firm up inside ${outlook.horizonDays} days`]);
     } else {
       rows.push(["Peak window", rangeLabel(event.startDate, event.endDate)]);
       if (event.season_range) rows.push(["Extended season", event.season_range]);
@@ -2682,6 +2703,15 @@ class PhotographyEventsCard extends HTMLElement {
     if (support && !event.gear) rows.push(["Support", support]);
 
     if (park) rows.push(["Dogs", park.dog_detail]);
+
+    // The row that stops a trip being booked against a date nothing confirms.
+    const verification = VERIFICATION_META[event.verification];
+    if (verification) {
+      rows.push(["Confirmed?", `${verification.label} - ${event.awaiting || verification.text}`]);
+    }
+    if (event.light_path === "local") {
+      rows.push(["Light path", "Not checked - scored from local cloud only, so treat the number as optimistic."]);
+    }
 
     const why = event.tips || event.detail
       || (event.reasons || []).join(", ")

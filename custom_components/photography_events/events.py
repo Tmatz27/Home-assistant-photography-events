@@ -23,6 +23,7 @@ from .const import (
 )
 from .parks import active_windows as active_park_windows
 from .phenomena import (
+    WINDOWS_BY_KEY,
     EVIDENCE_COMPUTED,
     EVIDENCE_LIVE,
     EVIDENCE_STATIC,
@@ -31,23 +32,39 @@ from .phenomena import (
     PRECISION_HORIZON_DAYS,
     active_windows,
 )
-from .weather_scoring import score_sky
+from .weather_scoring import mark_standouts, score_sky
 from .verification import grunion_run_window
 from .wildlife import describe_drive, estimate_drive_hours, haversine_km, nearest_zone
 
 # Only showers worth a drive; the spec's ZHR floor.
 MIN_METEOR_ZHR = 60
 
+# --- Why these are longitudes and not dates ---------------------------------
+#
+# A meteor stream sits at a fixed place in the Earth's orbit, so the Earth
+# reaches it at the same *solar longitude* every year - but on a calendar date
+# that slides by up to a day with the leap cycle. "Geminids, 13 December" is
+# therefore wrong roughly one year in two, by a whole night, and a shower that
+# peaks over a few hours does not forgive that.
+#
+# So the table stores what is actually constant. Every ``lambda_sun`` below is
+# the maximum from the IMO Working List of Visual Meteor Showers, given - as
+# the IMO gives all of them - for the equinox J2000.0; ``solar_longitude_crossing``
+# applies the precession back to the equinox of date, which by now is a third
+# of a degree and eight hours' worth of Sun. Radiants are J2000 as published.
+#
+# Cross-check: lambda 140.0 puts the 2025 Perseid maximum at 12 August, 19h UT,
+# which is the hour the IMO published for it.
 METEOR_SHOWERS: tuple[dict, ...] = (
-    {"name": "Quadrantids", "month": 1, "day": 3, "zhr": 120, "ra_deg": 230.1, "dec_deg": 49.0},
-    {"name": "Perseids", "month": 8, "day": 12, "zhr": 100, "ra_deg": 48.0, "dec_deg": 58.0},
-    {"name": "Geminids", "month": 12, "day": 13, "zhr": 150, "ra_deg": 112.3, "dec_deg": 33.0},
+    {"name": "Quadrantids", "lambda_sun": 283.15, "zhr": 120, "ra_deg": 230.1, "dec_deg": 49.0},
+    {"name": "Perseids", "lambda_sun": 140.0, "zhr": 100, "ra_deg": 48.0, "dec_deg": 58.0},
+    {"name": "Geminids", "lambda_sun": 262.2, "zhr": 150, "ra_deg": 112.0, "dec_deg": 33.0},
     # Below the alert floor, but kept for the planning calendar.
-    {"name": "Lyrids", "month": 4, "day": 22, "zhr": 18, "ra_deg": 271.4, "dec_deg": 34.0},
-    {"name": "Eta Aquariids", "month": 5, "day": 5, "zhr": 50, "ra_deg": 338.0, "dec_deg": -1.0},
-    {"name": "Orionids", "month": 10, "day": 21, "zhr": 20, "ra_deg": 95.0, "dec_deg": 16.0},
-    {"name": "Leonids", "month": 11, "day": 17, "zhr": 15, "ra_deg": 152.0, "dec_deg": 22.0},
-    {"name": "Ursids", "month": 12, "day": 22, "zhr": 10, "ra_deg": 217.4, "dec_deg": 75.0},
+    {"name": "Lyrids", "lambda_sun": 32.32, "zhr": 18, "ra_deg": 271.4, "dec_deg": 34.0},
+    {"name": "Eta Aquariids", "lambda_sun": 45.5, "zhr": 50, "ra_deg": 338.0, "dec_deg": -1.0},
+    {"name": "Orionids", "lambda_sun": 208.0, "zhr": 20, "ra_deg": 95.0, "dec_deg": 16.0},
+    {"name": "Leonids", "lambda_sun": 235.27, "zhr": 15, "ra_deg": 152.0, "dec_deg": 22.0},
+    {"name": "Ursids", "lambda_sun": 270.66, "zhr": 10, "ra_deg": 217.0, "dec_deg": 76.0},
 )
 
 MAX_MOON_ILLUMINATION = 0.40
@@ -168,12 +185,17 @@ class Opportunity:
             "season_range",
             "duration_minutes",
             "limited_by",
+            "light_path",
+            "verification",
+            "awaiting",
             "best_time_of_day",
             "days_away",
             "confirm",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
+        if self.extra.get("standout"):
+            row["standout"] = True
         if self.extra.get("primary_locations"):
             row["locations"] = self.extra["primary_locations"]
         # Only gear specific to this entry. Category gear is identical across
@@ -207,10 +229,20 @@ def build_sunset_opportunities(
     now: datetime,
     threshold: int,
     days: int = 3,
+    upstream: dict | None = None,
+    air_quality: dict | None = None,
 ) -> list[Opportunity]:
-    """Score the next few sunsets and sunrises at one zone."""
+    """Score the next few sunsets and sunrises at one zone.
+
+    Every candidate in the window is scored before any is filtered, because
+    "should I go tonight" is a comparison and not a threshold. A sky only earns
+    the standout flag - and with it the right to raise an alert - when nothing
+    in the forecast window beats it. That is the difference between being told
+    about a good sunset and being told about *the* sunset.
+    """
     lat, lon = _zone_coords(zone)
-    found: list[Opportunity] = []
+    upstream = upstream or {}
+    candidates: list[tuple[datetime, bool, str, object]] = []
 
     for offset in range(days):
         day = now + timedelta(days=offset)
@@ -218,28 +250,96 @@ def build_sunset_opportunities(
             moment = astro.sun_event(day, lat, lon, rising=rising)
             if moment is None or moment < now:
                 continue
-            scored = score_sky(forecast, moment)
-            if scored is None or scored.score < threshold:
-                continue
-            found.append(
-                Opportunity(
-                    key=f"sky-{zone['id']}-{moment.date().isoformat()}-{label.lower()}",
-                    title=f"{label} could go off at {zone['name']}",
-                    category=CATEGORY_SUNSET,
-                    zone_id=zone["id"],
-                    zone_name=zone["name"],
-                    start=moment - timedelta(minutes=45),
-                    end=moment + timedelta(minutes=30),
-                    score=scored.score,
-                    detail=f"{label} at {moment.strftime('%H:%M')} - {scored.summary}.",
-                    drive_hours=zone["drive_hours"],
-                    reasons=scored.reasons,
-                    gear=_gear_for(CATEGORY_SUNSET),
-                    latitude=zone["latitude"],
-                    longitude=zone["longitude"],
-                )
+            scored = score_sky(
+                forecast,
+                moment,
+                upstream=upstream.get("sunrise" if rising else "sunset"),
+                air_quality=air_quality,
             )
+            if scored is None:
+                continue
+            candidates.append((moment, rising, label, scored))
+
+    mark_standouts([scored for _, _, _, scored in candidates])
+
+    found: list[Opportunity] = []
+    for moment, rising, label, scored in candidates:
+        if scored.score < threshold:
+            continue
+        title = (
+            f"{label} is the best of the week at {zone['name']}"
+            if scored.standout
+            else f"{label} could go off at {zone['name']}"
+        )
+        found.append(
+            Opportunity(
+                key=f"sky-{zone['id']}-{moment.date().isoformat()}-{label.lower()}",
+                title=title,
+                category=CATEGORY_SUNSET,
+                zone_id=zone["id"],
+                zone_name=zone["name"],
+                start=moment - timedelta(minutes=45),
+                end=moment + timedelta(minutes=30),
+                score=scored.score,
+                detail=f"{label} at {moment.strftime('%H:%M')} - {scored.summary}.",
+                drive_hours=zone["drive_hours"],
+                reasons=scored.reasons,
+                gear=_gear_for(CATEGORY_SUNSET),
+                latitude=zone["latitude"],
+                longitude=zone["longitude"],
+                extra={
+                    "standout": scored.standout,
+                    "light_path": scored.light_path,
+                    "limited_by": scored.limited_by,
+                    "sky": scored.detail,
+                },
+            )
+        )
     return found
+
+
+def expected_meteor_rate(zhr: int, radiant_altitude_deg: float) -> int:
+    """What you will actually see, rather than the number in the headline.
+
+    A zenithal hourly rate is an idealisation: perfect skies, and the radiant
+    straight overhead. Neither is ever true. The standard correction scales by
+    the sine of the radiant altitude, and it is brutal - the Geminids' famous
+    150 becomes about 80 with the radiant at 32 degrees. Quoting the ZHR is how
+    somebody drives two hours expecting two a minute and sees one every three.
+    """
+    altitude = max(0.0, min(90.0, radiant_altitude_deg))
+    return max(1, int(round(zhr * math.sin(math.radians(altitude)))))
+
+
+def _best_meteor_night(peak: datetime, lat: float, lon: float, shower: dict):
+    """Of the two nights either side of the maximum, the one to actually go out on.
+
+    A maximum computed to the hour lands in the middle of somebody's afternoon
+    about half the time, and then "the peak night" is genuinely ambiguous. Both
+    candidates are evaluated and the one whose dark, radiant-up window sits
+    closest to the maximum wins - which is the question an observer is asking
+    anyway, and is not answerable from the date alone.
+    """
+    best = None
+    best_gap = None
+    for offset in (-1, 0):
+        night = (peak + timedelta(days=offset)).replace(hour=12, minute=0, second=0, microsecond=0)
+        window = astro.astro_shooting_window(
+            night,
+            lat,
+            lon,
+            ra_deg=shower["ra_deg"],
+            dec_deg=shower["dec_deg"],
+            min_target_altitude=MIN_RADIANT_ALTITUDE,
+            max_moon_illumination=MAX_MOON_ILLUMINATION,
+        )
+        if window is None:
+            continue
+        middle = window.start + (window.end - window.start) / 2
+        gap = abs((middle - peak).total_seconds())
+        if best_gap is None or gap < best_gap:
+            best, best_gap = window, gap
+    return best
 
 
 def build_meteor_opportunities(
@@ -266,27 +366,20 @@ def build_meteor_opportunities(
         if alert_only and shower["zhr"] < MIN_METEOR_ZHR:
             continue
         for year in {now.year, horizon.year}:
-            peak = datetime(year, shower["month"], shower["day"], 12, tzinfo=now.tzinfo)
-            if not now - timedelta(days=1) <= peak <= horizon:
+            peak = astro.solar_longitude_crossing(year, shower["lambda_sun"], tz=now.tzinfo)
+            if peak is None or not now - timedelta(days=1) <= peak <= horizon:
                 continue
 
-            window = astro.astro_shooting_window(
-                peak,
-                lat,
-                lon,
-                ra_deg=shower["ra_deg"],
-                dec_deg=shower["dec_deg"],
-                min_target_altitude=MIN_RADIANT_ALTITUDE,
-                max_moon_illumination=MAX_MOON_ILLUMINATION,
-            )
+            window = _best_meteor_night(peak, lat, lon, shower)
             if window is None:
                 # Radiant never clears 30 degrees in darkness, or the moon owns
                 # the whole night. Either way there is nothing to alert on.
                 continue
 
             cloud = cloud_lookup(window.start) if cloud_lookup else None
+            expected = expected_meteor_rate(shower["zhr"], window.peak_target_altitude)
             reasons = [
-                f"ZHR ~{shower['zhr']}/hr at maximum",
+                f"expect roughly {expected}/hr from here (ZHR {shower['zhr']} at the zenith)",
                 f"radiant peaks {round(window.peak_target_altitude)}deg",
                 f"{window.duration_minutes} min above {round(MIN_RADIANT_ALTITUDE)}deg in darkness",
             ]
@@ -604,6 +697,10 @@ def build_seasonal_opportunities(
                 EVIDENCE_COMPUTED: "computed",
                 EVIDENCE_LIVE: "watching",
             }.get(window.evidence, "unverified")
+            awaiting = (
+                f"Too far out to confirm. Specifics and live corroboration start "
+                f"{PRECISION_HORIZON_DAYS} days before the window opens."
+            )
         else:
             score = PEAK_UNDERWAY_SCORE if entry["underway"] else PEAK_UPCOMING_SCORE
             if window.confirm:
@@ -626,7 +723,7 @@ def build_seasonal_opportunities(
             # The guard against booking a trip around a date nothing has
             # confirmed. A calendar entry may fill the planning view; only
             # evidence may raise a notification.
-            score, verification, extra_reasons = _apply_evidence(
+            score, verification, extra_reasons, awaiting = _apply_evidence(
                 window, entry, score, sightings, field_reports, now
             )
             reasons.extend(extra_reasons)
@@ -655,6 +752,7 @@ def build_seasonal_opportunities(
                     "precision": entry["precision"],
                     "evidence": window.evidence,
                     "verification": verification,
+                    "awaiting": awaiting,
                     "search_season": window.is_search_season,
                     "peak_days": window.peak_days,
                     "season_range": window.season_range,
@@ -689,16 +787,25 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
     - **Static.** A calendar estimate with nothing behind it. Never alerts, at
       any time of year, however confident the date looks.
 
+    Alongside the ceiling each case returns ``awaiting``: one sentence naming
+    the specific thing that would turn this window from an estimate into a
+    fact. That is the difference between a card that says "78" and one that
+    says what the 78 is missing - and the second is the only one worth booking
+    a trip against.
+
     The failure this prevents is the expensive one: a confident date, a booked
     trip, and an animal that moved three weeks ago.
     """
     if window.evidence == EVIDENCE_COMPUTED:
-        return score, "computed", []
+        return score, "computed", [], "Nothing. These dates are geometry and are exact."
 
     if window.evidence == EVIDENCE_STATIC:
-        return min(score, UNVERIFIED_CEILING), "unverified", [
-            "calendar estimate - no live source confirms this one",
-        ]
+        return (
+            min(score, UNVERIFIED_CEILING),
+            "unverified",
+            ["calendar estimate - no live source confirms this one"],
+            "No feed reports this one. Check the linked sources yourself before committing to it.",
+        )
 
     matches = corroborating_sightings(window, sightings, now)
     reports = [
@@ -711,19 +818,37 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
         freshest = max(item.latest for item in matches)
         age_days = max(0, round((now - freshest).total_seconds() / 86400))
         observers = sum(max(1, item.reports) for item in matches)
-        return max(score, CORROBORATED_SCORE), "corroborated", [
-            f"confirmed: {observers} report{'s' if observers != 1 else ''} within "
-            f"{round(LIVE_CORROBORATION_KM)} km, most recent {age_days} day{'s' if age_days != 1 else ''} ago",
-        ]
+        nearest = min(
+            haversine_km(window.latitude, window.longitude, item.latitude, item.longitude)
+            for item in matches
+        )
+        return (
+            max(score, CORROBORATED_SCORE),
+            "corroborated",
+            [
+                f"confirmed: {observers} report{'s' if observers != 1 else ''} within "
+                f"{round(LIVE_CORROBORATION_KM)} km, most recent {age_days} day{'s' if age_days != 1 else ''} ago",
+            ],
+            f"Nothing - it is happening. Nearest report {round(nearest)} km away, "
+            f"{age_days} day{'s' if age_days != 1 else ''} old.",
+        )
 
     if reports:
-        return max(score, CORROBORATED_SCORE - 5), "corroborated", [
-            f"confirmed by {reports[0].source_name}",
-        ]
+        return (
+            max(score, CORROBORATED_SCORE - 5),
+            "corroborated",
+            [f"confirmed by {reports[0].source_name}"],
+            f"Nothing - {reports[0].source_name} has it in the field right now.",
+        )
 
-    return min(score, UNVERIFIED_CEILING), "watching", [
-        "watch window - nothing reported yet, so this is where to look, not when to go",
-    ]
+    taxa = ", ".join(window.live_taxa) if window.live_taxa else "the species"
+    return (
+        min(score, UNVERIFIED_CEILING),
+        "watching",
+        ["watch window - nothing reported yet, so this is where to look, not when to go"],
+        f"A sighting of {taxa} within {round(LIVE_CORROBORATION_KM)} km in the last "
+        f"{LIVE_CORROBORATION_DAYS} days. None yet.",
+    )
 
 
 def _report_point(report, window) -> tuple[float, float]:
@@ -755,6 +880,23 @@ def action_window(opportunities: list[Opportunity], now: datetime, hours: int = 
         ),
         key=lambda item: (-item.score, item.start),
     )
+
+
+def alert_candidate(item: Opportunity, alert_score: int) -> bool:
+    """Whether one opportunity has earned the drop-everything sensor.
+
+    Clearing the score bar is necessary and, for a sky, not sufficient. A good
+    sunset happens most weeks; being told about every one of them is how a
+    notification gets muted, and a muted notification is worth nothing on the
+    evening that actually matters. So a sky must also be a standout - as good
+    as anything in the forecast window - and its light path must have been
+    modelled rather than guessed at from the deck overhead.
+    """
+    if item.planning_only or item.score < alert_score:
+        return False
+    if item.category == CATEGORY_SUNSET:
+        return bool(item.extra.get("standout")) and item.extra.get("light_path") == "modelled"
+    return True
 
 
 def zones_for_category(category: str) -> list[dict]:
@@ -1049,9 +1191,6 @@ def build_grunion_runs(
     rather than guessing a time.
     """
     origin = home or DEFAULT_HOME
-    window = None
-    from .phenomena import WINDOWS_BY_KEY
-
     window = WINDOWS_BY_KEY.get("grunion_run")
     if window is None:
         return []
@@ -1064,67 +1203,70 @@ def build_grunion_runs(
     anchors.sort(key=lambda pair: pair[1])
 
     for phase_name, moment in anchors:
-        if True:
-            first_night = (moment + timedelta(days=GRUNION_LAG_NIGHTS)).date()
-            last_night = first_night + timedelta(days=GRUNION_RUN_NIGHTS - 1)
-            if last_night < now.date() or first_night > horizon.date():
-                continue
-            if not _in_grunion_season(first_night):
-                continue
+        first_night = (moment + timedelta(days=GRUNION_LAG_NIGHTS)).date()
+        last_night = first_night + timedelta(days=GRUNION_RUN_NIGHTS - 1)
+        if last_night < now.date() or first_night > horizon.date():
+            continue
+        if not _in_grunion_season(first_night):
+            continue
 
-            start = datetime.combine(first_night, datetime.min.time()).replace(tzinfo=now.tzinfo)
-            end = datetime.combine(last_night, datetime.max.time()).replace(tzinfo=now.tzinfo)
+        start = datetime.combine(first_night, datetime.min.time()).replace(tzinfo=now.tzinfo)
+        end = datetime.combine(last_night, datetime.max.time()).replace(tzinfo=now.tzinfo)
 
-            # The nights come from lunar geometry; the hour comes from the tide.
-            # With a tide table the window is a real time to stand on the sand;
-            # without one it stays a night, and says so.
-            tide_window = grunion_run_window(tides, first_night) if tides else None
-            hour_note = (
-                f"first night's window {tide_window[0]:%H:%M}-{tide_window[1]:%H:%M} "
-                f"(1-2 h after the {tide_window[0].strftime('%H:%M')} high tide)"
-                if tide_window
-                else "exact hour depends on the tide - check a local tide table"
-            )
-            found.append(
-                Opportunity(
-                    key=f"grunion-{first_night.isoformat()}",
-                    title="Grunion run nights",
-                    category=window.category,
-                    zone_id="grunion_run",
-                    zone_name=window.primary_locations[0],
-                    start=start,
-                    end=end,
-                    score=76,
-                    detail=(
-                        f"Runs expected on the {GRUNION_RUN_NIGHTS} nights following the "
-                        f"{phase_name} of {moment.strftime('%d %b')}, starting one to two hours "
-                        f"after high tide and lasting under an hour. {window.photo_tips}"
+        # The nights come from lunar geometry; the hour comes from the tide.
+        # With a tide table the window is a real time to stand on the sand;
+        # without one it stays a night, and says so.
+        tide_window = grunion_run_window(tides, first_night) if tides else None
+        hour_note = (
+            f"first night's window {tide_window[0]:%H:%M}-{tide_window[1]:%H:%M} "
+            f"(1-2 h after the {tide_window[0].strftime('%H:%M')} high tide)"
+            if tide_window
+            else "exact hour depends on the tide - check a local tide table"
+        )
+        found.append(
+            Opportunity(
+                key=f"grunion-{first_night.isoformat()}",
+                title="Grunion run nights",
+                category=window.category,
+                zone_id="grunion_run",
+                zone_name=window.primary_locations[0],
+                start=start,
+                end=end,
+                score=76,
+                detail=(
+                    f"Runs expected on the {GRUNION_RUN_NIGHTS} nights following the "
+                    f"{phase_name} of {moment.strftime('%d %b')}, starting one to two hours "
+                    f"after high tide and lasting under an hour. {window.photo_tips}"
+                ),
+                drive_hours=round(estimate_drive_hours(window.latitude, window.longitude, origin), 2),
+                reasons=[
+                    f"{GRUNION_RUN_NIGHTS} nights after the {phase_name}",
+                    hour_note,
+                    window.primary_locations[0],
+                ],
+                gear={"glass": window.recommended_gear, "settings": window.photo_tips},
+                latitude=window.latitude,
+                longitude=window.longitude,
+                drive_source="estimate",
+                extra={
+                    "precision": "peak",
+                    "evidence": EVIDENCE_COMPUTED,
+                    "verification": "computed",
+                    "awaiting": (
+                        "Nothing for the nights - those are lunar geometry. Whether fish come "
+                        "ashore on any given one of them is never guaranteed."
                     ),
-                    drive_hours=round(estimate_drive_hours(window.latitude, window.longitude, origin), 2),
-                    reasons=[
-                        f"{GRUNION_RUN_NIGHTS} nights after the {phase_name}",
-                        hour_note,
-                        window.primary_locations[0],
-                    ],
-                    gear={"glass": window.recommended_gear, "settings": window.photo_tips},
-                    latitude=window.latitude,
-                    longitude=window.longitude,
-                    drive_source="estimate",
-                    extra={
-                        "precision": "peak",
-                        "evidence": EVIDENCE_COMPUTED,
-                        "verification": "computed",
-                        "lunar_phase": phase_name,
-                        "primary_locations": list(window.primary_locations),
-                        "recommended_gear": window.recommended_gear,
-                        "photo_tips": window.photo_tips,
-                        "best_time_of_day": window.best_time_of_day,
-                        "needs_tide_table": tide_window is None,
-                        "tide_window_start": tide_window[0].isoformat() if tide_window else None,
-                        "tide_window_end": tide_window[1].isoformat() if tide_window else None,
-                    },
-                )
+                    "lunar_phase": phase_name,
+                    "primary_locations": list(window.primary_locations),
+                    "recommended_gear": window.recommended_gear,
+                    "photo_tips": window.photo_tips,
+                    "best_time_of_day": window.best_time_of_day,
+                    "needs_tide_table": tide_window is None,
+                    "tide_window_start": tide_window[0].isoformat() if tide_window else None,
+                    "tide_window_end": tide_window[1].isoformat() if tide_window else None,
+                },
             )
+        )
     return found
 
 

@@ -1,5 +1,91 @@
 # Changelog
 
+## 0.8.0
+
+A hard look at everything: the sunset model rebuilt around physics, meteor peaks
+derived instead of stored, a silent hole in the evidence plumbing closed, and a
+generated inventory of every single thing tracked.
+
+### The sunset model was scoring the wrong sky
+
+- **Split the canvas from the light path.** At sunset the beam lighting cloud
+  above you grazes the surface 140-320 km toward the sun, so a sunset has two
+  separate requirements in two separate places. Cloud overhead is the subject;
+  cloud *upstream* decides whether any light arrives at all. The old model
+  conflated them and failed on this coast's most common evening - 55% cirrus
+  overhead, clear above the tripod, a solid marine layer 200 km out over the
+  Pacific. It scored that in the eighties. Nothing happens. It now scores 10
+- **Three points per zone, one request.** The zone plus a probe 200 km toward
+  sunset and another toward sunrise, each on the sun's own azimuth at the event,
+  which swings sixty degrees across the year. Without them the score falls back
+  to the local deck, is capped at 88, and is labelled on the card so a guess is
+  never presented as a measurement
+- **The light path is a gate, not a penalty** - it multiplies, because no amount
+  of beautiful cirrus survives a blocked path. Conversely a solid low deck with
+  the horizon gap open is now correctly a *good* sunset rather than a dud
+- **A cloudless sky no longer scores fifty.** It scores about six, which is what
+  it is worth
+- **Aerosol optical depth added** from Open-Meteo's air quality endpoint - the
+  difference between a sunset that holds magenta and one that goes flat orange.
+  `visibility` was being requested and never read; it is now used
+- **Alerts are comparative.** A sky must be a *standout* - at least 82 and within
+  three points of the best in the forecast window - before it can raise the
+  drop-everything sensor. "Is this a good sunset" is the wrong question; "is
+  this the one to go out for" is the right one
+
+### Dates that were not really dates
+
+- **Meteor peaks derived from solar longitude.** A stream sits at a fixed point
+  in the Earth's orbit; the date slides by up to a day with the leap cycle, so a
+  stored date is wrong about one year in two, by a whole night. Longitudes are
+  the IMO Working List values and are precessed from the J2000 equinox the IMO
+  publishes them for - 0.35 degrees today, which is eight hours of Sun and was
+  the difference between right and most of a night early
+- **Quoted rates are now what you will actually see**, scaled by the sine of the
+  radiant altitude, rather than the zenithal ideal nobody ever observes
+- **The peak night is chosen, not assumed.** A maximum computed to the hour
+  lands mid-afternoon half the time; both adjacent nights are evaluated and the
+  one whose dark, radiant-up window sits closest to the maximum wins
+
+### A hole in the evidence model
+
+- **Four windows advertised live verification that could never arrive.** Gray
+  whales, common dolphins, monarchs and cranes all declared a species to be
+  corroborated against, and nothing ever queried those species - so they were
+  permanently capped at planning level and behaved exactly like the static
+  estimates they were meant to improve on. Nothing failed; it just quietly never
+  worked. The queried list is now derived from the windows themselves, and a
+  test fails if the two ever drift apart again
+- **Every window now names somewhere to check it.** Four had no source at all
+- **Two windows corrected against their sources.** Tule elk rut moved from
+  20 Aug-30 Sep to 15 Sep-10 Oct (BLM and CDFW put the rut at mid-September,
+  peaking the third week into early October - the old window opened nearly a
+  month early). Sierra bighorn rut moved from 20 Oct-30 Nov to 1 Nov-10 Dec
+- **Elephant seals and tule elk promoted to live verification** now that their
+  species are actually queried. Both bighorn subspecies deliberately stay
+  static: sparse, cryptic animals on ground nobody walks, where advertising a
+  confirmation that never comes would be worse than admitting the estimate
+
+### Precision horizon, and saying what is missing
+
+- **Raised from 30 to 60 days.** Beyond two months a broad window is the honest
+  answer; inside it, a trip stops being an idea and starts involving bookings
+- **Every near window states what would make it a fact** - "a sighting of
+  *Eschrichtius robustus* within 120 km in the last 14 days. None yet", or
+  "nothing - it is happening, nearest report 40 km away, two days old". The card
+  shows it on a *Confirmed?* row. A score of 78 with nothing behind it and a 78
+  that four people confirmed this week are not the same thing
+
+### Also
+
+- **[TRACKING.md](TRACKING.md)** - the full inventory of everything watched,
+  generated from the code by `tools/generate_tracking_inventory.py` so it cannot
+  drift from what ships
+- Fixed a stray argument in the config flow that was passing a field name as a
+  voluptuous error message
+- Removed dead code in the grunion builder (`if True:` and a redundant local
+  import)
+
 ## 0.7.1
 
 Every claim now names who to check it against, and two corrections to the data.

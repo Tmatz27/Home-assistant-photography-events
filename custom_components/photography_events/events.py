@@ -126,6 +126,13 @@ class Opportunity:
     # time, never eligible for a drop-everything alert.
     planning_only: bool = False
     extra: dict = field(default_factory=dict)
+    # The identity of the *thing*, independent of where you watch it from. The
+    # Milky Way core is up over all twelve zones on the same night, and a
+    # calendar that says so twelve times has buried everything else. Rows
+    # sharing a roll key collapse into one, best zone winning, the rest listed
+    # inside it - so the choice of where to drive survives, one level down.
+    # Empty means "this row is genuinely one of a kind"; nothing collapses.
+    roll: str = ""
     # Where drive_hours came from, so the card can say whether it is a routed
     # figure or an estimate instead of presenting both as equally certain.
     drive_source: str = "baseline"
@@ -159,6 +166,11 @@ class Opportunity:
             "drive_hours": self.drive_hours,
             "drive_source": self.drive_source,
         }
+        if self.roll:
+            row["roll"] = self.roll
+        where = (self.extra.get("primary_locations") or [None])[0] or self.zone_name
+        if where:
+            row["where"] = where
         if self.planning_only:
             # A park window is a range of days, not an instant. Publishing it as
             # a timestamp implies a precision it does not have - and invites the
@@ -274,6 +286,7 @@ def build_sunset_opportunities(
         found.append(
             Opportunity(
                 key=f"sky-{zone['id']}-{moment.date().isoformat()}-{label.lower()}",
+                roll=f"sky-{moment.date().isoformat()}-{label.lower()}",
                 title=title,
                 category=CATEGORY_SUNSET,
                 zone_id=zone["id"],
@@ -417,6 +430,7 @@ def build_meteor_opportunities(
             found.append(
                 Opportunity(
                     key=f"meteor-{shower['name']}-{year}-{zone['id']}",
+                    roll=f"meteor-{shower['name']}-{year}",
                     title=f"{shower['name']} peak at {zone['name']}",
                     category=CATEGORY_ASTRO,
                     zone_id=zone["id"],
@@ -591,6 +605,7 @@ def build_milky_way_opportunities(
         found.append(
             Opportunity(
                 key=f"milkyway-{zone['id']}-{window.start.date().isoformat()}",
+                roll=f"milkyway-{window.start.date().isoformat()}",
                 title=f"Milky Way core at {zone['name']}",
                 category=CATEGORY_ASTRO,
                 zone_id=zone["id"],
@@ -1020,6 +1035,9 @@ def build_wildlife_opportunities(
         found.append(
             Opportunity(
                 key=f"sighting-{sighting.source.lower()}-{_slug(sighting.scientific_name or sighting.species)}-{_slug(sighting.place)}",
+                # One species, one row. Four reports of the same vagrant at four
+                # lagoons is one bird to go and see, not four things to plan.
+                roll=f"sighting-{_slug(sighting.scientific_name or sighting.species)}",
                 title=f"{sighting.species} at {sighting.place}",
                 category=sighting.category,
                 zone_id=zone_id,

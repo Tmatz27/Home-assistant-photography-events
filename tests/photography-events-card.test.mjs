@@ -1271,14 +1271,55 @@ test("clicking a row expands the full brief", () => {
   card.disconnectedCallback();
 });
 
-test("the hero states an absolute start, not a countdown", () => {
+test("the hero gives a deadline to act on, with the countdown underneath", () => {
   const card = new Card();
   card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
   card.hass = { states: { "binary_sensor.action": heroState() } };
   card.connectedCallback();
   const html = card._root.innerHTML;
-  assert.match(html, /Starts \w{3}, \w{3} \d+ at /, "expected a real day and time");
-  assert.doesNotMatch(html, /\bIN \d+H\b/i);
+  assert.match(html, /Be set up by/, "the instruction, not the arithmetic");
+  // Order is the viewer's locale's business - "Sat, 6 Sep" or "Sat, Sep 6".
+  assert.match(html, /\w{3}, (\d+ \w{3}|\w{3} \d+)/, "a real weekday and date");
+  // This fixture's window has already opened, and the countdown says so rather
+  // than counting down to a moment in the past.
+  assert.match(html, /underway/, "a passed deadline is stated, not negated");
+  card.disconnectedCallback();
+});
+
+test("the setup deadline is ahead of the window opening", () => {
+  const now = new Date();
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = {
+    states: {
+      "binary_sensor.action": heroState({
+        starts: new Date(now.getTime() + 26 * 3600000).toISOString(),
+        ends: new Date(now.getTime() + 28 * 3600000).toISOString(),
+      }),
+    },
+  };
+  card.connectedCallback();
+  // 26h out, minus the 20-minute setup lead, is 25h40m - a day and an hour.
+  assert.match(card._root.innerHTML, /T\u22121d 1h/, "counts down to being ready, not to the window");
+  card.disconnectedCallback();
+});
+
+test("a multi-day window shows a date range instead of a setup time", () => {
+  const now = new Date();
+  const card = new Card();
+  card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
+  card.hass = {
+    states: {
+      "binary_sensor.action": heroState({
+        starts: new Date(now.getTime() + 3 * 86400000).toISOString(),
+        ends: new Date(now.getTime() + 17 * 86400000).toISOString(),
+      }),
+    },
+  };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /Window/, "'be set up by' is a lie about a fortnight");
+  assert.match(html, /\u2013/, "a range");
   card.disconnectedCallback();
 });
 
@@ -1448,8 +1489,9 @@ test("a sky scored without a light path is marked optimistic", () => {
     },
   };
   card.connectedCallback();
-  const rows = card._root.querySelectorAll("[data-expand]");
-  rows[0].click();
+  // Every row expanded rather than an index: rows inside the near buckets are
+  // ordered by score, so a position would be asserting the sort by accident.
+  for (const row of card._root.querySelectorAll("[data-expand]")) row.click();
   assert.match(card._root.innerHTML, /Light path/);
   assert.match(card._root.innerHTML, /optimistic/);
 
@@ -1473,4 +1515,129 @@ test("the season caption quotes the horizon the backend published", () => {
   assert.match(card._root.innerHTML, /inside 60 days/,
     "the card must never carry its own copy of the horizon");
   card.disconnectedCallback();
+});
+
+test("one row per thing, not one per place", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 2 * 86400000).toISOString().slice(0, 10);
+  const zones = ["carrizo_plain", "death_valley", "eastern_sierra", "big_sur"];
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState(zones.map((zone, index) => ({
+        key: `mw-${zone}`, roll: `milkyway-${soon}`,
+        title: "Milky Way core", category: "astronomy",
+        zone_id: zone, zone: zone, where: zone,
+        start: soon, end: soon, score: 70 + index, precision: "peak",
+        drive_hours: 1 + index,
+      }))),
+    },
+  };
+  card.connectedCallback();
+  const rows = card._root.querySelectorAll("[data-expand]");
+  assert.equal(rows.length, 1, "four zones, one thing, one row");
+
+  const html = card._root.innerHTML;
+  assert.match(html, /\+3 more places/);
+  assert.match(html, /big_sur/, "the best-scoring zone won the row");
+
+  rows[0].click();
+  assert.match(card._root.innerHTML, /Also from/, "the other places are one level down, not gone");
+  card.disconnectedCallback();
+});
+
+test("a row says where, which is the first thing anybody asks", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 3 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        { key: "elk", title: "Tule elk rut", category: "mammals", zone_id: "tule_elk_rut",
+          zone: "Carrizo Plain", where: "Carrizo Plain, Soda Lake Road foothills",
+          start: soon, end: soon, score: 78, precision: "peak" },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  assert.match(card._root.innerHTML, /Soda Lake Road foothills/,
+    "the location is on the collapsed row, not hidden in the brief");
+  card.disconnectedCallback();
+});
+
+test("tonight sorts above a season that runs for months", () => {
+  const now = new Date();
+  const iso = (days) => new Date(now.getTime() + days * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        // A three-month season that started in the past: strictly by date it
+        // outranks everything, which is exactly the problem.
+        { key: "season", title: "Humpback lunge feeding", category: "marine", zone_id: "h",
+          zone: "Port San Luis", start: iso(-40), end: iso(50), score: 45, precision: "season" },
+        { key: "tonight", title: "Milky Way core", category: "astronomy", zone_id: "carrizo_plain",
+          zone: "Carrizo Plain", start: iso(0), end: iso(0), score: 94, precision: "peak" },
+        { key: "next-week", title: "Perseids peak", category: "astronomy", zone_id: "death_valley",
+          zone: "Death Valley", start: iso(5), end: iso(5), score: 88, precision: "peak" },
+        { key: "far", title: "Sandhill crane fly-in", category: "rare_phenomena", zone_id: "c",
+          zone: "Woodbridge", start: iso(120), end: iso(150), score: 45, precision: "season" },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+
+  assert.match(html, /Happening now/);
+  assert.match(html, /Next 7 days/);
+  // The gold is above the noise: tonight's 94 renders before the 120-day-out row.
+  assert.ok(html.indexOf("Milky Way core") < html.indexOf("Sandhill crane"),
+    "tonight must not be buried under things months away");
+  assert.ok(html.indexOf("Happening now") < html.indexOf("Perseids"),
+    "urgency buckets come before the month list");
+  card.disconnectedCallback();
+});
+
+test("the category chips filter the list below them", () => {
+  const now = new Date();
+  const soon = new Date(now.getTime() + 2 * 86400000).toISOString().slice(0, 10);
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = {
+    states: {
+      "sensor.outlook": outlookState([
+        { key: "a", title: "Milky Way core", category: "astronomy", zone_id: "z", zone: "Carrizo",
+          start: soon, end: soon, score: 90, precision: "peak" },
+        { key: "b", title: "Blue whale feeding", category: "marine", zone_id: "y", zone: "Channel",
+          start: soon, end: soon, score: 80, precision: "peak" },
+      ]),
+    },
+  };
+  card.connectedCallback();
+  assert.match(card._root.innerHTML, /Blue whale/);
+
+  const marine = [...card._root.querySelectorAll("[data-category]")]
+    .find((chip) => chip.getAttribute("data-category") === "marine");
+  marine.click();
+
+  const html = card._root.innerHTML;
+  assert.doesNotMatch(html, /Blue whale/, "switching a chip off removes its rows");
+  assert.match(html, /Milky Way core/, "and leaves the rest alone");
+  card.disconnectedCallback();
+});
+
+test("only supermoons and photographable eclipses survive the prune", () => {
+  const kept = astro.pruneRoutine([
+    { category: "moon", title: "Full Moon (Supermoon)", supermoon: true, notable: true },
+    { category: "moon", title: "New Moon - dark sky window", supermoon: false, notable: true },
+    { category: "moon", title: "First Quarter", supermoon: false, notable: false },
+    { category: "eclipse", title: "Total Lunar Eclipse", visible: true, photographable: true },
+    { category: "eclipse", title: "Penumbral Lunar Eclipse", visible: true, photographable: false },
+    { category: "eclipse", title: "Total Solar Eclipse", visible: false, photographable: true },
+  ]).map((event) => event.title);
+
+  assert.deepStrictEqual(kept, ["Full Moon (Supermoon)", "Total Lunar Eclipse"]);
 });

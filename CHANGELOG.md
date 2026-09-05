@@ -1,5 +1,53 @@
 # Changelog
 
+## 0.9.0
+
+The cards, rebuilt around the questions people actually ask them: when do I have
+to leave, where is it, and what of this matters this week.
+
+### A deadline instead of arithmetic
+
+- **"Be set up by Sat, 6 Sep - 8:54 PM", with "T-1d 22h" underneath.** A bare
+  "in 45h" cannot go in a calendar, reads differently depending on when you
+  glance at the card, and makes you do the sum the card already did. The date
+  and time are the instruction now; the countdown is context beneath it. The
+  deadline is 20 minutes ahead of the window opening, because arriving and being
+  ready are not the same moment
+- A multi-day window shows a **date range** instead, because "be set up by" is a
+  lie about a fortnight-long peak
+- The reason bubbles under the hero summary are gone - they restated the
+  sentence directly above them word for word
+
+### The calendar says where
+
+- **Every row carries its location.** A calendar that tells you what and when
+  but not where is a list of things you cannot act on. The row now leads with
+  the actual place - "Carrizo Plain, Soda Lake Road foothills", not "Mammals"
+- **One row per thing, not one per place.** The Milky Way core is up over all
+  twelve zones on the same night and one vagrant bird gets reported from four
+  lagoons; flat, that is sixteen rows saying two things. The best-scoring place
+  wins the row, ties broken by the shorter drive, and the rest are listed inside
+  it under *Also from* with their own drive times - so the choice of where to go
+  survives, one level down where it belongs
+- **Sorted by when it matters, not by date.** *Happening now*, *Next 7 days*,
+  *Next 30 days*, then by month. Inside the near buckets the order is by score,
+  because over the next week "which of these is worth going out for" beats
+  "which is first". A three-month season that started in March no longer sits
+  above tonight's 94
+- Each group carries a count, and the near ones are coloured, so the shape of
+  the week is readable without reading any of it
+- The `rare_phenomena` chip had no label and rendered its raw key
+
+### The moon, narrowed to what is worth a drive
+
+- **Supermoons only.** A new moon is already priced into every Milky Way and
+  meteor row on the card, and quarters were never news
+- **Penumbral lunar eclipses dropped.** The Moon grazes the outer shadow, the
+  dimming is invisible in a photograph, and listing them teaches you to skip the
+  row that says "eclipse" - which is the one row that must never be skipped.
+  Total and partial lunar eclipses, and any solar eclipse visible from here,
+  stay
+
 ## 0.8.1
 
 A way in for the sources that publish a mailing list instead of an API, and two

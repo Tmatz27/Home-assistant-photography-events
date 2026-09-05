@@ -866,6 +866,7 @@ function moonDayEvent(day, nearTermEnd) {
     // Only two lunar events change what anyone does: the dark-sky window, and
     // a supermoon worth putting a landscape in front of. Quarters are trivia.
     notable: Boolean(day.isNewMoon || isSupermoon),
+    supermoon: isSupermoon,
     icon: phaseInfo.icon,
   };
 }
@@ -1192,6 +1193,11 @@ function buildEclipseEvent(eclipse, date, latRad, lonRad) {
     detail: `${eclipse.region} ${visibility.note}`,
     quality: visibility.visible === false ? "poor" : visibility.visible === true ? "excellent" : "fair",
     visible: visibility.visible,
+    // A penumbral lunar eclipse is not a photograph. The Moon grazes the outer
+    // shadow, the dimming is subtle enough that people looking for it miss it,
+    // and a camera records a full moon. Listing it trains you to skip the row
+    // that says "eclipse" - which is the one row that must never be skipped.
+    photographable: eclipse.type !== "penumbral",
     badge,
     icon: "mdi:eclipse",
   };
@@ -1390,7 +1396,10 @@ function pruneRoutine(events) {
         // not evidence of a good one.
         return typeof event.score === "number" && event.score >= EPIC_SKY_SCORE;
       case "moon":
-        return event.notable === true;
+        // A supermoon is a landscape to put something in front of. A new moon
+        // is already priced into every Milky Way and meteor row on the card,
+        // and quarters were never news. Nothing else earns a line.
+        return event.supermoon === true;
       case "planet":
         if (event.kind === "opposition") return true;
         if (event.kind === "conjunction") {
@@ -1398,8 +1407,11 @@ function pruneRoutine(events) {
         }
         return false;
       case "eclipse":
-        // An eclipse nobody here can see is a fact about somewhere else.
-        return event.visible !== false;
+        // An eclipse nobody here can see is a fact about somewhere else - and a
+        // penumbral lunar eclipse is a fact about nothing. The Moon grazes the
+        // outer shadow, the dimming is invisible in a photograph, and listing
+        // it teaches you to ignore the row that says "eclipse".
+        return event.visible !== false && event.photographable !== false;
       default:
         return true;
     }
@@ -1475,6 +1487,7 @@ const CATEGORY_META = Object.freeze({
   blooms: { label: "Blooms", icon: "mdi:flower" },
   foliage: { label: "Autumn", icon: "mdi:leaf-maple" },
   parks: { label: "Parks", icon: "mdi:pine-tree" },
+  rare_phenomena: { label: "Rare", icon: "mdi:star-shooting" },
 });
 
 // Icon and colour per access class. The wording comes from the park itself -
@@ -1632,11 +1645,122 @@ function groupByMonth(events) {
   return [...buckets.values()];
 }
 
+/**
+ * One row per thing, not one row per place.
+ *
+ * The Milky Way core is up over all twelve zones on the same night, and one
+ * vagrant bird gets reported from four lagoons. Listed flat, that is sixteen
+ * rows saying two things, and the calendar has buried everything else under
+ * them. The backend stamps rows that are the same thing seen from different
+ * places with a shared roll key; the best of them wins the row and the rest
+ * live inside it, so the choice of where to drive is still there, one level
+ * down, where the choice actually belongs.
+ *
+ * A row with no roll key is one of a kind and passes through untouched.
+ */
+function rollUpByPlace(events) {
+  const buckets = new Map();
+  const out = [];
+  for (const event of events) {
+    if (!event.roll) {
+      out.push(event);
+      continue;
+    }
+    const bucket = buckets.get(event.roll);
+    if (bucket) bucket.push(event);
+    else buckets.set(event.roll, [event]);
+  }
+  for (const bucket of buckets.values()) {
+    // Best score wins, and the shorter drive breaks a tie - if two places are
+    // equally good tonight, the nearer one is the answer.
+    bucket.sort((left, right) =>
+      (right.score || 0) - (left.score || 0) ||
+      (left.drive_hours || 0) - (right.drive_hours || 0));
+    const [best, ...rest] = bucket;
+    out.push(rest.length ? { ...best, alternatives: rest } : best);
+  }
+  return out;
+}
+
+// What the list is actually sorted by. A calendar ordered strictly by date puts
+// twenty month-long seasons above the thing happening tonight, which is exactly
+// backwards: the further away something is, the less it matters what order it
+// is in.
+const URGENCY_BUCKETS = [
+  { key: "now", label: "Happening now" },
+  { key: "week", label: "Next 7 days" },
+  { key: "month", label: "Next 30 days" },
+];
+
+/**
+ * Group by how soon it matters, then by month once it stops being soon.
+ *
+ * Inside the near buckets the order is by score rather than by date, because
+ * over the next week "which of these is worth going out for" is a better
+ * question than "which of these is first".
+ */
+function groupByUrgency(events, now) {
+  const week = new Date(now.getTime() + 7 * MS_PER_DAY);
+  const month = new Date(now.getTime() + 30 * MS_PER_DAY);
+  const near = new Map(URGENCY_BUCKETS.map((bucket) => [bucket.key, { ...bucket, events: [] }]));
+  const later = [];
+
+  for (const event of events) {
+    if (event.startDate <= now && event.endDate >= now) near.get("now").events.push(event);
+    else if (event.startDate <= week) near.get("week").events.push(event);
+    else if (event.startDate <= month) near.get("month").events.push(event);
+    else later.push(event);
+  }
+
+  const groups = [...near.values()]
+    .filter((bucket) => bucket.events.length)
+    .map((bucket) => ({
+      ...bucket,
+      urgent: true,
+      events: bucket.events.sort((left, right) =>
+        (right.score || 0) - (left.score || 0) || left.startDate - right.startDate),
+    }));
+  return groups.concat(groupByMonth(later));
+}
+
 /** "Sat, Sep 5 at 8:49 PM" - what you actually need to plan an evening. */
 function absoluteLabel(date) {
   if (!date) return "";
   const day = date.toLocaleDateString(undefined, { weekday: "short", month: "short", day: "numeric" });
   return `${day} at ${clockLabel(date)}`;
+}
+
+/** "Sat 6 Sep". */
+function dateLabel(date) {
+  return date
+    ? date.toLocaleDateString(undefined, { weekday: "short", day: "numeric", month: "short" })
+    : "";
+}
+
+// How long before a window opens you actually want to be standing there with
+// the tripod levelled. Short, but the difference between arriving and being
+// ready is the difference between catching the first ten minutes and not.
+const SETUP_LEAD_MINUTES = 20;
+
+/**
+ * "T-2d 3h" - how long until you have to be somewhere.
+ *
+ * Never shown on its own. "in 45h" cannot go in a calendar, does not survive
+ * being read at a different hour, and quietly means something different every
+ * time the card re-renders. It is context underneath a real date and time, not
+ * a replacement for one.
+ */
+function countdownLabel(now, target) {
+  if (!target) return "";
+  const ms = target - now;
+  if (ms <= 0) return "underway";
+  const totalMinutes = Math.floor(ms / 60000);
+  const days = Math.floor(totalMinutes / 1440);
+  const hours = Math.floor((totalMinutes % 1440) / 60);
+  const minutes = totalMinutes % 60;
+  if (days) return `T\u2212${days}d ${hours}h`;
+  if (hours) return `T\u2212${hours}h ${String(minutes).padStart(2, "0")}m`;
+  return `T\u2212${minutes}m`;
 }
 
 /** "8:49 PM". */
@@ -2457,7 +2581,7 @@ class PhotographyEventsCard extends HTMLElement {
         </div>
 
         <div class="hero-title">${escapeHtml(hero.name)}</div>
-        <div class="hero-when">Starts ${escapeHtml(absoluteLabel(hero.starts) || "shortly")}</div>
+        ${this._heroDeadlineHtml(hero, now)}
         ${hero.zone ? `<div class="hero-zone"><ha-icon icon="mdi:map-marker"></ha-icon>${escapeHtml(hero.zone)}</div>` : ""}
 
         ${this._heroWindowHtml(hero, attributes, now)}
@@ -2501,6 +2625,35 @@ class PhotographyEventsCard extends HTMLElement {
           </a>` : ""}
 
         ${this._activeMonthHtml(now)}
+      </div>
+    `;
+  }
+
+  /**
+   * When to be standing there, and how long you have to get there.
+   *
+   * A bare "in 45h" is not something anybody can plan against: it cannot be put
+   * in a calendar, it reads differently depending on when you happen to glance
+   * at the card, and it makes you do the arithmetic that the card already did.
+   * The date and time are the instruction; the countdown sits under it as
+   * context. A multi-day window shows its range instead, because "be set up by"
+   * is a lie about a fortnight-long peak.
+   */
+  _heroDeadlineHtml(hero, now) {
+    if (!hero.starts) {
+      return `<div class="hero-deadline"><div class="hero-deadline-value">Starting shortly</div></div>`;
+    }
+    const multiDay = hero.ends && hero.ends - hero.starts > 36 * 3600000;
+    const target = multiDay ? hero.starts : new Date(hero.starts.getTime() - SETUP_LEAD_MINUTES * 60000);
+    const value = multiDay
+      ? `${dateLabel(hero.starts)} \u2013 ${dateLabel(hero.ends)}`
+      : `${dateLabel(target)} \u00b7 ${clockLabel(target)}`;
+
+    return `
+      <div class="hero-deadline">
+        <div class="hero-deadline-label">${multiDay ? "Window" : "Be set up by"}</div>
+        <div class="hero-deadline-value">${escapeHtml(value)}</div>
+        <div class="hero-deadline-count">${escapeHtml(countdownLabel(now, target))}</div>
       </div>
     `;
   }
@@ -2585,19 +2738,20 @@ class PhotographyEventsCard extends HTMLElement {
       fromDays: this._config.outlook_from_days,
       throughDays: this._config.outlook_through_days,
     });
-    const months = groupByMonth(events);
+    const groups = groupByUrgency(rollUpByPlace(events), now);
 
     return `
       <div class="header">
         <div class="header-title">${escapeHtml(this._config.title)}</div>
         <div class="header-subtitle">
-          ${events.length} of ${outlook.events.length} events, next ${this._config.outlook_through_days} days
+          ${groups.reduce((total, group) => total + group.events.length, 0)} of ${outlook.events.length} events,
+          next ${this._config.outlook_through_days} days
           ${outlook.truncated ? " (list truncated)" : ""}
         </div>
       </div>
       ${this._filterChipsHtml(known, allowed)}
-      ${months.length
-        ? `<div class="outlook">${months.map((month) => this._monthHtml(month, outlook, now)).join("")}</div>`
+      ${groups.length
+        ? `<div class="outlook">${groups.map((group) => this._monthHtml(group, outlook, now)).join("")}</div>`
         : `<div class="empty-card">
              <ha-icon icon="mdi:calendar-blank-outline"></ha-icon>
              <strong>Nothing in this window</strong>
@@ -2619,11 +2773,14 @@ class PhotographyEventsCard extends HTMLElement {
     return `<div class="pe-chips">${chips.join("")}</div>`;
   }
 
-  _monthHtml(month, outlook, now) {
+  _monthHtml(group, outlook, now) {
     return `
-      <div class="outlook-month">
-        <div class="outlook-month-label">${escapeHtml(month.label)}</div>
-        ${month.events.map((event) => this._outlookRowHtml(event, outlook, now)).join("")}
+      <div class="outlook-month${group.urgent ? " urgent" : ""}">
+        <div class="outlook-month-label">
+          ${escapeHtml(group.label)}
+          <span class="outlook-month-count">${group.events.length}</span>
+        </div>
+        ${group.events.map((event) => this._outlookRowHtml(event, outlook, now)).join("")}
       </div>
     `;
   }
@@ -2653,6 +2810,11 @@ class PhotographyEventsCard extends HTMLElement {
     const dog = park ? DOG_META[park.dogs] : null;
     const drive = park ? park.drive_label : driveLabel(Math.round((event.drive_hours || 0) * 60));
     const expanded = this._expanded.has(event.key);
+    // Where. The single most useful thing a planning row can carry, and the one
+    // it did not: a calendar that says what and when but not where is a list of
+    // things you cannot act on.
+    const where = event.where || (park ? park.name : "") || event.zone || "";
+    const alternatives = Array.isArray(event.alternatives) ? event.alternatives.length : 0;
 
     return `
       <div class="outlook-row ${expanded ? "open" : ""}">
@@ -2662,6 +2824,8 @@ class PhotographyEventsCard extends HTMLElement {
           <span class="outlook-body">
             <span class="outlook-title">${escapeHtml(event.title)}</span>
             <span class="outlook-meta">
+              ${where ? `<span class="outlook-tag where"><ha-icon icon="mdi:map-marker"></ha-icon>${escapeHtml(where)}</span>` : ""}
+              ${alternatives ? `<span class="outlook-tag more">+${alternatives} more ${alternatives === 1 ? "place" : "places"}</span>` : ""}
               <span class="outlook-tag"><ha-icon icon="${meta.icon}"></ha-icon>${escapeHtml(meta.label)}</span>
               ${drive ? `<span class="outlook-tag"><ha-icon icon="mdi:car"></ha-icon>${escapeHtml(drive)}</span>` : ""}
               ${dog ? `<span class="outlook-tag dog-${dog.tone}" title="${escapeHtml(park.dog_detail)}">
@@ -2728,6 +2892,16 @@ class PhotographyEventsCard extends HTMLElement {
           ${escapeHtml(why)}
           ${event.confirm ? `<em> Timing shifts year to year - confirm current reports before driving.</em>` : ""}
         </div>
+        ${Array.isArray(event.alternatives) && event.alternatives.length ? `
+          <div class="outlook-alts">
+            <span class="outlook-alts-label">Also from</span>
+            ${event.alternatives.map((alt) => `
+              <span class="outlook-alt">
+                ${escapeHtml(alt.where || alt.zone || "")}
+                <em>${escapeHtml(driveLabel(Math.round((alt.drive_hours || 0) * 60)))}${
+                  alt.score ? ` \u00b7 ${alt.score}%` : ""}</em>
+              </span>`).join("")}
+          </div>` : ""}
         ${event.source_url ? `
           <a class="outlook-source" href="${escapeHtml(event.source_url)}" target="_blank" rel="noopener noreferrer">
             <ha-icon icon="mdi:open-in-new"></ha-icon>Original report
@@ -2982,12 +3156,17 @@ class PhotographyEventsCard extends HTMLElement {
       }
       .hero-meter span { display: block; height: 100%; background: var(--pe-epic); }
       .hero-summary { margin-top: 12px; font-size: 13px; line-height: 1.5; color: var(--pe-text); }
-      .hero-reasons { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 10px; }
-      .hero-reasons span {
+      .hero-deadline { margin-top: 12px; }
+      .hero-deadline-label {
         font-size: 11px;
-        padding: 2px 8px;
-        border-radius: 999px;
-        background: rgba(255, 255, 255, .08);
+        text-transform: uppercase;
+        letter-spacing: .07em;
+        color: var(--pe-muted);
+      }
+      .hero-deadline-value { font-size: 21px; font-weight: 600; line-height: 1.25; }
+      .hero-deadline-count {
+        font-size: 13px;
+        font-variant-numeric: tabular-nums;
         color: var(--pe-muted);
       }
       .hero-gear {
@@ -3023,6 +3202,28 @@ class PhotographyEventsCard extends HTMLElement {
       .hero-link ha-icon { --mdc-icon-size: 15px; }
 
       /* --- calendar_outlook ------------------------------------------------ */
+      .outlook-month.urgent .outlook-month-label { color: var(--pe-epic); }
+      .outlook-month-count {
+        margin-left: 6px;
+        font-weight: 500;
+        opacity: .6;
+      }
+      .outlook-tag.where { font-weight: 500; }
+      .outlook-tag.more { opacity: .75; }
+      .outlook-alts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-top: 10px; }
+      .outlook-alts-label {
+        font-size: 11px;
+        text-transform: uppercase;
+        letter-spacing: .06em;
+        color: var(--pe-muted);
+      }
+      .outlook-alt {
+        font-size: 12px;
+        padding: 3px 9px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, .06);
+      }
+      .outlook-alt em { font-style: normal; opacity: .65; }
       .pe-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0 4px; }
       .pe-chip {
         display: inline-flex;
@@ -3310,6 +3511,8 @@ PhotographyEventsCard.backend = {
   activeCategories,
   filterOutlook,
   groupByMonth,
+  groupByUrgency,
+  rollUpByPlace,
   rangeLabel,
   findEntity,
   CATEGORY_META,
@@ -3328,6 +3531,7 @@ PhotographyEventsCard.astro = {
   moonIllumination,
   moonPhaseInfo,
   buildDayTable,
+  pruneRoutine,
   buildEvents,
   skyColorQuality,
   meteorQuality,

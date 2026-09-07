@@ -1,7 +1,8 @@
 """Tests for the photography_events backend.
 
 Written against stdlib unittest and loaded without importing Home Assistant, so
-they run anywhere with `python3 -m unittest` and no install step. pytest will
+they run with `python3 -m unittest` after installing the existing
+beautifulsoup4 runtime requirement. pytest will
 also collect them if it is available.
 """
 
@@ -2036,3 +2037,4 @@ class TestEmailIngestion(unittest.TestCase):
         score, verification, _, _ = events._apply_evidence(window, entry, 70, None, [Loose()], NOW)
         self.assertEqual(verification, "watching")
         self.assertLessEqual(score, events.UNVERIFIED_CEILING)
+

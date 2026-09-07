@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.9.1
+
+- Fixed CI failures by installing the integration's existing BeautifulSoup
+  requirement before running HTML parser tests in validation and release
+  jobs. No parser assertions were removed or weakened.
+- Added local brand icon assets so HACS validation can identify this custom
+  integration without relying on a separate Home Assistant brands entry.
+- Synchronized manifest, package, VERSION and bundled-card console versions.
+- Release publishing now follows successful main validation and includes
+  version-specific changelog notes. Existing releases are not overwritten.
+- Photography dates, evidence gates, scoring, and notification logic are
+  unchanged by this maintenance release.
+
+
 ## 0.9.0
 
 The cards, rebuilt around the questions people actually ask them: when do I have
@@ -481,3 +495,4 @@ card's dedicated hero/calendar display modes.
 - Optional weather-entity-driven sky-quality scoring for sunset/sunrise and
   meteor showers
 - Visual card editor and full test suite
+

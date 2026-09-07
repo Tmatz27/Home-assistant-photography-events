@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-const CARD_VERSION = "0.2.0";
+const CARD_VERSION = "0.9.1";
 
 /* ---------------------------------------------------------------------- *
  * Astronomy core
@@ -3574,3 +3574,4 @@ console.info(
   "color: white; background: #3a7d5c; font-weight: 700;",
   "color: #3a7d5c; background: transparent;",
 );
+

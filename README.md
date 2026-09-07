@@ -847,3 +847,13 @@ from any single library, but the same standard, widely-implemented math.
 ## License
 
 MIT
+
+
+
+### Development and releases
+
+Install the existing `beautifulsoup4>=4.12.0` requirement before running
+Python tests: HTML heading/context tests require the real parser. Main
+commits with a new semantic version are released after Validate succeeds.
+Manifest, package, VERSION and card console versions must agree; release
+notes come from CHANGELOG.md. Existing releases are never overwritten.

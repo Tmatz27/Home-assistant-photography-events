@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.9.0.** `main` is the working branch; there is no PR flow.
+**Current version: 0.9.1.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -35,14 +35,15 @@ an admitted unknown, every time.
 ## Commands
 
 ```bash
+python3 -m pip install "beautifulsoup4>=4.12.0"  # existing runtime dependency
 python3 -m unittest discover -s tests -q          # 160 tests, no HA needed
 node --test tests/photography-events-card.test.mjs # 83 tests, no browser
 python3 -m pyflakes custom_components/photography_events/*.py tools/*.py
 python3 tools/generate_tracking_inventory.py > TRACKING.md   # after any data change
 ```
 
-All 243 pass on `main`. There is no build step, no bundler, no dependency
-install: the card is vanilla `HTMLElement` + shadow DOM, and the Python tests
+All 243 pass when the existing BeautifulSoup dependency is installed. There is no build step, no bundler, no new dependency
+required: the card is vanilla `HTMLElement` + shadow DOM, and the Python tests
 load the pure modules under a synthetic package so Home Assistant is never
 imported.
 
@@ -275,3 +276,4 @@ environment. Say so rather than claiming a live check happened.
   `const.py` intervals, or the meteor table.
 - Bump `manifest.json`, `package.json` **and** `VERSION` together.
 - Do not add dependencies. The no-build-step, no-numpy constraint is deliberate.
+

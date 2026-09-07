@@ -849,6 +849,33 @@ from any single library, but the same standard, widely-implemented math.
 MIT
 
 
+## 0.10 planner and event notifications
+
+See [release notes](RELEASE_NOTES.md) and [source validation](SOURCE_VALIDATION.md) for the new feeds and their limits. Select `calendar_outlook` for the expandable planner; explicit `timeline` cards keep the standalone browser view. Follow/Skip applies to a whole occurrence across its viewpoints and survives Home Assistant restarts. Skipping suppresses the featured opportunity and new event notifications. Show skipped restores it. Follow enables notification of a changed best location; it never bypasses evidence requirements.
+
+To deliver the new deduplicated opportunity events to your phone, replace the example service with your own existing notify target:
+
+```yaml
+alias: Photography opportunity updates
+triggers:
+  - trigger: event
+    event_type: photography_events_opportunity
+actions:
+  - action: notify.mobile_app_your_phone
+    data:
+      title: "{{ trigger.event.data.title }}"
+      message: >-
+        {{ trigger.event.data.reason }} — {{ trigger.event.data.where }}.
+        {{ trigger.event.data.detail }}
+        Starts: {{ trigger.event.data.starts }}.
+mode: queued
+```
+
+Event payloads include `event_id`, `entry_id`, `title`, `reason`, `starts`, `ends`, `where`, `drive_hours`, `verification`, `observed_at`, `detail`, and `source_url`. A timestamped report confirms what was observed, not a future encounter. Existing binary-sensor automations can be replaced with the event trigger to avoid duplicate delivery.
+
+A new VERSION on main is published only after Validate succeeds; the release workflow checks the exact commit again before publishing. Tag and manual release triggers remain supported.
+
+
 
 ### Development and releases
 
@@ -856,4 +883,4 @@ Install the existing `beautifulsoup4>=4.12.0` requirement before running
 Python tests: HTML heading/context tests require the real parser. Main
 commits with a new semantic version are released after Validate succeeds.
 Manifest, package, VERSION and card console versions must agree; release
-notes come from CHANGELOG.md. Existing releases are never overwritten.
+notes come from RELEASE_NOTES.md (with the version summary in CHANGELOG.md). Existing releases are never overwritten.

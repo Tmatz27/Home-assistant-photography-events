@@ -45,7 +45,7 @@ USER_AGENT = "home-assistant-photography-events (+https://github.com/Tmatz27/Hom
 # purpose: an older report is not an alert, but it is the evidence that a bird
 # is staked out rather than a one-off flyover.
 EBIRD_LOOKBACK_DAYS = 5
-INATURALIST_LOOKBACK_DAYS = 7
+INATURALIST_LOOKBACK_DAYS = 14
 
 # Close enough to a zone that naming the zone helps you place the sighting.
 # Beyond it the reported place name stands on its own.
@@ -284,6 +284,14 @@ def build_inaturalist_headers() -> dict:
     return {"User-Agent": USER_AGENT, "Accept": "application/json"}
 
 
+def _taxon_category(scientific):
+    # The query list grew beyond whales; classify from its source of truth.
+    from .phenomena import PEAK_WINDOWS
+    if scientific in MARINE_TAXA:
+        return CATEGORY_MARINE
+    return next((window.category for window in PEAK_WINDOWS if scientific in window.live_taxa), CATEGORY_MARINE)
+
+
 def parse_inaturalist(payload, tz: timezone | None = None) -> list[Sighting]:
     """Turn an observations payload into sightings.
 
@@ -327,7 +335,7 @@ def parse_inaturalist(payload, tz: timezone | None = None) -> list[Sighting]:
                 latest=observed,
                 earliest=observed,
                 source="iNaturalist",
-                category=CATEGORY_MARINE,
+                category=_taxon_category(scientific),
                 # Research grade means the community agreed on the ID, which is
                 # the closest analogue to eBird's reviewer confirmation.
                 confirmed=entry.get("quality_grade") == "research",

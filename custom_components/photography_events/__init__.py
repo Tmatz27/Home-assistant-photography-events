@@ -41,6 +41,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     await _async_register_card(hass)
 
     coordinator = PhotographyEventsCoordinator(hass, entry)
+    await coordinator.async_initialize()
     await coordinator.async_config_entry_first_refresh()
 
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
@@ -81,6 +82,14 @@ def _async_register_services(hass: HomeAssistant) -> None:
         for coordinator in list(hass.data.get(DOMAIN, {}).values()):
             await coordinator.async_add_ingested_reports(reports)
 
+    async def _async_choice(call: ServiceCall):
+        for coordinator in list(hass.data.get(DOMAIN, {}).values()):
+            await coordinator.async_set_event_choice(call.data["event_id"], call.data["choice"])
+
+    hass.services.async_register(DOMAIN, "set_event_choice", _async_choice, schema=vol.Schema({
+        vol.Required("event_id"): cv.string,
+        vol.Required("choice"): vol.In(["default", "follow", "skip"]),
+    }))
     hass.services.async_register(
         DOMAIN, SERVICE_INGEST_REPORT, _async_ingest, schema=INGEST_REPORT_SCHEMA
     )
@@ -108,6 +117,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         hass.data[DOMAIN].pop(entry.entry_id, None)
         if not hass.data.get(DOMAIN):
             hass.services.async_remove(DOMAIN, SERVICE_INGEST_REPORT)
+            hass.services.async_remove(DOMAIN, "set_event_choice")
     return unloaded
 
 

@@ -167,6 +167,7 @@ class PeakWindow:
     photo_tips: str
     best_time_of_day: str = ""
     confirm: bool = False
+    requires_behavior: bool = False
     lunar_dependent: bool = False
     evidence: str = EVIDENCE_STATIC
     # Scientific names whose recent sightings corroborate this window.
@@ -264,6 +265,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="pismo_monarchs",
+        requires_behavior=True,
         name="Pismo monarch butterfly roost",
         category=CATEGORY_RARE,
         season_range="Late October to February",
@@ -285,6 +287,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="sandhill_crane_flyin",
+        requires_behavior=True,
         name="Sandhill crane sunset fly-in",
         category=CATEGORY_RARE,
         season_range="October to February",
@@ -331,6 +334,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="gray_whale_northbound",
+        requires_behavior=True,
         name="Gray whale mothers and calves northbound",
         category=CATEGORY_MARINE,
         season_range="March to May",
@@ -356,6 +360,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="transient_orca_hunt",
+        requires_behavior=True,
         name="Bigg's transient orcas hunting",
         category=CATEGORY_MARINE,
         season_range="April to June",
@@ -377,6 +382,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="blue_whale_feeding",
+        requires_behavior=True,
         name="Blue whale feeding aggregation",
         category=CATEGORY_MARINE,
         season_range="May to October (NOAA feeding season); watch window mid-Jul to mid-Sep",
@@ -398,6 +404,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="humpback_lunge_feeding",
+        requires_behavior=True,
         name="Humpback lunge feeding",
         category=CATEGORY_MARINE,
         season_range="March to November (NOAA feeding season); watch window Aug-mid Oct",
@@ -419,6 +426,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="common_dolphin_calving",
+        requires_behavior=True,
         name="Common dolphin calving in the mega-pods",
         category=CATEGORY_MARINE,
         season_range="Winter, after a 10-11 month gestation",
@@ -446,6 +454,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     # --- Terrestrial mammals ------------------------------------------------
     PeakWindow(
         key="tule_elk_rut",
+        requires_behavior=True,
         name="Tule elk rut",
         category=CATEGORY_MAMMALS,
         season_range="August to October",
@@ -526,6 +535,7 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
     ),
     PeakWindow(
         key="elephant_seal_battles",
+        requires_behavior=True,
         name="Elephant seal bull battles and pupping",
         category=CATEGORY_MAMMALS,
         season_range="December to March",

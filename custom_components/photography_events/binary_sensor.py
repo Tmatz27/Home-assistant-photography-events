@@ -9,6 +9,7 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
+from .event_state import event_id
 from .coordinator import PhotographyEventsCoordinator
 
 
@@ -67,6 +68,7 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
             # whether it is still being seen.
             "source_url": top.source_url,
             "event_name": top.title,
+            "event_id": event_id(top),
             "confidence_score": top.score,
             "category": top.category,
             "target_zone": top.zone_name,

@@ -4,7 +4,7 @@ _Generated from the code by `tools/generate_tracking_inventory.py`. Every date,
 evidence level and link below is read out of the modules that run, so this file
 cannot drift from the thing it describes._
 
-Generated 2026-09-06.
+Generated 2026-09-07.
 
 ## How to read this
 
@@ -175,6 +175,12 @@ biology, which is genuinely a matter of months. Closures are live.
 
 | Source | Used for | Key | Polled no more than |
 | --- | --- | --- | --- |
+| NOAA NDBC 46011 | Measured offshore significant wave height, period and direction | none | 30 min |
+| CDIP B1500 | Experimental nearshore forecast; run age checked | none | 3 h |
+| NWS active alerts | Santa Barbara coastal advisories | none | 1 h |
+| NOAA OVATION | Conservative local aurora model signal | none | 15 min |
+| Condor Express RSS | Explicitly dated and sized megapod reports only | none | 3 h |
+| CDFW grunion schedule | Published expected intervals at Santa Barbara | none | 24 h |
 | Open-Meteo forecast | Layered cloud at each zone and both light-path probes | none | every 60 min |
 | Open-Meteo air quality | Aerosol optical depth and dust - colour saturation | none | every 3 h |
 | eBird notable observations | Rare birds, and crane corroboration | free, instant | every 60 min |
@@ -182,7 +188,7 @@ biology, which is genuinely a matter of months. Closures are live.
 | Theodore Payne Wildflower Hotline | Whether a bloom is actually happening | none (scraped) | every 24 h |
 | DesertUSA wildflower reports | Desert bloom reports | none (scraped) | every 24 h |
 | California Fall Color | Aspen colour reports | none (scraped) | every 24 h |
-| NOAA CO-OPS tide predictions | The hour of a grunion run | none | every 12 h |
+| NOAA CO-OPS tide predictions | Tidal context; CDFW is the authority for expected grunion intervals | none | every 12 h |
 | NPS alerts API | Road and area closures - the trip-killer nothing else sees | free | every 6 h |
 | Google Routes API | Traffic-aware drive times | yours, optional | every 30 min |
 | Any subscription email | Whatever a mailing list reports, via the IMAP integration and `photography_events.ingest_report` | none | whenever it arrives |
@@ -199,10 +205,19 @@ Written down rather than papered over.
   built from hydrophones, observers and a habitat model. Its API is by request only
   (`boi-whalesafe@ucsb.edu`). The code is shaped for a key to drop straight in; it
   links out rather than inventing an endpoint.
-- The 5 `static` entries above have no live feed anywhere. That is a fact
-  about the world, not a shortcut - nobody publishes machine-readable rut or
+- The 5 `static` entries above have no connected live confirmation feed. No claim is made
+  that all possible sources have been exhausted. Species presence cannot establish rut or
   pupping data. They are flagged, capped, and never alert.
 - Planet positions come from a two-body solution, so opposition dates can be up to
   about a day off. Fine for planning, not an ephemeris.
 - Bloom timing depends on winter rainfall and cannot be computed at all. The three
   hotline scrapers are the only real source, and they describe the past.
+
+## Additional special search targets
+
+- **Bioluminescent surf** — No dependable annual date. Requires a recent report of visibly glowing water, not just a red tide. Source: https://scripps.ucsd.edu/news/everything-you-wanted-know-about-red-tides
+- **Mass winter waterfowl flights** — Sacramento National Wildlife Refuge is a longer-trip target. Seasonal abundance is established; the timing of a mass lift-off is not predictable. Check refuge counts and access. Source: https://www.fws.gov/refuge/sacramento
+- **California condors at Pinnacles** — Year-round personal target. High Peaks and the park's current viewing guidance are the starting points; individual sightings do not guarantee a repeat encounter. Source: https://www.nps.gov/pinn/learn/nature/condor-viewing-tips.htm
+- **Yosemite moonbows** — spring full-Moon candidate nights; no viewpoint-specific time or live waterfall confirmation.
+- **Exceptional swells** — NDBC 46011 and CDIP B1500, with calibration and limits in SOURCE_VALIDATION.md.
+- **Aurora and dolphin megapods** — report/model-driven only; never inferred from an annual date.

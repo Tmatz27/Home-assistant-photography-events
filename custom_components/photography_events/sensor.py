@@ -128,7 +128,7 @@ class PlanningOutlookSensor(_BaseSensor):
     _attr_name = "Planning outlook"
     _attr_icon = "mdi:calendar-month"
     _attr_native_unit_of_measurement = "events"
-    _unrecorded_attributes = frozenset({"events", "categories"})
+    _unrecorded_attributes = frozenset({"events", "categories", "sources", "preferences", "parks", "gear_by_category"})
 
     # A hard ceiling so a future source cannot quietly turn one attribute into
     # a megabyte of websocket traffic on every update.
@@ -146,6 +146,8 @@ class PlanningOutlookSensor(_BaseSensor):
         upcoming = self._opportunities[: self.MAX_EVENTS]
         return {
             "events": [item.compact() for item in upcoming],
+            "preferences": (self.coordinator.data or {}).get("preferences", {}),
+            "sources": (self.coordinator.data or {}).get("sources", {}),
             "categories": sorted({item.category for item in self._opportunities}),
             "all_categories": list(ALL_CATEGORIES),
             "gear_by_category": {

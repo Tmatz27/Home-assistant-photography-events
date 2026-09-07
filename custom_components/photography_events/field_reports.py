@@ -219,6 +219,11 @@ class FieldReport:
     strength: int
     fetched: datetime | None = None
     context: str = ""
+    # Fetch/publication time does not establish when the observation happened.
+    observed_at: datetime | None = None
+    phenomenon_key: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
 
     def age_label(self, now: datetime) -> str:
         """When the page was *read*, which is all these pages tell us.

@@ -25,6 +25,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
 
@@ -35,6 +37,9 @@ from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
 
 from . import events as event_builder
+from .event_state import EventState, event_id
+from . import waves, spectacles, grunion
+from homeassistant.helpers.storage import Store
 from . import field_reports as reports_module
 
 # An ingested report is held a little longer than it can corroborate for, so it
@@ -98,7 +103,7 @@ from .weather_scoring import build_air_quality_params, build_open_meteo_params
 _LOGGER = logging.getLogger(__name__)
 
 CALENDAR_HORIZON_DAYS = 365
-ASTRO_HORIZON_DAYS = 30
+ASTRO_HORIZON_DAYS = 365
 MILKY_WAY_HORIZON_DAYS = 14
 REQUEST_TIMEOUT = 30
 
@@ -131,6 +136,12 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         )
         self.entry = entry
         self._sources: dict[str, Source] = {
+            "grunion": Source("CDFW expected grunion schedule", 1440),
+            "ndbc": Source("NOAA offshore waves", 30),
+            "cdip": Source("CDIP coastal forecast", 180),
+            "surf_alerts": Source("NWS coastal alerts", 60),
+            "condor_reports": Source("Condor Express dated trip reports", 180),
+            "aurora": Source("NOAA OVATION", 15),
             "weather": Source("Open-Meteo", MIN_INTERVAL_WEATHER),
             "air_quality": Source("Open-Meteo air quality", MIN_INTERVAL_AIR_QUALITY),
             "ebird": Source("eBird", MIN_INTERVAL_EBIRD),
@@ -148,6 +159,29 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         self._routing_cache: dict[tuple[float, float], routing_module.DriveTime] = {}
         self._routing_endpoint: str | None = None
         self._cold_start = True
+        self.event_state = EventState()
+        self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.events")
+        self._choice_lock = asyncio.Lock()
+
+    async def async_initialize(self):
+        self.event_state = EventState(await self._store.async_load())
+        self._calibration = await self.hass.async_add_executor_job(
+            lambda: json.loads(Path(__file__).with_name("wave_calibration.json").read_text()))
+
+    async def async_set_event_choice(self, key, choice):
+        async with self._choice_lock:
+            items = (self.data or {}).get("opportunities", [])
+            matching = [item for item in items if event_id(item) == key]
+            if not matching:
+                raise ValueError("This occurrence is no longer in the planning outlook")
+            expires = max(item.end or item.start for item in matching) + timedelta(days=31)
+            self.event_state.set_choice(key, choice, expires)
+            await self._store.async_save(self.event_state.dump())
+            data = dict(self.data or {})
+            data["preferences"] = dict(self.event_state.choices)
+            action = [item for item in data.get("action_events", []) if self.event_state.choice(event_id(item)) != "skip"]
+            data["top_action"] = next((item for item in action if event_builder.alert_candidate(item, self.alert_score)), None)
+            self.async_set_updated_data(data)
 
     # --- Configuration ------------------------------------------------------
 
@@ -158,7 +192,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
     @property
     def enabled_categories(self) -> set[str]:
         configured = self._options.get(CONF_ENABLED_CATEGORIES)
-        return set(configured) if configured else set(ALL_CATEGORIES)
+        selected = set(configured) if configured else set(ALL_CATEGORIES)
+        if selected == set(ALL_CATEGORIES) - {"waves"}:
+            selected.add("waves")
+        return selected
 
     @property
     def max_drive_hours(self) -> float:
@@ -226,7 +263,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             await asyncio.sleep(GROUP_STAGGER_SECONDS)
         if CATEGORY_BIRDS in categories and self.ebird_key:
             await self._refresh(self._sources["ebird"], now, lambda: self._fetch_ebird(session))
-        if CATEGORY_MARINE in categories:
+        if categories & {"marine", "mammals", "rare_phenomena", "birds"}:
             await self._refresh(self._sources["inaturalist"], now, lambda: self._fetch_inaturalist(session, now))
 
         # Group 3: the hotline scrapers. On a cold start they are deferred to a
@@ -243,16 +280,37 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         # Group 4: verification. Tide predictions turn a run night into an hour,
         # and park alerts are the only source that can say the road is shut.
         if CATEGORY_RARE in categories:
+            await self._refresh(self._sources["grunion"], now, lambda: self._fetch_grunion(session))
             await self._refresh(self._sources["tides"], now, lambda: self._fetch_tides(session, now))
         if CATEGORY_PARKS in categories and self.nps_key:
             await self._refresh(self._sources["park_alerts"], now, lambda: self._fetch_park_alerts(session))
+
+        # These bounded public feeds carry their own timestamps and cadence.
+        # An HTTP success with an unusable payload is not a successful refresh.
+        if "waves" in categories:
+            await self._refresh(self._sources["ndbc"], now, lambda: self._fetch_wave_data(session, False, now))
+            await self._refresh(self._sources["cdip"], now, lambda: self._fetch_wave_data(session, True, now))
+            await self._refresh(self._sources["surf_alerts"], now, lambda: self._fetch_surf_alerts(session))
+        if CATEGORY_MARINE in categories:
+            await self._refresh(self._sources["condor_reports"], now, lambda: self._fetch_condor(session, now))
+        if CATEGORY_ASTRO in categories:
+            await self._refresh(self._sources["aurora"], now, lambda: self._fetch_aurora(session))
 
         opportunities = await self._build(now, zones, forecasts, air_quality, categories)
         opportunities = await self._apply_routing(session, now, opportunities)
 
         opportunities = event_builder.within_drive(opportunities, self.max_drive_hours)
         action = event_builder.action_window(opportunities, now)
-        top = next((item for item in action if event_builder.alert_candidate(item, self.alert_score)), None)
+        top = next((item for item in action if self.event_state.choice(event_id(item)) != "skip"
+                    and event_builder.alert_candidate(item, self.alert_score)), None)
+        async with self._choice_lock:
+            notices = self.event_state.changes(opportunities, now,
+                lambda item: item.start <= now + timedelta(days=60)
+                and event_builder.alert_candidate(item, self.alert_score))
+            # Persist before publishing so restart cannot replay a notice.
+            await self._store.async_save(self.event_state.dump())
+        for notice in notices:
+            self.hass.bus.async_fire(f"{DOMAIN}_opportunity", {**notice, "entry_id": self.entry.entry_id})
         self._cold_start = False
 
         return {
@@ -260,6 +318,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "opportunities": sorted(opportunities, key=lambda item: item.start),
             "action_events": action,
             "top_action": top,
+            "preferences": dict(self.event_state.choices),
             "zone_count": len(zones),
             "forecast_zones": sorted(forecasts),
             "sources": {key: source.status() for key, source in self._sources.items()},
@@ -319,6 +378,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 )
             )
 
+        # Corroboration needs the whole 14-day allowance; action sightings
+        # deliberately retain the shorter four-day digestion above.
+        corroboration = wildlife_module.digest(sightings, now, 14 * 24)
         reports = list(self._sources["field_reports"].value or []) + self._fresh_ingested(now)
         if reports:
             opportunities.extend(
@@ -334,21 +396,13 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             now,
             CALENDAR_HORIZON_DAYS,
             self.home,
-            digested if sightings else None,
+            corroboration or None,
             reports or None,
         )
         opportunities.extend(seasonal)
 
         if CATEGORY_RARE in categories:
-            opportunities.extend(
-                await self.hass.async_add_executor_job(
-                    event_builder.build_grunion_runs,
-                    now,
-                    CALENDAR_HORIZON_DAYS,
-                    self.home,
-                    self._sources["tides"].value,
-                )
-            )
+            opportunities.extend(grunion.opportunities(self._sources["grunion"].value or [], now, self.home))
 
         if CATEGORY_PARKS in categories:
             opportunities.extend(
@@ -360,6 +414,18 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 )
             )
 
+        opportunities.extend(await self.hass.async_add_executor_job(spectacles.watch_opportunities, now, self.home))
+        if "waves" in categories:
+            # A failed download cannot keep a forecast authoritative indefinitely.
+            source = self._sources["cdip"]
+            coastal = source.value if not source.failures and source.fetched_at and now - source.fetched_at <= timedelta(hours=6) else {}
+            opportunities.extend(waves.build_opportunities(now, self._sources["ndbc"].value or {},
+                coastal or {}, self._calibration, self.event_state, self.home,
+                self._sources["surf_alerts"].value or []))
+        if CATEGORY_MARINE in categories:
+            opportunities.extend(spectacles.report_opportunities(self._sources["condor_reports"].value or [], now, self.home))
+        if CATEGORY_ASTRO in categories:
+            opportunities.extend(spectacles.aurora_opportunities(self._sources["aurora"].value or {}, now, zones, self.event_state))
         return [item for item in opportunities if item.category in categories]
 
     async def _refresh(self, source: Source, now: datetime, fetcher: Callable[[], Awaitable[Any]]) -> None:
@@ -413,6 +479,53 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             await self.async_request_refresh()
 
     # --- Fetchers -----------------------------------------------------------
+
+    async def _fetch_grunion(self, session):
+        raw = await self._get_text(session, grunion.URL)
+        if not raw:
+            raise ValueError("CDFW schedule unavailable")
+        rows = await self.hass.async_add_executor_job(grunion.parse_schedule, raw)
+        if not rows:
+            raise ValueError("CDFW schedule year or table could not be verified")
+        return rows
+
+    async def _fetch_wave_data(self, session, coastal, now):
+        if coastal:
+            metadata = await self._get_text(session, waves.CDIP_ROOT + "B1500_forecast.nc.das")
+            if not waves.recent_forecast_metadata(metadata, now):
+                raise ValueError("Coastal model run is older than 24 hours or has no issue timestamp")
+        url = (waves.CDIP_ROOT + "B1500_forecast.nc.ascii?" + waves.CDIP_FIELDS
+               if coastal else waves.NDBC_URL.format(station="46011"))
+        raw = await self._get_text(session, url, label="Coastal forecast" if coastal else "Buoy waves")
+        if not raw:
+            raise ValueError("Wave feed unavailable")
+        rows = await self.hass.async_add_executor_job(
+            waves.parse_cdip if coastal else waves.parse_ndbc, raw,
+            *((34.75812, -120.64311),) if coastal else ())
+        if not rows:
+            raise ValueError("Wave feed has no valid quality-controlled records")
+        return {"B1500" if coastal else "46011": rows}
+
+    async def _fetch_surf_alerts(self, session):
+        data = await self._get_json(session, "https://api.weather.gov/alerts/active?area=CA",
+                                   headers={"User-Agent": "PhotographyEvents/0.10 (+https://github.com/Tmatz27/Home-assistant-photography-events)"})
+        if not isinstance(data, dict) or "features" not in data:
+            raise ValueError("NWS alerts unavailable")
+        return [f["properties"] for f in data["features"]
+                if "Santa Barbara" in f.get("properties", {}).get("areaDesc", "")
+                and any(term in f["properties"].get("event", "") for term in ("Surf", "Coastal", "Beach"))]
+
+    async def _fetch_condor(self, session, now):
+        raw = await self._get_text(session, spectacles.CONDOR_FEED)
+        if not raw or "<rss" not in raw:
+            raise ValueError("Operator report feed unavailable")
+        return await self.hass.async_add_executor_job(spectacles.condor_reports, raw, now)
+
+    async def _fetch_aurora(self, session):
+        data = await self._get_json(session, spectacles.AURORA_FEED)
+        if not isinstance(data, dict) or not data.get("coordinates"):
+            raise ValueError("OVATION feed unavailable")
+        return data
 
     async def _fetch_forecasts(self, session, zones: list[dict], now: datetime) -> dict[str, dict]:
         """Layered cloud at each zone *and* on its two light paths.

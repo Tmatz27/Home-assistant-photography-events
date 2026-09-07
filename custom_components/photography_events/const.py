@@ -25,7 +25,7 @@ DEFAULT_SUNSET_SCORE: Final = 85
 # The coordinator cycle. Every network source carries its own minimum interval
 # on top of this, so raising the cadence here cannot make any single service be
 # polled harder than its own limit allows.
-DEFAULT_UPDATE_MINUTES: Final = 60
+DEFAULT_UPDATE_MINUTES: Final = 15
 
 # Minimum minutes between calls to each service, enforced per source.
 # Open-Meteo, eBird and iNaturalist are all free and all rate limited; the
@@ -62,6 +62,7 @@ CATEGORY_BLOOMS: Final = "blooms"
 CATEGORY_FOLIAGE: Final = "foliage"
 CATEGORY_RARE: Final = "rare_phenomena"
 CATEGORY_PARKS: Final = "parks"
+CATEGORY_WAVES: Final = "waves"
 
 ALL_CATEGORIES: Final = (
     CATEGORY_ASTRO,
@@ -73,12 +74,14 @@ ALL_CATEGORIES: Final = (
     CATEGORY_FOLIAGE,
     CATEGORY_RARE,
     CATEGORY_PARKS,
+    CATEGORY_WAVES,
 )
 
 # Gear profiles keyed by category. Deliberately described by focal length and
 # capability rather than by a specific body, so the advice survives a kit
 # change; override any of it from the integration options.
 GEAR_PROFILES: Final[dict[str, dict[str, str]]] = {
+    CATEGORY_WAVES: {"glass": "70-200mm or 100-400mm", "support": "Tripod and weather protection", "settings": "Fast shutter for spray from an open elevated viewpoint"},
     CATEGORY_ASTRO: {
         "glass": "Ultra-wide fast prime or zoom (16-35mm f/2.8 or faster)",
         "support": "Sturdy tripod, intervalometer, lens heater",

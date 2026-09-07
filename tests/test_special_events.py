@@ -1,0 +1,157 @@
+"""Regression cases for evidence, persistent choices and exceptional episodes."""
+import unittest
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+
+import test_integration  # Load the pure package without Home Assistant.
+from photography_events.event_state import EventState
+from photography_events.events import Opportunity, alert_candidate, action_window
+from photography_events import spectacles, waves, grunion
+
+NOW = datetime(2026, 9, 6, 7, tzinfo=timezone.utc)
+
+
+def event(**overrides):
+    values = dict(key="site-a", roll="occurrence", title="Special event", category="waves",
+                  zone_id="a", zone_name="Coast", start=NOW, end=NOW+timedelta(days=3),
+                  score=90, detail="Evidence", drive_hours=5,
+                  extra={"verification": "forecast", "wave_height_m": 6,
+                         "measurement_label": "offshore"})
+    values.update(overrides)
+    return Opportunity(**values)
+
+
+class TestPersistentEvents(unittest.TestCase):
+    def test_restarting_does_not_repeat_a_three_day_swell(self):
+        state = EventState()
+        self.assertEqual(len(state.changes([event()], NOW, lambda x: True)), 1)
+        state = EventState(state.dump())
+        self.assertEqual(state.changes([event(score=95)], NOW+timedelta(hours=12), lambda x: True), [])
+
+    def test_skip_covers_every_viewpoint_and_survives_restart(self):
+        state = EventState()
+        state.set_choice("occurrence", "skip", NOW+timedelta(days=4))
+        state = EventState(state.dump())
+        self.assertEqual(state.changes([event(), event(key="site-b", zone_id="b")], NOW, lambda x: True), [])
+        state.set_choice("occurrence", "default", NOW)
+        self.assertEqual(len(state.changes([event()], NOW, lambda x: True)), 1)
+
+    def test_changed_measurement_does_not_count_as_larger_waves(self):
+        state = EventState()
+        state.changes([event()], NOW, lambda x: True)
+        other = event(extra={"verification": "forecast", "wave_height_m": 10, "measurement_label": "nearshore"})
+        self.assertEqual(state.changes([other], NOW, lambda x: True), [])
+
+    def test_material_peak_increase_is_one_update(self):
+        state = EventState()
+        state.changes([event()], NOW, lambda x: True)
+        larger = event(extra={"verification": "forecast", "wave_height_m": 8, "measurement_label": "offshore"})
+        self.assertEqual(len(state.changes([larger], NOW, lambda x: True)), 1)
+        self.assertEqual(state.changes([larger], NOW, lambda x: True), [])
+
+    def test_confirmed_stage_notifies_once(self):
+        state = EventState()
+        state.changes([event()], NOW, lambda x: True)
+        observed = event(extra={"verification": "corroborated"})
+        self.assertEqual(state.changes([observed], NOW, lambda x: True)[0]["reason"], "New confirmation")
+        self.assertEqual(state.changes([observed], NOW, lambda x: True), [])
+
+    def test_ongoing_event_is_kept_even_when_drive_exceeds_remaining_time(self):
+        live = event(start=NOW-timedelta(hours=3), end=NOW+timedelta(minutes=20), drive_hours=6)
+        self.assertEqual(action_window([live], NOW), [live])
+        self.assertEqual(action_window([replace(live, end=NOW)], NOW), [])
+
+    def test_unconfirmed_never_notifies_even_at_a_low_user_threshold(self):
+        self.assertFalse(alert_candidate(event(score=60, planning_only=True), 50))
+
+
+class TestWaves(unittest.TestCase):
+    def test_download_time_does_not_replace_model_issue_time(self):
+        self.assertTrue(waves.recent_forecast_metadata('String date_created "2026-09-06T06:00:00Z";', NOW))
+        self.assertFalse(waves.recent_forecast_metadata('String date_created "2026-09-03T06:00:00Z";', NOW))
+        self.assertFalse(waves.recent_forecast_metadata('String history "downloaded today";', NOW))
+    def test_missing_measurements_are_not_giant_waves(self):
+        raw = "#YY MM DD hh mm WVHT DPD MWD\n2026 09 06 07 00 MM 99 999\n2026 09 06 06 00 6.6 16 290"
+        rows = waves.parse_ndbc(raw)
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0].height, 6.6)
+
+    def test_multi_day_storm_counts_once_but_a_later_storm_is_separate(self):
+        rows = [waves.Wave(NOW+timedelta(hours=h), 7, 16, 290) for h in (0, 6, 24, 48, 72, 150)]
+        self.assertEqual([len(e) for e in waves.episodes(rows, 6.5)], [5, 1])
+
+    def test_size_alone_does_not_qualify(self):
+        self.assertFalse(waves.qualifies(waves.Wave(NOW, 8, 6, 290), 6.5))
+        self.assertFalse(waves.qualifies(waves.Wave(NOW, 8, 16, 90), 6.5))
+
+    def test_stale_buoy_is_not_live_evidence(self):
+        result = waves.build_opportunities(NOW, {"46011": [waves.Wave(NOW-timedelta(hours=4), 8, 17, 290)]},
+                                           {}, {"46011": {"threshold_m": 6.5}}, EventState(), (34.7, -120.5))
+        self.assertEqual(result, [])
+
+    def test_offshore_only_does_not_claim_coastal_confirmation(self):
+        result = waves.build_opportunities(NOW, {"46011": [waves.Wave(NOW, 8, 17, 290)]},
+                                           {}, {"46011": {"threshold_m": 6.5}}, EventState(), (34.7, -120.5))
+        self.assertTrue(result[0].planning_only)
+        self.assertIn("offshore", result[0].extra["measurement_label"])
+
+    def test_coastal_forecast_and_offshore_measurement_stay_distinct(self):
+        result = waves.build_opportunities(NOW, {"46011": [waves.Wave(NOW, 8, 17, 290)]},
+            {"B1500": [waves.Wave(NOW+timedelta(hours=12), 6, 16, 290)]},
+            {"46011": {"threshold_m": 6.5}, "B1500": {"threshold_m": 5.2}}, EventState(), (34.7, -120.5))
+        self.assertFalse(result[0].planning_only)
+        self.assertEqual(result[0].extra["wave_height_m"], 8)
+        self.assertIn("6.0 m", result[0].extra["forecast_note"])
+
+    def test_invalid_cdip_geometry_and_quality_fail_quiet(self):
+        raw = "waveTime[1]\n1788678000\nwaveHs[1]\n7\nwaveTp[1]\n16\nwaveDp[1]\n290\nwaveFlagPrimary[1]\n1\nmetaLatitude, 34.75812\nmetaLongitude, -120.64311"
+        self.assertEqual(len(waves.parse_cdip(raw, (34.75812, -120.64311))), 1)
+        self.assertEqual(waves.parse_cdip(raw, (37, -122)), [])
+        self.assertEqual(waves.parse_cdip(raw.replace("waveFlagPrimary[1]\n1", "waveFlagPrimary[1]\n4")), [])
+
+
+class TestSpecialSources(unittest.TestCase):
+    def test_grunion_published_year_midnight_and_santa_barbara_offset(self):
+        html = '<h2>2026 Expected Grunion Runs</h2><table><tr><td>We</td><td>3/4</td><td>10:00 p.m. - Midnight</td></tr></table>'
+        schedule = grunion.parse_schedule(html)
+        self.assertEqual(len(schedule), 1)
+        self.assertEqual(schedule[0][1].day, 5)
+        items = grunion.opportunities(schedule, datetime(2026, 3, 1, tzinfo=timezone.utc), (34.7, -120.5))
+        self.assertEqual(items[0].start.minute, 25)
+        self.assertEqual(items[0].start.utcoffset(), timedelta(hours=-8))
+        self.assertTrue(items[0].planning_only)
+        self.assertEqual(grunion.parse_schedule(html.replace("2026", "")), [])
+
+    def feed(self, body):
+        return f"<rss><channel><item><description>{body}</description><link>https://www.condorexpress.com/post/example</link></item></channel></rss>"
+
+    def test_trip_total_is_not_a_megapod(self):
+        raw = self.feed("2026 09–06 SB Channel Sightings: 1,000 common dolphins in many small groups.")
+        self.assertEqual(spectacles.condor_reports(raw, NOW), [])
+
+    def test_actual_dated_megapod_statement_is_usable(self):
+        reports = spectacles.condor_reports(self.feed("2026 09–06 SB Channel We encountered a megapod of 1,500 common dolphins."), NOW)
+        self.assertEqual(len(reports), 1)
+        self.assertEqual(reports[0].observed_at.day, 6)
+
+    def test_new_publication_cannot_refresh_old_sighting(self):
+        raw = self.feed("2026 08–06 SB Channel We encountered a megapod of 1,500 common dolphins.")
+        self.assertEqual(spectacles.condor_reports(raw, NOW), [])
+
+    def test_undated_and_negated_reports_never_confirm(self):
+        self.assertEqual(spectacles.condor_reports(self.feed("We saw a megapod of 1,500 dolphins."), NOW), [])
+        self.assertEqual(spectacles.condor_reports(self.feed("2026 09–06 SB Channel There was no megapod of 1,500 dolphins."), NOW), [])
+
+    def test_search_targets_do_not_become_confirmed_with_time(self):
+        for item in spectacles.watch_opportunities(NOW, (34.7, -120.5)):
+            self.assertTrue(item.planning_only)
+            self.assertFalse(alert_candidate(item, 50))
+
+    def test_stale_aurora_and_remote_grid_do_not_alert(self):
+        zones = [dict(id="home", name="Home", latitude=34.7, longitude=-120.5, drive_hours=0)]
+        payload = {"Observation Time": (NOW-timedelta(hours=3)).isoformat(),
+                   "Forecast Time": NOW.isoformat(), "coordinates": [[240, 35, 90]]}
+        self.assertEqual(spectacles.aurora_opportunities(payload, NOW, zones, EventState()), [])
+        payload["Observation Time"] = NOW.isoformat()
+        payload["coordinates"] = [[240, 65, 90]]
+        self.assertEqual(spectacles.aurora_opportunities(payload, NOW, zones, EventState()), [])

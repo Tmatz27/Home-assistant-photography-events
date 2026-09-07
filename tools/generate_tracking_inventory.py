@@ -20,7 +20,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "photography_events"
 MODULES = ("const", "parks", "astronomy", "weather_scoring", "phenomena", "wildlife",
-           "field_reports", "routing", "verification", "throttle", "events")
+           "field_reports", "routing", "verification", "throttle", "events", "spectacles")
 
 
 def load():
@@ -50,7 +50,7 @@ out = print
 
 
 def month_day(pair):
-    return date(2001, *pair).strftime("%-d %b")
+    return f"{pair[1]} {date(2001, *pair):%b}"
 
 
 out("# What this integration actually tracks")
@@ -235,6 +235,12 @@ out()
 out("| Source | Used for | Key | Polled no more than |")
 out("| --- | --- | --- | --- |")
 rows = [
+    ("NOAA NDBC 46011", "Measured offshore significant wave height, period and direction", "none", "30 min"),
+    ("CDIP B1500", "Experimental nearshore forecast; run age checked", "none", "3 h"),
+    ("NWS active alerts", "Santa Barbara coastal advisories", "none", "1 h"),
+    ("NOAA OVATION", "Conservative local aurora model signal", "none", "15 min"),
+    ("Condor Express RSS", "Explicitly dated and sized megapod reports only", "none", "3 h"),
+    ("CDFW grunion schedule", "Published expected intervals at Santa Barbara", "none", "24 h"),
     ("Open-Meteo forecast", "Layered cloud at each zone and both light-path probes", "none",
      f"every {const.MIN_INTERVAL_WEATHER} min"),
     ("Open-Meteo air quality", "Aerosol optical depth and dust - colour saturation", "none",
@@ -249,7 +255,7 @@ rows = [
      f"every {const.MIN_INTERVAL_FIELD_REPORTS // 60} h"),
     ("California Fall Color", "Aspen colour reports", "none (scraped)",
      f"every {const.MIN_INTERVAL_FIELD_REPORTS // 60} h"),
-    ("NOAA CO-OPS tide predictions", "The hour of a grunion run", "none",
+    ("NOAA CO-OPS tide predictions", "Tidal context; CDFW is the authority for expected grunion intervals", "none",
      f"every {const.MIN_INTERVAL_TIDES // 60} h"),
     ("NPS alerts API", "Road and area closures - the trip-killer nothing else sees", "free",
      f"every {const.MIN_INTERVAL_PARK_ALERTS // 60} h"),
@@ -274,10 +280,17 @@ out("  source on this coast - a daily whale-presence rating for the Santa Barbar
 out("  built from hydrophones, observers and a habitat model. Its API is by request only")
 out("  (`boi-whalesafe@ucsb.edu`). The code is shaped for a key to drop straight in; it")
 out("  links out rather than inventing an endpoint.")
-out(f"- The {len(by_evidence.get(phenomena.EVIDENCE_STATIC, []))} `static` entries above have no live feed anywhere. That is a fact")
-out("  about the world, not a shortcut - nobody publishes machine-readable rut or")
+out(f"- The {len(by_evidence.get(phenomena.EVIDENCE_STATIC, []))} `static` entries above have no connected live confirmation feed. No claim is made")
+out("  that all possible sources have been exhausted. Species presence cannot establish rut or")
 out("  pupping data. They are flagged, capped, and never alert.")
 out("- Planet positions come from a two-body solution, so opposition dates can be up to")
 out("  about a day off. Fine for planning, not an ephemeris.")
 out("- Bloom timing depends on winter rainfall and cannot be computed at all. The three")
 out("  hotline scrapers are the only real source, and they describe the past.")
+
+out("\n## Additional special search targets\n")
+for target in pkg.spectacles.WATCH_TARGETS:
+    out(f"- **{target[1]}** — {target[6]} Source: {target[7]}")
+out("- **Yosemite moonbows** — spring full-Moon candidate nights; no viewpoint-specific time or live waterfall confirmation.")
+out("- **Exceptional swells** — NDBC 46011 and CDIP B1500, with calibration and limits in SOURCE_VALIDATION.md.")
+out("- **Aurora and dolphin megapods** — report/model-driven only; never inferred from an annual date.")

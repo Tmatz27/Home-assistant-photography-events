@@ -63,23 +63,24 @@
   "selector": {
     "category": {
       "options": {
-        "astronomy": "Astronomy \u2014 meteor showers and Milky Way windows",
-        "sunset": "Skies \u2014 sunrise and sunset colour",
-        "marine": "Whales \u2014 orca, blue, fin and humpback",
-        "mammals": "Land mammals \u2014 rut, pupping and elephant seals",
-        "birds": "Rare birds \u2014 needs an eBird key",
+        "astronomy": "Astronomy — meteor showers and Milky Way windows",
+        "sunset": "Skies — sunrise and sunset colour",
+        "marine": "Whales — orca, blue, fin and humpback",
+        "mammals": "Land mammals — rut, pupping and elephant seals",
+        "birds": "Rare birds — needs an eBird key",
         "blooms": "Wildflower blooms",
         "foliage": "Autumn colour",
         "parks": "National parks and monuments",
-        "rare_phenomena": "Rare phenomena \u2014 firefall, grunion runs, monarch roosts, crane fly-ins"
+        "rare_phenomena": "Rare phenomena — firefall, grunion runs, monarch roosts, crane fly-ins",
+        "waves": "Exceptional ocean swells"
       }
     },
     "routing_mode": {
       "options": {
-        "auto": "Automatic \u2014 try the Routes API, fall back to Distance Matrix",
+        "auto": "Automatic — try the Routes API, fall back to Distance Matrix",
         "routes": "Routes API only",
         "distance_matrix": "Distance Matrix API only (legacy)",
-        "off": "Off \u2014 use the built-in distance estimate"
+        "off": "Off — use the built-in distance estimate"
       }
     }
   }

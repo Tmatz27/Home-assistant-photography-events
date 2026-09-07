@@ -11,6 +11,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 
 from . import astronomy as astro
+from .event_state import event_id
 from .const import (
     CATEGORY_ASTRO,
     CATEGORY_MARINE,
@@ -156,6 +157,7 @@ class Opportunity:
         """
         row = {
             "key": self.key,
+            "event_id": event_id(self),
             "title": self.title,
             "category": self.category,
             "zone_id": self.zone_id,
@@ -175,6 +177,8 @@ class Opportunity:
             # A park window is a range of days, not an instant. Publishing it as
             # a timestamp implies a precision it does not have - and invites the
             # card to render "ends 23:59:59" on a three-month season.
+            if self.category != CATEGORY_PARKS:
+                row["detail"] = _shorten(self.detail, 400)
             row["all_day"] = True
             row["start"] = self.start.date().isoformat()
             row["end"] = self.end.date().isoformat() if self.end else None
@@ -189,6 +193,8 @@ class Opportunity:
             if self.source_url:
                 row["source_url"] = self.source_url
 
+        if self.source_url:
+            row["source_url"] = self.source_url
         # Everything the expandable detail needs, and nothing it does not.
         if self.extra.get("verify_urls"):
             row["verify"] = self.extra["verify_urls"]
@@ -203,6 +209,11 @@ class Opportunity:
             "best_time_of_day",
             "days_away",
             "confirm",
+            "observed_at", "source_name", "evidence_note", "closures", "closure_source",
+            "closure_urls", "tide_window_start", "tide_window_end", "needs_tide_table",
+            "special", "wave_height_m", "wave_period_s", "wave_direction_deg",
+            "measurement_label", "forecast_note", "access_note", "locations_detail",
+            "feed_status", "confidence_note", "coastal_advisories",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -279,7 +290,7 @@ def build_sunset_opportunities(
         if scored.score < threshold:
             continue
         title = (
-            f"{label} is the best of the week at {zone['name']}"
+            f"{label} is the best in the forecast at {zone['name']}"
             if scored.standout
             else f"{label} could go off at {zone['name']}"
         )
@@ -448,6 +459,7 @@ def build_meteor_opportunities(
                     latitude=zone["latitude"],
                     longitude=zone["longitude"],
                     extra={
+                        "verification": "computed",
                         "duration_minutes": window.duration_minutes,
                         "limited_by": window.limited_by,
                         "zhr": shower["zhr"],
@@ -812,7 +824,7 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
     trip, and an animal that moved three weeks ago.
     """
     if window.evidence == EVIDENCE_COMPUTED:
-        return score, "computed", [], "Nothing. These dates are geometry and are exact."
+        return score, "computed", [], "Calculated timing; local visibility and conditions still matter."
 
     if window.evidence == EVIDENCE_STATIC:
         return (
@@ -831,9 +843,16 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
     reports = [
         report for report in (field_reports or [])
         if getattr(report, "category", None) == window.category
-        and (getattr(report, "fetched", None) is None or report.fetched >= stale_before)
+        and getattr(report, "observed_at", None) is not None
+        and stale_before <= report.observed_at <= now
+        and getattr(report, "phenomenon_key", "") == window.key
         and haversine_km(window.latitude, window.longitude, *_report_point(report, window)) <= LIVE_CORROBORATION_KM
     ] if field_reports else []
+
+    if matches and window.requires_behavior and not reports:
+        return (min(score, UNVERIFIED_CEILING), "presence_only",
+                ["species reported; the named behavior or aggregation is not confirmed"],
+                "A dated report of this behavior or aggregation at this location. Species presence alone is not enough.")
 
     if matches:
         freshest = max(item.latest for item in matches)
@@ -850,7 +869,7 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
                 f"confirmed: {observers} report{'s' if observers != 1 else ''} within "
                 f"{round(LIVE_CORROBORATION_KM)} km, most recent {age_days} day{'s' if age_days != 1 else ''} ago",
             ],
-            f"Nothing - it is happening. Nearest report {round(nearest)} km away, "
+            f"Species presence reported. Nearest report {round(nearest)} km away, "
             f"{age_days} day{'s' if age_days != 1 else ''} old.",
         )
 
@@ -859,7 +878,7 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
             max(score, CORROBORATED_SCORE - 5),
             "corroborated",
             [f"confirmed by {reports[0].source_name}"],
-            f"Nothing - {reports[0].source_name} has it in the field right now.",
+            f"Dated report from {reports[0].source_name}; future presence is not guaranteed.",
         )
 
     taxa = ", ".join(window.live_taxa) if window.live_taxa else "the species"
@@ -880,6 +899,8 @@ _NOWHERE = (0.0, 0.0)
 
 
 def _report_point(report, window) -> tuple[float, float]:
+    if getattr(report, "latitude", None) is not None and getattr(report, "longitude", None) is not None:
+        return report.latitude, report.longitude
     """Where a field report actually is, or nowhere at all."""
     zone = ZONES_BY_ID.get(getattr(report, "zone_id", ""))
     if zone:
@@ -904,7 +925,8 @@ def action_window(opportunities: list[Opportunity], now: datetime, hours: int = 
         (
             item
             for item in opportunities
-            if not item.planning_only and now - timedelta(hours=2) <= item.start <= cutoff
+            if not item.planning_only and item.start <= cutoff
+            and (item.end or item.start + timedelta(hours=2)) > now
         ),
         key=lambda item: (-item.score, item.start),
     )
@@ -969,6 +991,8 @@ def build_wildlife_opportunities(
         zone_id = match[0]["id"] if match else f"sighting-{_slug(sighting.place)}"
         zone_name = sighting.place or (match[0]["name"] if match else "Reported location")
 
+        if sighting.latest + timedelta(hours=SIGHTING_WINDOW_HOURS) <= now:
+            continue
         age_hours = max(0.0, (now - sighting.latest).total_seconds() / 3600)
         observers = max(sighting.reports, len(sighting.observers))
         reasons: list[str] = []
@@ -1052,6 +1076,8 @@ def build_wildlife_opportunities(
                 reasons=reasons,
                 gear=_gear_for(sighting.category),
                 source_url=sighting.url,
+                extra={"observed_at": sighting.latest.isoformat(), "source_name": sighting.source,
+                       "verification": "corroborated", "evidence_note": "Species presence, not behavior."},
                 drive_source="estimate",
                 latitude=sighting.latitude,
                 longitude=sighting.longitude,
@@ -1088,6 +1114,9 @@ def build_field_report_opportunities(reports: list, now: datetime) -> list[Oppor
                 detail=detail,
                 drive_hours=zone["drive_hours"],
                 reasons=[f"{report.source_name} report", "confirm before driving"],
+                planning_only=True,
+                extra={"verification": "watching", "observed_at": report.observed_at.isoformat() if report.observed_at else None,
+                       "evidence_note": "Observation time unknown" if not report.observed_at else "Dated field report"},
                 gear=_gear_for(report.category),
                 source_url=report.url,
                 latitude=zone["latitude"],
@@ -1263,7 +1292,8 @@ def build_grunion_runs(
                 zone_name=window.primary_locations[0],
                 start=start,
                 end=end,
-                score=76,
+                score=55,
+                planning_only=True,
                 detail=(
                     f"Runs expected on the {GRUNION_RUN_NIGHTS} nights following the "
                     f"{phase_name} of {moment.strftime('%d %b')}, starting one to two hours "
@@ -1281,11 +1311,10 @@ def build_grunion_runs(
                 drive_source="estimate",
                 extra={
                     "precision": "peak",
-                    "evidence": EVIDENCE_COMPUTED,
-                    "verification": "computed",
+                    "evidence": EVIDENCE_STATIC,
+                    "verification": "unverified",
                     "awaiting": (
-                        "Nothing for the nights - those are lunar geometry. Whether fish come "
-                        "ashore on any given one of them is never guaranteed."
+                        "Lunar heuristic only. Use the published CDFW schedule for expected nights and hours."
                     ),
                     "lunar_phase": phase_name,
                     "primary_locations": list(window.primary_locations),

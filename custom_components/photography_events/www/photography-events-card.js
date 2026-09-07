@@ -1,6 +1,6 @@
 /**
  * Photography Events Card for Home Assistant
- * Version 0.2.0
+ * Version 0.10.0
  *
  * Surfaces upcoming photography-worthy sky and nature events near your Home
  * Assistant location: golden/blue hour and sunset/sunrise quality, moon
@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-const CARD_VERSION = "0.9.1";
+const CARD_VERSION = "0.10.0";
 
 /* ---------------------------------------------------------------------- *
  * Astronomy core
@@ -1479,6 +1479,7 @@ const MODE_OUTLOOK = "calendar_outlook";
 const BACKEND_MODES = new Set([MODE_HERO, MODE_OUTLOOK]);
 
 const CATEGORY_META = Object.freeze({
+  waves: { label: "Waves", icon: "mdi:waves" },
   astronomy: { label: "Astro", icon: "mdi:telescope" },
   sunset: { label: "Skies", icon: "mdi:weather-sunset" },
   marine: { label: "Whales", icon: "mdi:whale" },
@@ -1538,6 +1539,7 @@ function heroFromState(state) {
   const attributes = state.attributes || {};
   if (!attributes.event_name) return null;
   return {
+    id: attributes.event_id || "",
     name: attributes.event_name,
     score: Number(attributes.confidence_score) || 0,
     category: attributes.category || "",
@@ -1563,6 +1565,8 @@ function outlookFromState(state) {
   const events = Array.isArray(attributes.events) ? attributes.events : [];
   return {
     events,
+    preferences: attributes.preferences || {},
+    sources: attributes.sources || {},
     parks: attributes.parks && typeof attributes.parks === "object" ? attributes.parks : {},
     gear: attributes.gear_by_category && typeof attributes.gear_by_category === "object"
       ? attributes.gear_by_category
@@ -1586,8 +1590,10 @@ function outlookFromState(state) {
  * the same score; only one of them is a reason to drive.
  */
 const VERIFICATION_META = {
-  computed: { label: "Computed", tone: "ok", text: "Derived from geometry. Exact." },
+  computed: { label: "Calculated", tone: "ok", text: "Calculated timing; viewing conditions are separate." },
   corroborated: { label: "Confirmed", tone: "ok", text: "Live reports back this up right now." },
+  presence_only: { label: "Species reported", tone: "warn", text: "The named behavior or gathering is not confirmed." },
+  forecast: { label: "Forecast", tone: "warn", text: "Conditions are forecast, not yet observed." },
   watching: { label: "Watching", tone: "warn", text: "Nothing reported yet - this is where to look, not when to go." },
   unverified: { label: "Estimate", tone: "warn", text: "A calendar estimate. No live source can confirm it." },
 };
@@ -1740,7 +1746,7 @@ function dateLabel(date) {
 // How long before a window opens you actually want to be standing there with
 // the tripod levelled. Short, but the difference between arriving and being
 // ready is the difference between catching the first ten minutes and not.
-const SETUP_LEAD_MINUTES = 20;
+// Travel and setup decisions belong to the photographer; show the actual window.
 
 /**
  * "T-2d 3h" - how long until you have to be somewhere.
@@ -1789,6 +1795,10 @@ const WINDOW_LIMIT_REASON = Object.freeze({
 // The organisations that actually count these animals, by hostname. Shown as
 // names rather than URLs, because "NOAA Fisheries" tells you whether to trust
 // the link and "fisheries.noaa.gov/west-coast/science-data/..." does not.
+function safeExternalUrl(value) {
+  try { const url = new URL(value); return ["https:", "http:"].includes(url.protocol) ? url.href : ""; }
+  catch { return ""; }
+}
 const SOURCE_LABELS = Object.freeze({
   "whalesafe.com": "Whale Safe (daily acoustic + visual rating)",
   "fisheries.noaa.gov": "NOAA Fisheries",
@@ -1824,8 +1834,7 @@ function rangeLabel(start, end) {
   if (!end || Math.abs(end - start) < 86400000) {
     return start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   }
-  const sameMonth = start.getMonth() === end.getMonth() && start.getFullYear() === end.getFullYear();
-  const left = start.toLocaleDateString(undefined, sameMonth ? { day: "numeric" } : { month: "short", day: "numeric" });
+  const left = start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const right = end.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return `${left} - ${right}`;
 }
@@ -1834,7 +1843,7 @@ const DEFAULT_CONFIG = Object.freeze({
   title: "Photography Events",
   // "timeline" keeps the original browser-computed view. The other two read
   // the photography_events integration's entities instead.
-  mode: MODE_TIMELINE,
+  mode: MODE_OUTLOOK,
   hero_entity: "",
   outlook_entity: "",
   outlook_from_days: 0,
@@ -1914,6 +1923,10 @@ class PhotographyEventsCardEditor extends HTMLElement {
     const backendMode = BACKEND_MODES.has(cfg.mode);
     this.shadowRoot.innerHTML = `
       <style>
+        .event-controls, .event-toolbar { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; }
+        .event-controls button, .event-toolbar button { color:var(--primary-text-color); background:var(--secondary-background-color); border:1px solid var(--divider-color); border-radius:8px; padding:8px 12px; cursor:pointer; }
+        .event-error, .source-warning { padding:8px 14px; color:var(--warning-color, #b97619); font-size:12px; }
+        .simple-row { align-items:center; }
         :host { display: block; color: var(--primary-text-color); font-family: var(--paper-font-body1_-_font-family, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif); }
         .section { margin: 0 0 20px; }
         .section:last-child { margin-bottom: 0; }
@@ -1939,7 +1952,7 @@ class PhotographyEventsCardEditor extends HTMLElement {
         <div class="row"><span class="label">Mode</span>
           <select data-select="mode">
             <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (computed here)</option>
-            <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Drop everything (hero)</option>
+            <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Featured opportunity (hero)</option>
             <option value="${MODE_OUTLOOK}" ${cfg.mode === MODE_OUTLOOK ? "selected" : ""}>Planning calendar</option>
           </select>
         </div>
@@ -2166,6 +2179,9 @@ class PhotographyEventsCard extends HTMLElement {
     // Null until the first render knows which categories exist; a Set after.
     this._activeFilters = null;
     this._expanded = new Set();
+    this._showSkipped = false;
+    this._choicePending = false;
+    this._choiceError = "";
   }
 
   set hass(hass) {
@@ -2372,6 +2388,12 @@ class PhotographyEventsCard extends HTMLElement {
    */
   _bindEvents() {
     if (!this._root) return;
+    for (const button of this._root.querySelectorAll("[data-skipped]")) {
+      button.addEventListener("click", () => { this._showSkipped = !this._showSkipped; this._render(); });
+    }
+    for (const button of this._root.querySelectorAll("[data-choice]")) {
+      button.addEventListener("click", () => this._saveChoice(button.dataset.eventid, button.dataset.choice));
+    }
     for (const button of this._root.querySelectorAll("[data-category]")) {
       button.addEventListener("click", () => {
         const category = button.getAttribute("data-category");
@@ -2392,6 +2414,32 @@ class PhotographyEventsCard extends HTMLElement {
     }
   }
 
+  async _saveChoice(eventId, choice) {
+    if (!eventId || this._choicePending) return;
+    this._choicePending = true;
+    this._choiceError = "";
+    try {
+      await this._hass.callService("photography_events", "set_event_choice", { event_id: eventId, choice });
+      // The server publishes the updated state. Do not claim success locally
+      // before it has persisted the choice for the other dashboards too.
+    } catch (error) {
+      this._choiceError = "Could not save your event choice. Please try again.";
+    } finally {
+      this._choicePending = false;
+      this._render();
+    }
+  }
+
+  _eventControlsHtml(id, choice = "default") {
+    if (!id) return "";
+    return `<div class="event-controls">
+      <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "follow" ? "default" : "follow"}"
+        aria-pressed="${choice === "follow"}">${choice === "follow" ? "Following · Unfollow" : "Follow"}</button>
+      <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "skip" ? "default" : "skip"}">
+        ${choice === "skip" ? "Restore event" : "Not going · Skip"}</button>
+    </div>`;
+  }
+
   _setHidden(hidden) {
     if (this.style) this.style.display = hidden ? "none" : "";
   }
@@ -2403,6 +2451,9 @@ class PhotographyEventsCard extends HTMLElement {
   _bodyHtml() {
     if (this._config.mode === MODE_HERO) return this._heroHtml();
     if (this._config.mode === MODE_OUTLOOK) return this._outlookHtml();
+    // Installed integrations share one event truth, even for older dashboard
+    // configs. The legacy calculator remains only for standalone installations.
+
     if (this._buildError) {
       return `<div class="empty-card"><ha-icon icon="mdi:map-marker-off-outline"></ha-icon><strong>${escapeHtml(this._buildError)}</strong></div>`;
     }
@@ -2577,7 +2628,7 @@ class PhotographyEventsCard extends HTMLElement {
       <div class="hero">
         <div class="hero-flag">
           <span class="hero-pulse"></span>
-          <span>Drop everything</span>
+          <span>Worth planning for</span>
         </div>
 
         <div class="hero-title">${escapeHtml(hero.name)}</div>
@@ -2595,7 +2646,7 @@ class PhotographyEventsCard extends HTMLElement {
             </div>
           </div>
           <div class="hero-stat">
-            <div class="hero-stat-label">Confidence</div>
+            <div class="hero-stat-label">Priority score</div>
             <div class="hero-stat-value">${hero.score}<span class="hero-stat-unit">/100</span></div>
             <div class="hero-meter"><span style="width:${clamp(hero.score, 0, 100)}%"></span></div>
           </div>
@@ -2624,6 +2675,8 @@ class PhotographyEventsCard extends HTMLElement {
             <ha-icon icon="mdi:open-in-new"></ha-icon>Check the original report
           </a>` : ""}
 
+        ${this._eventControlsHtml(hero.id, this._hass.states[this._outlookEntityId()]?.attributes?.preferences?.[hero.id]?.choice)}
+        ${this._choiceError ? `<div role="alert">${escapeHtml(this._choiceError)}</div>` : ""}
         ${this._activeMonthHtml(now)}
       </div>
     `;
@@ -2644,14 +2697,14 @@ class PhotographyEventsCard extends HTMLElement {
       return `<div class="hero-deadline"><div class="hero-deadline-value">Starting shortly</div></div>`;
     }
     const multiDay = hero.ends && hero.ends - hero.starts > 36 * 3600000;
-    const target = multiDay ? hero.starts : new Date(hero.starts.getTime() - SETUP_LEAD_MINUTES * 60000);
+    const target = hero.starts;
     const value = multiDay
       ? `${dateLabel(hero.starts)} \u2013 ${dateLabel(hero.ends)}`
       : `${dateLabel(target)} \u00b7 ${clockLabel(target)}`;
 
     return `
       <div class="hero-deadline">
-        <div class="hero-deadline-label">${multiDay ? "Window" : "Be set up by"}</div>
+        <div class="hero-deadline-label">${multiDay ? "Window" : "Window opens"}</div>
         <div class="hero-deadline-value">${escapeHtml(value)}</div>
         <div class="hero-deadline-count">${escapeHtml(countdownLabel(now, target))}</div>
       </div>
@@ -2692,7 +2745,8 @@ class PhotographyEventsCard extends HTMLElement {
     if (!state) return "";
     const outlook = outlookFromState(state);
     const running = outlook.events
-      .filter((event) => event.precision === "peak")
+      .filter((event) => event.precision === "peak" &&
+        outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip")
       .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) }))
       .filter((event) => event.startDate && event.endDate && event.startDate <= now && event.endDate >= now)
       .sort((left, right) => right.score - left.score)
@@ -2732,7 +2786,9 @@ class PhotographyEventsCard extends HTMLElement {
     if (this._activeFilters === null) this._activeFilters = new Set(known);
     const allowed = this._activeFilters;
 
-    const events = filterOutlook(outlook.events, {
+    const visible = outlook.events.filter(event => this._showSkipped ||
+      outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip");
+    const events = filterOutlook(visible, {
       allowed,
       now,
       fromDays: this._config.outlook_from_days,
@@ -2750,6 +2806,11 @@ class PhotographyEventsCard extends HTMLElement {
         </div>
       </div>
       ${this._filterChipsHtml(known, allowed)}
+      <div class="event-toolbar"><button type="button" data-skipped="toggle" aria-pressed="${this._showSkipped}">
+        ${this._showSkipped ? "Hide skipped" : "Show skipped"}</button></div>
+      ${this._choiceError ? `<div role="alert" class="event-error">${escapeHtml(this._choiceError)}</div>` : ""}
+      ${Object.entries(outlook.sources).some(([, source]) => source.failures > 0)
+        ? `<div class="source-warning">Some sources could not update. Open an event to check its evidence age.</div>` : ""}
       ${groups.length
         ? `<div class="outlook">${groups.map((group) => this._monthHtml(group, outlook, now)).join("")}</div>`
         : `<div class="empty-card">
@@ -2805,51 +2866,47 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   _outlookRowHtml(event, outlook, now) {
-    const meta = CATEGORY_META[event.category] || { label: event.category, icon: "mdi:camera" };
     const park = event.planning_only ? outlook.parks[event.zone_id] : null;
-    const dog = park ? DOG_META[park.dogs] : null;
-    const drive = park ? park.drive_label : driveLabel(Math.round((event.drive_hours || 0) * 60));
     const expanded = this._expanded.has(event.key);
-    // Where. The single most useful thing a planning row can carry, and the one
-    // it did not: a calendar that says what and when but not where is a list of
-    // things you cannot act on.
-    const where = event.where || (park ? park.name : "") || event.zone || "";
-    const alternatives = Array.isArray(event.alternatives) ? event.alternatives.length : 0;
-
-    return `
-      <div class="outlook-row ${expanded ? "open" : ""}">
-        <button type="button" class="outlook-head" data-expand="${escapeHtml(event.key)}"
-          aria-expanded="${expanded}">
-          <span class="outlook-when">${escapeHtml(rangeLabel(event.startDate, event.endDate))}</span>
-          <span class="outlook-body">
-            <span class="outlook-title">${escapeHtml(event.title)}</span>
-            <span class="outlook-meta">
-              ${where ? `<span class="outlook-tag where"><ha-icon icon="mdi:map-marker"></ha-icon>${escapeHtml(where)}</span>` : ""}
-              ${alternatives ? `<span class="outlook-tag more">+${alternatives} more ${alternatives === 1 ? "place" : "places"}</span>` : ""}
-              <span class="outlook-tag"><ha-icon icon="${meta.icon}"></ha-icon>${escapeHtml(meta.label)}</span>
-              ${drive ? `<span class="outlook-tag"><ha-icon icon="mdi:car"></ha-icon>${escapeHtml(drive)}</span>` : ""}
-              ${dog ? `<span class="outlook-tag dog-${dog.tone}" title="${escapeHtml(park.dog_detail)}">
-                         <ha-icon icon="${dog.icon}"></ha-icon>${escapeHtml(park.dog_label || dog.label)}
-                       </span>` : ""}
-            </span>
-          </span>
-          ${this._scoreBadgeHtml(event)}
-          <ha-icon class="outlook-chevron" icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>
-        </button>
-        ${expanded ? this._outlookDetailHtml(event, outlook, park, now) : ""}
-      </div>
-    `;
+    const choice = outlook.preferences[event.event_id || event.roll || event.key]?.choice || "default";
+    const locations = event.locations || (park ? [park.name] : [event.where || event.zone]);
+    const total = locations.filter(Boolean).length + (event.alternatives || []).length;
+    const where = total > 1 ? `${total} locations` : locations[0] || "";
+    const status = choice === "skip" ? "Skipped" : choice === "follow" ? "Following" :
+      VERIFICATION_META[event.verification]?.label || (event.precision === "season" || park ? "Season" : "Calculated / forecast");
+    const title = event.roll ? event.title.replace(/ at .+$/, "") : event.title.replace(/ \(season\)$/, "");
+    return `<div class="outlook-row ${expanded ? "open" : ""}">
+      <button type="button" class="outlook-head simple-row" data-expand="${escapeHtml(event.key)}" aria-expanded="${expanded}">
+        <span class="outlook-body"><span class="outlook-title">${escapeHtml(title)}</span>
+          <span class="outlook-meta">${escapeHtml(rangeLabel(event.startDate, event.endDate))} · ${escapeHtml(where)}</span></span>
+        <span class="outlook-badge season">${escapeHtml(status)}</span>
+        <ha-icon icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>
+      </button>
+      ${expanded ? this._outlookDetailHtml(event, outlook, park, now) : ""}
+    </div>`;
   }
 
   _outlookDetailHtml(event, outlook, park, now) {
     const rows = [];
+    rows.push(["Priority", `${event.score}/100 — ranking, not a probability`]);
+    rows.push(["Approximate drive", park ? park.drive_label : driveLabel(Math.round((event.drive_hours || 0) * 60))]);
+    if (event.observed_at) rows.push(["Observed", absoluteLabel(parseEventDate(event.observed_at))]);
+    if (event.evidence_note) rows.push(["Evidence", event.evidence_note]);
+    if (event.closures?.length) rows.push(["Closures", event.closures.join("; ")]);
+    if (event.coastal_advisories?.length) rows.push(["Coastal advisories", event.coastal_advisories.join("; ")]);
+    if (event.closure_source) rows.push(["Access check", event.closure_source]);
+    if (event.access_note) rows.push(["Access", event.access_note]);
+    if (event.tide_window_start && event.tide_window_end) rows.push(["Tide window", `${absoluteLabel(parseEventDate(event.tide_window_start))} to ${absoluteLabel(parseEventDate(event.tide_window_end))}`]);
+    if (event.measurement_label) rows.push([event.measurement_label, [Number.isFinite(event.wave_height_m) ? `${event.wave_height_m} m` : "Height unknown", Number.isFinite(event.wave_period_s) ? `${event.wave_period_s} s` : "", Number.isFinite(event.wave_direction_deg) ? `from ${event.wave_direction_deg}°` : ""].filter(Boolean).join(" · ")]);
+    if (event.forecast_note) rows.push(["Forecast", event.forecast_note]);
+    if (event.confidence_note) rows.push(["Limits", event.confidence_note]);
 
     if (event.precision === "season") {
       rows.push(["Extended season", event.season_range || "-"]);
       rows.push(["Peak window",
         `${rangeLabel(event.startDate, event.endDate)} - specifics firm up inside ${outlook.horizonDays} days`]);
     } else {
-      rows.push(["Peak window", rangeLabel(event.startDate, event.endDate)]);
+      rows.push(["Window", !event.all_day && String(event.start).includes("T") ? `${absoluteLabel(event.startDate)} to ${absoluteLabel(event.endDate)}` : rangeLabel(event.startDate, event.endDate)]);
       if (event.season_range) rows.push(["Extended season", event.season_range]);
     }
     if (event.duration_minutes) {
@@ -2858,7 +2915,7 @@ class PhotographyEventsCard extends HTMLElement {
     }
     if (event.best_time_of_day) rows.push(["Best time of day", event.best_time_of_day]);
 
-    const locations = event.locations || (park ? [park.name] : []);
+    const locations = event.locations || [event.where || event.zone || park?.name].filter(Boolean);
     if (locations.length) rows.push(["Where", locations.join(" - ")]);
 
     const gear = event.gear || outlook.gear?.[event.category]?.glass;
@@ -2898,19 +2955,22 @@ class PhotographyEventsCard extends HTMLElement {
             ${event.alternatives.map((alt) => `
               <span class="outlook-alt">
                 ${escapeHtml(alt.where || alt.zone || "")}
-                <em>${escapeHtml(driveLabel(Math.round((alt.drive_hours || 0) * 60)))}${
-                  alt.score ? ` \u00b7 ${alt.score}%` : ""}</em>
+                <em>${escapeHtml(!alt.all_day && String(alt.start).includes("T") ? `${absoluteLabel(parseEventDate(alt.start))} to ${absoluteLabel(parseEventDate(alt.end))}` : !alt.all_day && String(alt.start).includes("T") ? `${absoluteLabel(parseEventDate(alt.start))} to ${absoluteLabel(parseEventDate(alt.end))}` : rangeLabel(parseEventDate(alt.start), parseEventDate(alt.end)))} · ${escapeHtml(driveLabel(Math.round((alt.drive_hours || 0) * 60)))}${alt.score ? ` · priority ${alt.score}` : ""}</em>
+                <span>${escapeHtml(alt.evidence_note || alt.awaiting || alt.detail || "")}</span>
+                ${alt.observed_at ? `<span>Observed ${escapeHtml(new Date(alt.observed_at).toLocaleString())}</span>` : ""}
               </span>`).join("")}
           </div>` : ""}
+        ${this._eventControlsHtml(event.event_id || event.roll || event.key,
+          outlook.preferences[event.event_id || event.roll || event.key]?.choice)}
         ${event.source_url ? `
-          <a class="outlook-source" href="${escapeHtml(event.source_url)}" target="_blank" rel="noopener noreferrer">
+          <a class="outlook-source" href="${escapeHtml(safeExternalUrl(event.source_url))}" target="_blank" rel="noopener noreferrer">
             <ha-icon icon="mdi:open-in-new"></ha-icon>Original report
           </a>` : ""}
         ${Array.isArray(event.verify) && event.verify.length ? `
           <div class="outlook-verify">
             <span class="outlook-verify-label">Check before you book</span>
             ${event.verify.map((url) => `
-              <a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">
+              <a href="${escapeHtml(safeExternalUrl(url))}" target="_blank" rel="noopener noreferrer">
                 <ha-icon icon="mdi:check-decagram-outline"></ha-icon>${escapeHtml(sourceLabel(url))}
               </a>`).join("")}
           </div>` : ""}
@@ -2920,13 +2980,14 @@ class PhotographyEventsCard extends HTMLElement {
 
   _legendHtml() {
     const items = [
-      ["high", "90+ drop everything"],
-      ["good", "75-89 worth the drive"],
+      ["high", "90+ exceptional priority"],
+      ["good", "75-89 worth considering"],
       ["fair", "60-74 keep an eye on it"],
       ["season", "background season, not yet actionable"],
     ];
     return `
       <div class="pe-legend">
+        <span>Scores rank opportunities; evidence labels say what is known.</span>
         ${items.map(([tone, label]) => `
           <span class="pe-legend-item">
             <span class="outlook-badge ${tone} tiny"></span>${escapeHtml(label)}
@@ -3357,7 +3418,18 @@ class PhotographyEventsCard extends HTMLElement {
         cursor: pointer;
       }
       .outlook-head:focus-visible { outline: 2px solid var(--pe-epic); outline-offset: 2px; border-radius: 6px; }
+      .outlook-row { display: block; }
       .outlook-row.open { background: rgba(255, 255, 255, .03); border-radius: 8px; }
+      .outlook-head.simple-row { width: 100%; align-items: center; padding: 12px 8px; }
+      .simple-row .outlook-body { display: flex; flex-direction: column; gap: 4px; }
+      .simple-row .outlook-meta { font-size: 12px; color: var(--pe-muted); }
+      .event-controls, .event-toolbar { display: flex; gap: 8px; margin: 10px 0; flex-wrap: wrap; }
+      .event-controls button, .event-toolbar button {
+        color: var(--pe-text); background: rgba(255,255,255,.06); border: 1px solid var(--pe-border);
+        border-radius: 8px; padding: 8px 12px; cursor: pointer; font: inherit; font-size: 12px;
+      }
+      .event-controls button[aria-pressed="true"] { border-color: var(--pe-excellent); }
+      .event-error, .source-warning { padding: 8px 14px; color: var(--warning-color, #dca54c); font-size: 12px; }
       .outlook-chevron { --mdc-icon-size: 18px; color: var(--pe-muted); flex: 0 0 auto; align-self: center; }
       .outlook-badge {
         flex: 0 0 auto;
@@ -3574,4 +3646,3 @@ console.info(
   "color: white; background: #3a7d5c; font-weight: 700;",
   "color: #3a7d5c; background: transparent;",
 );
-

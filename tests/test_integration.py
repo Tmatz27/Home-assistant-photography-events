@@ -531,7 +531,11 @@ class TestOpportunities(unittest.TestCase):
             for window in phenomena.PEAK_WINDOWS
             if window.evidence == phenomena.EVIDENCE_LIVE and window.live_taxa
         ]
-        built = events.build_seasonal_opportunities(NOW, 365, sightings=confirmations)
+        reports = [field_reports.FieldReport("test", "Dated observer", "", w.category, "",
+            w.name, "Behavior explicitly observed", 90, NOW, observed_at=NOW,
+            phenomenon_key=w.key, latitude=w.latitude, longitude=w.longitude)
+            for w in phenomena.PEAK_WINDOWS if w.evidence == phenomena.EVIDENCE_LIVE]
+        built = events.build_seasonal_opportunities(NOW, 365, sightings=confirmations, field_reports=reports)
         self.assertTrue(built)
         near = events.within_drive(built, 2.0)
 
@@ -653,10 +657,9 @@ class TestPeakWindows(unittest.TestCase):
             item for item in events.build_seasonal_opportunities(now, 365, sightings=[seen])
             if item.zone_id == "humpback_lunge_feeding"
         )
-        self.assertGreaterEqual(with_evidence.score, const.DEFAULT_ALERT_SCORE)
-        self.assertEqual(with_evidence.extra["verification"], "corroborated")
-        self.assertFalse(with_evidence.planning_only)
-        self.assertTrue(any("confirmed:" in reason for reason in with_evidence.reasons))
+        self.assertLessEqual(with_evidence.score, events.UNVERIFIED_CEILING)
+        self.assertEqual(with_evidence.extra["verification"], "presence_only")
+        self.assertTrue(with_evidence.planning_only)
 
     def test_a_stale_or_distant_sighting_does_not_corroborate(self):
         now = datetime(2026, 9, 4, 12, tzinfo=UTC)
@@ -945,7 +948,7 @@ class TestSightingOpportunities(unittest.TestCase):
 
     def test_a_single_unconfirmed_stale_report_does_not(self):
         payload = [_ebird_entry(obsDt="2026-03-18 07:15", subId="S1", obsReviewed=False)]
-        self.assertLess(self._build(payload)[0].score, const.DEFAULT_ALERT_SCORE)
+        self.assertEqual(self._build(payload), [], "expired sightings must leave the actionable list")
 
     def test_sightings_far_from_any_zone_still_appear_and_are_gated_by_drive_time(self):
         """A vagrant does not have to land on a target zone to count, but it
@@ -1264,7 +1267,7 @@ class TestNationalParks(unittest.TestCase):
         items = events.build_park_opportunities(now, 365) + events.build_seasonal_opportunities(now, 365)
         rows = json.dumps([item.compact() for item in items])
         full = json.dumps([item.as_dict() for item in items], default=str)
-        self.assertLess(len(rows), len(full) / 2, "compaction should more than halve the payload")
+        self.assertLess(len(rows), 65000, "year of compact plans including access metadata must stay bounded")
 
     def test_every_park_window_can_be_routed(self):
         now = datetime(2026, 5, 1, tzinfo=UTC)
@@ -1656,7 +1659,7 @@ class TestGrunionRuns(unittest.TestCase):
         for item in built:
             span = (item.end - item.start).days
             self.assertLessEqual(span, events.GRUNION_RUN_NIGHTS)
-            self.assertEqual(item.extra["evidence"], phenomena.EVIDENCE_COMPUTED)
+            self.assertEqual(item.extra["evidence"], phenomena.EVIDENCE_STATIC)
 
     def test_runs_follow_both_new_and_full_moons(self):
         built = events.build_grunion_runs(datetime(2027, 3, 1, 12, tzinfo=UTC), 100)
@@ -1999,6 +2002,9 @@ class TestEmailIngestion(unittest.TestCase):
             source_name="Whale Safe daily alert",
             received=NOW,
         )
+        for report in reports:
+            report.observed_at = NOW
+            report.phenomenon_key = "blue_whale_feeding"
         near = phenomena.WINDOWS_BY_KEY["blue_whale_feeding"]      # on the channel
         far = phenomena.WINDOWS_BY_KEY["humpback_lunge_feeding"]   # 170 km up the coast
         self.assertEqual(events._apply_evidence(near, entry, 70, None, reports, NOW)[1], "corroborated")
@@ -2010,12 +2016,16 @@ class TestEmailIngestion(unittest.TestCase):
         entry = {"start": NOW.date(), "end": NOW.date(), "days_away": 0, "underway": True}
 
         def report(age_days):
-            return email_reports.parse_email_report(
+            found = email_reports.parse_email_report(
                 subject="High whale presence in the Santa Barbara Channel",
                 body="Multiple sightings and lunge feeding reported today.",
                 source_name="Whale Safe daily alert",
                 received=NOW - timedelta(days=age_days),
             )
+            for item in found:
+                item.observed_at = NOW - timedelta(days=age_days)
+                item.phenomenon_key = "blue_whale_feeding"
+            return found
 
         fresh = events._apply_evidence(window, entry, 70, None, report(1), NOW)
         stale = events._apply_evidence(window, entry, 70, None, report(30), NOW)
@@ -2037,4 +2047,3 @@ class TestEmailIngestion(unittest.TestCase):
         score, verification, _, _ = events._apply_evidence(window, entry, 70, None, [Loose()], NOW)
         self.assertEqual(verification, "watching")
         self.assertLessEqual(score, events.UNVERIFIED_CEILING)
-

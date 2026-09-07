@@ -67,3 +67,20 @@ ingest_report:
       required: false
       selector:
         text:
+
+set_event_choice:
+  name: Follow or skip an event
+  description: Saves a choice for this occurrence across dashboards and restarts.
+  fields:
+    event_id:
+      required: true
+      selector:
+        text:
+    choice:
+      required: true
+      selector:
+        select:
+          options:
+            - default
+            - follow
+            - skip

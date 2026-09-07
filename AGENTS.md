@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.9.1.** `main` is the working branch; there is no PR flow.
+**Current version: 0.10.0.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -32,18 +32,28 @@ an admitted unknown, every time.
 
 ---
 
+## 0.10.0 handoff amendments
+
+The user approved simpler expandable planner rows, persistent Follow/Skip, approximate drive times without arrival gating, exceptional waves, and the special targets in RELEASE_NOTES.md. The running implementation record is in HANDOFF_LOG.md. Read SOURCE_VALIDATION.md before changing any evidence claims.
+
+- A species sighting cannot confirm the named behavior or aggregation. `requires_behavior` windows remain planning-only without an explicitly dated, location-matched report of that phenomenon. Download time never renews an observation.
+- New `event_state.py` persists occurrence choices and announced updates with HA Store. Notification events are `photography_events_opportunity`; mobile delivery needs a user-owned automation.
+- `waves.py` separates offshore observations and experimental nearshore forecasts; `wave_calibration.json` records episode backtests. Runtime coverage is NDBC 46011 / CDIP B1500 only. Missing quality or stale issue time fails quiet.
+- `spectacles.py` adds strict dated operator reports, conservative OVATION, and explicitly unconfirmed search targets. `grunion.py` reads CDFW expected intervals; lunar phase alone no longer supplies supposedly exact run nights to the coordinator.
+- Explicit standalone timeline mode remains available. The integration planner is the default; eclipse path geometry and the legacy timeline calculations remain open work.
+- Public NOAA, CDIP, CDFW, NWS and Condor Express feed shapes were checked in this environment. The older network-access note below describes Claude's prior environment, not these checks.
+
 ## Commands
 
 ```bash
 python3 -m pip install "beautifulsoup4>=4.12.0"  # existing runtime dependency
-python3 -m unittest discover -s tests -q          # 160 tests, no HA needed
-node --test tests/photography-events-card.test.mjs # 83 tests, no browser
+python3 -m unittest discover -s tests -q          # pure Python tests, no HA needed
+node --test tests/photography-events-card.test.mjs # card unit tests
 python3 -m pyflakes custom_components/photography_events/*.py tools/*.py
 python3 tools/generate_tracking_inventory.py > TRACKING.md   # after any data change
 ```
 
-All 243 pass when the existing BeautifulSoup dependency is installed. There is no build step, no bundler, no new dependency
-required: the card is vanilla `HTMLElement` + shadow DOM, and the Python tests
+See HANDOFF_LOG.md for the current validation results. There is no build step or bundler; install the existing BeautifulSoup requirement for tests: the card is vanilla `HTMLElement` + shadow DOM, and the Python tests
 load the pure modules under a synthetic package so Home Assistant is never
 imported.
 
@@ -276,4 +286,3 @@ environment. Say so rather than claiming a live check happened.
   `const.py` intervals, or the meteor table.
 - Bump `manifest.json`, `package.json` **and** `VERSION` together.
 - Do not add dependencies. The no-build-step, no-numpy constraint is deliberate.
-

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.10.0
+
+Short expandable planner rows, persistent Follow/Skip, exceptional coastal swell monitoring, dated operator report parsing, conservative local aurora signals, CDFW expected grunion intervals, new special search targets, stricter evidence gates and deduplicated opportunity events. See [release notes](RELEASE_NOTES.md) for setup and limits, and [source validation](SOURCE_VALIDATION.md) for calibration details.
+
 ## 0.9.1
 
 - Fixed CI failures by installing the integration's existing BeautifulSoup
@@ -495,4 +499,3 @@ card's dedicated hero/calendar display modes.
 - Optional weather-entity-driven sky-quality scoring for sunset/sunrise and
   meteor showers
 - Visual card editor and full test suite
-

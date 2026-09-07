@@ -683,7 +683,7 @@ test("a latitude/longitude/elevation override takes precedence over hass.config"
 test("editor renders category toggles and a weather entity dropdown", () => {
   const editor = new Editor();
   editor.hass = { states: { "weather.home": { attributes: { friendly_name: "Home Weather" } } } };
-  editor.setConfig({});
+  editor.setConfig({ mode: "timeline" });
   editor.connectedCallback();
   const html = editor.shadowRoot.innerHTML;
   assert.match(html, /Home Weather/);
@@ -711,7 +711,7 @@ test("editor ignores the config echo Home Assistant sends back", () => {
 
 test("card shows a loading state before hass arrives and an error with no location", () => {
   const card = new Card();
-  card.setConfig({});
+  card.setConfig({ mode: "timeline" });
   card.connectedCallback();
   assert.match(card._root.innerHTML, /Waiting for Home Assistant/);
 
@@ -724,7 +724,7 @@ test("card shows a loading state before hass arrives and an error with no locati
 
 test("an unchanged refresh does not rewrite the card DOM", async () => {
   const card = new Card();
-  card.setConfig({ outlook_days: 21 });
+  card.setConfig({ mode: "timeline", outlook_days: 21 });
   card.hass = londonHass();
   card.connectedCallback();
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -739,7 +739,7 @@ test("an unchanged refresh does not rewrite the card DOM", async () => {
 
 test("polling restarts when Home Assistant re-attaches the card", async () => {
   const card = new Card();
-  card.setConfig({ outlook_days: 21 });
+  card.setConfig({ mode: "timeline", outlook_days: 21 });
   card.hass = londonHass();
   card.connectedCallback();
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -755,7 +755,7 @@ test("polling restarts when Home Assistant re-attaches the card", async () => {
 
 test("a missing configured weather entity is reported, not silently ignored", async () => {
   const card = new Card();
-  card.setConfig({ outlook_days: 21, weather_entity: "weather.does_not_exist" });
+  card.setConfig({ mode: "timeline", outlook_days: 21, weather_entity: "weather.does_not_exist" });
   card.hass = londonHass();
   card.connectedCallback();
   await new Promise((resolve) => setTimeout(resolve, 20));
@@ -767,7 +767,7 @@ test("a missing configured weather entity is reported, not silently ignored", as
 test("the card only ever calls the weather/get_forecasts websocket command", () => {
   const calls = [];
   const card = new Card();
-  card.setConfig({ outlook_days: 21, weather_entity: "weather.home" });
+  card.setConfig({ mode: "timeline", outlook_days: 21, weather_entity: "weather.home" });
   card.hass = {
     config: { ...LONDON },
     states: { "weather.home": {} },
@@ -1033,7 +1033,7 @@ test("the hero appears and disappears as the sensor flips", () => {
 
   card.hass = { states: { "binary_sensor.action": heroState() } };
   assert.equal(card.style.display, "", "a new state object should redraw the hero");
-  assert.match(card._root.innerHTML, /Drop everything/i);
+  assert.match(card._root.innerHTML, /Worth planning for/i);
 
   card.hass = { states: { "binary_sensor.action": { state: "off", attributes: {} } } };
   assert.equal(card.style.display, "none", "the hero must go away again when it is over");
@@ -1096,10 +1096,11 @@ test("calendar_outlook lists park windows with their dog rules", () => {
 
   const html = card._root.innerHTML;
   assert.match(html, /Yosemite NP - best window/);
-  assert.match(html, /Best window/);
-  assert.match(html, /Paved paths only/);
-  assert.match(html, /Strictly prohibited/, "the no-dogs parks are the ones worth flagging hardest");
-  assert.match(html, /310 mi, about 5\.5 h/);
+  assert.doesNotMatch(html, /Fully paved roads/);
+  card._root.querySelectorAll("[data-expand]")[0].click();
+  assert.match(card._root.innerHTML, /Fully paved roads/);
+  card._root.querySelectorAll("[data-expand]")[1].click();
+  assert.match(card._root.innerHTML, /No pets anywhere/);
   card.disconnectedCallback();
 });
 
@@ -1116,7 +1117,7 @@ test("an empty outlook explains itself rather than showing a blank card", () => 
 test("an unknown mode falls back to the timeline rather than rendering nothing", () => {
   const card = new Card();
   card.setConfig({ mode: "not_a_mode" });
-  assert.equal(card._config.mode, "timeline");
+  assert.equal(card._config.mode, "calendar_outlook");
 });
 
 test("outlook range options are clamped to a year", () => {
@@ -1227,8 +1228,10 @@ test("the score is a readable badge, not a coloured bar", () => {
   };
   card.connectedCallback();
   const html = card._root.innerHTML;
-  assert.match(html, /95% score/);
-  assert.match(html, /Season</, "a background season is labelled, not scored");
+  assert.doesNotMatch(html, /95%/);
+  card._root.querySelectorAll("[data-expand]")[0].click();
+  assert.match(card._root.innerHTML, /95\/100/);
+  assert.match(html, /Watching|Calculated \/ forecast/, "row shows evidence status");
   assert.match(html, /pe-legend/, "the legend explains what the badges mean");
   card.disconnectedCallback();
 });
@@ -1277,7 +1280,7 @@ test("the hero gives a deadline to act on, with the countdown underneath", () =>
   card.hass = { states: { "binary_sensor.action": heroState() } };
   card.connectedCallback();
   const html = card._root.innerHTML;
-  assert.match(html, /Be set up by/, "the instruction, not the arithmetic");
+  assert.match(html, /Window opens/, "the instruction, not the arithmetic");
   // Order is the viewer's locale's business - "Sat, 6 Sep" or "Sat, Sep 6".
   assert.match(html, /\w{3}, (\d+ \w{3}|\w{3} \d+)/, "a real weekday and date");
   // This fixture's window has already opened, and the countdown says so rather
@@ -1286,21 +1289,20 @@ test("the hero gives a deadline to act on, with the countdown underneath", () =>
   card.disconnectedCallback();
 });
 
-test("the setup deadline is ahead of the window opening", () => {
+test("the hero countdown uses the actual window opening", () => {
   const now = new Date();
   const card = new Card();
   card.setConfig({ mode: "action_hero", hero_entity: "binary_sensor.action" });
   card.hass = {
     states: {
       "binary_sensor.action": heroState({
-        starts: new Date(now.getTime() + 26 * 3600000).toISOString(),
+        starts: new Date(now.getTime() + 26.5 * 3600000).toISOString(),
         ends: new Date(now.getTime() + 28 * 3600000).toISOString(),
       }),
     },
   };
   card.connectedCallback();
-  // 26h out, minus the 20-minute setup lead, is 25h40m - a day and an hour.
-  assert.match(card._root.innerHTML, /T\u22121d 1h/, "counts down to being ready, not to the window");
+  assert.match(card._root.innerHTML, /T\u22121d 2h/, "no invented travel or setup deadline");
   card.disconnectedCallback();
 });
 
@@ -1393,7 +1395,7 @@ test("the timeline hides everyday light, phases, planets and distant eclipses", 
   };
 
   const card = new Card();
-  card.setConfig({ outlook_days: 21 });
+  card.setConfig({ mode: "timeline", outlook_days: 21 });
   card.hass = londonHass();
   card.connectedCallback();
   return new Promise((resolve) => setTimeout(resolve, 40)).then(() => {
@@ -1424,13 +1426,13 @@ test("the timeline hides everyday light, phases, planets and distant eclipses", 
 
 test("the suppression can be turned off", async () => {
   const quiet = new Card();
-  quiet.setConfig({ outlook_days: 21 });
+  quiet.setConfig({ mode: "timeline", outlook_days: 21 });
   quiet.hass = londonHass();
   quiet.connectedCallback();
   await new Promise((resolve) => setTimeout(resolve, 40));
 
   const loud = new Card();
-  loud.setConfig({ outlook_days: 21, hide_routine: false });
+  loud.setConfig({ mode: "timeline", outlook_days: 21, hide_routine: false });
   loud.hass = londonHass();
   loud.connectedCallback();
   await new Promise((resolve) => setTimeout(resolve, 40));
@@ -1495,7 +1497,7 @@ test("a sky scored without a light path is marked optimistic", () => {
   assert.match(card._root.innerHTML, /Light path/);
   assert.match(card._root.innerHTML, /optimistic/);
 
-  assert.match(card._root.innerHTML, /Best of the week/, "the standout is badged in the list");
+  assert.match(card._root.innerHTML, /Best in the forecast|forecast/, "the standout is badged in the list");
   card.disconnectedCallback();
 });
 
@@ -1539,7 +1541,7 @@ test("one row per thing, not one per place", () => {
   assert.equal(rows.length, 1, "four zones, one thing, one row");
 
   const html = card._root.innerHTML;
-  assert.match(html, /\+3 more places/);
+  assert.match(html, /4 locations/);
   assert.match(html, /big_sur/, "the best-scoring zone won the row");
 
   rows[0].click();
@@ -1562,6 +1564,7 @@ test("a row says where, which is the first thing anybody asks", () => {
     },
   };
   card.connectedCallback();
+  card._root.querySelectorAll("[data-expand]")[0].click();
   assert.match(card._root.innerHTML, /Soda Lake Road foothills/,
     "the location is on the collapsed row, not hidden in the brief");
   card.disconnectedCallback();
@@ -1640,4 +1643,38 @@ test("only supermoons and photographable eclipses survive the prune", () => {
   ]).map((event) => event.title);
 
   assert.deepStrictEqual(kept, ["Full Moon (Supermoon)", "Total Lunar Eclipse"]);
+});
+
+test("Skip calls the persistent service and only hides after the server confirms", async () => {
+  const card = new Card();
+  const soon = new Date(Date.now() + 86400000).toISOString();
+  const items = [{ key: "wave-a", event_id: "swell-1", roll: "swell-1", title: "Exceptional swell", category: "waves", start: soon, end: soon, score: 90 }];
+  const calls = [];
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = { states: { "sensor.outlook": outlookState(items) }, callService: async (...args) => calls.push(args) };
+  card.connectedCallback();
+  card._root.querySelectorAll("[data-expand]")[0].click();
+  card._root.querySelectorAll("[data-choice]").find(b => b.dataset.choice === "skip").click();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0][0], "photography_events");
+  assert.equal(calls[0][1], "set_event_choice");
+  assert.equal(calls[0][2].event_id, "swell-1");
+  assert.match(card._root.innerHTML, /Exceptional swell/);
+  card.hass = { states: { "sensor.outlook": outlookState(items, {preferences: {"swell-1": {choice: "skip"}}}) } };
+  assert.doesNotMatch(card._root.innerHTML, /Exceptional swell/);
+  card._root.querySelectorAll("[data-skipped]")[0].click();
+  assert.match(card._root.innerHTML, /Exceptional swell/);
+  assert.match(card._root.innerHTML, /Restore/);
+  card.disconnectedCallback();
+});
+
+test("a failed choice save remains visible and explains the failure", async () => {
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook" });
+  card.hass = { states: {"sensor.outlook": outlookState([])}, callService: async () => { throw new Error("not permitted"); } };
+  card.connectedCallback();
+  await card._saveChoice("occurrence", "follow");
+  assert.match(card._root.innerHTML, /Could not save your event choice/);
+  card.disconnectedCallback();
 });

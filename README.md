@@ -1,5 +1,8 @@
 # Photography Events
 
+> **0.11.0 card update:** Use `mode: action_hero` for compact next-seven-days briefs, or `mode: calendar_outlook` for the year planner with List/Calendar controls. Both read `outlook_entity` (auto-detected by default). Existing Timeline cards use the integration when installed. Full date ranges, preferred Milky Way nights and alternate-night tradeoffs are available inside event details. [Release notes](RELEASE_NOTES.md).
+
+
 ![Photography Events](banner.svg)
 
 > **v0.3 splits this into two halves.** A Python integration does the polling,
@@ -481,26 +484,17 @@ type: custom:photography-events-card
 mode: action_hero          # timeline | action_hero | calendar_outlook
 ```
 
-### `action_hero` - the drop-everything card
+### `action_hero` — compact next seven days
 
-Renders **nothing at all** - no border, no empty box, no space in the layout -
-until `binary_sensor.photography_events_action_opportunity` turns on. When it
-does, it shows the event, the drive time, the confidence score and what to pack.
+One expandable brief for every opportunity overlapping the coming week. Milky Way nights are consolidated into one lunar-window entry, with all supplied locations, a preferred night, alternate-night comparisons and the nearest listed approximate drive. Details separate calculation, forecast and live evidence. The integration compares 35 days; the supplied coverage boundary is not assumed to be the end of the season.
 
 ```yaml
 type: custom:photography-events-card
 mode: action_hero
-# Optional. Left blank, the card finds the integration's sensor by name.
-hero_entity: binary_sensor.photography_events_action_opportunity
-show_gear: true
+outlook_entity: sensor.photography_events_planning_outlook
 ```
 
-The drive time says where it came from. A figure Google routed reads
-**"live traffic"**; the calibrated distance estimate reads **"estimated"**. They
-are not the same claim and the card does not present them as though they were.
-
-Put it at the top of a dashboard and forget about it - it is silent until it
-is not.
+The sensor is auto-detected when omitted. A legacy binary-sensor-only installation retains its older hero fallback until the planning sensor is available.
 
 ### `calendar_outlook` - the year ahead
 
@@ -533,7 +527,7 @@ or a Supermoon), nightly "planets are up" summaries (only oppositions and
 conjunctions closer than one degree), and eclipses that miss this location
 entirely. Set `hide_routine: false` to get them all back.
 
-### `timeline` - the standalone view
+### `timeline` - integration planner or standalone fallback
 
 The original mode, and still the default. It computes sun, moon, planet and
 meteor geometry in the browser from your coordinates, needs no integration, and

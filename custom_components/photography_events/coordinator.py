@@ -104,7 +104,7 @@ _LOGGER = logging.getLogger(__name__)
 
 CALENDAR_HORIZON_DAYS = 365
 ASTRO_HORIZON_DAYS = 365
-MILKY_WAY_HORIZON_DAYS = 14
+MILKY_WAY_HORIZON_DAYS = 35
 REQUEST_TIMEOUT = 30
 
 # Open-Meteo sits behind a CDN and tolerates parallelism well; the others do

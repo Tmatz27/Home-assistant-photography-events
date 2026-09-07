@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-const CARD_VERSION = "0.10.0";
+const CARD_VERSION = "0.11.0";
 
 /* ---------------------------------------------------------------------- *
  * Astronomy core
@@ -1411,7 +1411,7 @@ function pruneRoutine(events) {
         // penumbral lunar eclipse is a fact about nothing. The Moon grazes the
         // outer shadow, the dimming is invisible in a photograph, and listing
         // it teaches you to ignore the row that says "eclipse".
-        return event.visible !== false && event.photographable !== false;
+        return event.visible === true && event.photographable !== false;
       default:
         return true;
     }
@@ -1479,16 +1479,16 @@ const MODE_OUTLOOK = "calendar_outlook";
 const BACKEND_MODES = new Set([MODE_HERO, MODE_OUTLOOK]);
 
 const CATEGORY_META = Object.freeze({
-  waves: { label: "Waves", icon: "mdi:waves" },
-  astronomy: { label: "Astro", icon: "mdi:telescope" },
-  sunset: { label: "Skies", icon: "mdi:weather-sunset" },
-  marine: { label: "Whales", icon: "mdi:whale" },
-  mammals: { label: "Mammals", icon: "mdi:paw" },
-  birds: { label: "Birds", icon: "mdi:bird" },
-  blooms: { label: "Blooms", icon: "mdi:flower" },
-  foliage: { label: "Autumn", icon: "mdi:leaf-maple" },
-  parks: { label: "Parks", icon: "mdi:pine-tree" },
-  rare_phenomena: { label: "Rare", icon: "mdi:star-shooting" },
+  waves: { color: "#56cbd2", label: "Waves", icon: "mdi:waves" },
+  astronomy: { color: "#9aaeff", label: "Astro", icon: "mdi:telescope" },
+  sunset: { color: "#f4a15b", label: "Skies", icon: "mdi:weather-sunset" },
+  marine: { color: "#58b9f2", label: "Whales", icon: "mdi:whale" },
+  mammals: { color: "#d9b78b", label: "Mammals", icon: "mdi:paw" },
+  birds: { color: "#d4ce72", label: "Birds", icon: "mdi:bird" },
+  blooms: { color: "#ed9cc8", label: "Blooms", icon: "mdi:flower" },
+  foliage: { color: "#e8ab66", label: "Autumn", icon: "mdi:leaf-maple" },
+  parks: { color: "#92ca96", label: "Parks", icon: "mdi:pine-tree" },
+  rare_phenomena: { color: "#c9a4ef", label: "Rare", icon: "mdi:star-shooting" },
 });
 
 // Icon and colour per access class. The wording comes from the park itself -
@@ -1621,7 +1621,7 @@ function filterOutlook(events, { allowed, now, fromDays, throughDays }) {
   const from = new Date(now.getTime() + fromDays * 86400000);
   const through = new Date(now.getTime() + throughDays * 86400000);
   return events
-    .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) }))
+    .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) || parseEventDate(event.start) }))
     .filter((event) => {
       if (!event.startDate) return false;
       if (allowed && !allowed.has(event.category)) return false;
@@ -1677,15 +1677,82 @@ function rollUpByPlace(events) {
     else buckets.set(event.roll, [event]);
   }
   for (const bucket of buckets.values()) {
-    // Best score wins, and the shorter drive breaks a tie - if two places are
-    // equally good tonight, the nearer one is the answer.
+    // Best score wins. Preserve the longer usable astronomy window on a tie,
+    // then prefer the nearer site when the photographic opportunity is equal.
     bucket.sort((left, right) =>
       (right.score || 0) - (left.score || 0) ||
+      (right.duration_minutes || 0) - (left.duration_minutes || 0) ||
       (left.drive_hours || 0) - (right.drive_hours || 0));
     const [best, ...rest] = bucket;
     out.push(rest.length ? { ...best, alternatives: rest } : best);
   }
   return out;
+}
+
+function consolidateNights(events) {
+  const other = events.filter(event => !event.key?.startsWith("milkyway-"));
+  const nights = events.filter(event => event.key?.startsWith("milkyway-"))
+    .sort((a, b) => a.startDate - b.startDate);
+  const periods = [];
+  for (const night of nights) {
+    const last = periods.at(-1);
+    // Do not join different lunar windows across a gap in usable nights.
+    if (!last || night.startDate - last.at(-1).startDate > 3 * MS_PER_DAY) periods.push([night]);
+    else last.push(night);
+  }
+  for (const period of periods) {
+    const options = period.flatMap(event => [event, ...(event.alternatives || [])]);
+    const ranked = [...options].sort((a, b) => (b.score || 0) - (a.score || 0) ||
+      (b.duration_minutes || 0) - (a.duration_minutes || 0) || a.startDate - b.startDate);
+    const best = ranked[0];
+    const places = [...new Set(options.map(event => event.where || event.zone).filter(Boolean))];
+    other.push({ ...best, title: "Milky Way core", nights: period, nightOptions: options,
+      startDate: period[0].startDate, endDate: new Date(Math.max(...period.map(e => e.endDate))),
+      locations: places, alternatives: [], bestNight: best,
+      choiceIds: [...new Set(options.map(e => e.event_id || e.roll || e.key))] });
+  }
+  return other;
+}
+
+function nightTradeoffs(night, best) {
+  const parts = [];
+  if (night.key === best.key) parts.push("Highest ranked among these supplied nights and locations.");
+  const duration = (night.duration_minutes || 0) - (best.duration_minutes || 0);
+  if (night.duration_minutes && best.duration_minutes) parts.push(duration === 0 ? "Same usable duration as the preferred night." : `${Math.abs(duration)} minutes ${duration > 0 ? "more" : "less"} usable darkness than the preferred night.`);
+  if (Number.isFinite(night.moon_illumination)) parts.push(`Moon ${Math.round(night.moon_illumination * 100)}% illuminated; the usable interval already accounts for moonlight and altitude.`);
+  if (Number.isFinite(night.peak_altitude)) parts.push(`Core peaks at ${night.peak_altitude}°.`);
+  if (Number.isFinite(night.cloud_cover)) parts.push(`Forecast cloud ${night.cloud_cover}%${Number.isFinite(best.cloud_cover) ? ` versus ${best.cloud_cover}% on the preferred night` : ""}.`);
+  else parts.push("Cloud conditions are unknown, so this is a calculated option rather than a weather-backed recommendation.");
+  if (night.score === best.score && night.key !== best.key) parts.push("Tied priority: this is a comparable alternative, not an inferior date.");
+  return parts.join(" ");
+}
+
+function categoryColor(category) { return CATEGORY_META[category]?.color || "#b7bdc5"; }
+
+function reportLinkHtml(event) {
+  const url = safeExternalUrl(event.source_url);
+  if (!url) return "";
+  const exact = /\/checklist\/S\d+|\/observations\/\d+/.test(url);
+  const label = exact ? (url.includes("ebird.org") ? "eBird checklist" : "Observation report") :
+    event.observed_at ? "Source report" : "Source / viewing guide";
+  return `<a class="outlook-source" href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(label)}</a>`;
+}
+
+// Local calendar-day arithmetic avoids 23/25-hour daylight-saving days.
+function calendarSegments(events, weekStart) {
+  const day = date => Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / MS_PER_DAY;
+  const base = day(weekStart);
+  const lanes = [];
+  return events.map(event => ({ event, start: Math.max(0, day(event.startDate) - base),
+    end: Math.min(6, day(event.endDate) - base) }))
+    .filter(item => item.start <= item.end && item.end >= 0 && item.start <= 6)
+    .sort((a, b) => a.start - b.start || b.end - a.end)
+    .map(item => {
+      let lane = lanes.findIndex(end => end < item.start);
+      if (lane < 0) lane = lanes.length;
+      lanes[lane] = item.end;
+      return { ...item, lane };
+    });
 }
 
 // What the list is actually sorted by. A calendar ordered strictly by date puts
@@ -1920,7 +1987,7 @@ class PhotographyEventsCardEditor extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const cfg = this._config;
-    const backendMode = BACKEND_MODES.has(cfg.mode);
+    const backendMode = BACKEND_MODES.has(cfg.mode) || Boolean(findEntity(this._hass, "sensor.", "planning_outlook"));
     this.shadowRoot.innerHTML = `
       <style>
         .event-controls, .event-toolbar { display:flex; gap:8px; margin:10px 0; flex-wrap:wrap; }
@@ -1951,8 +2018,8 @@ class PhotographyEventsCardEditor extends HTMLElement {
         <div class="title">Display</div>
         <div class="row"><span class="label">Mode</span>
           <select data-select="mode">
-            <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (computed here)</option>
-            <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Featured opportunity (hero)</option>
+            <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (uses integration when installed)</option>
+            <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Next seven days (compact)</option>
             <option value="${MODE_OUTLOOK}" ${cfg.mode === MODE_OUTLOOK ? "selected" : ""}>Planning calendar</option>
           </select>
         </div>
@@ -2029,20 +2096,18 @@ class PhotographyEventsCardEditor extends HTMLElement {
     const hero = cfg.mode === MODE_HERO;
     return `
       <div class="section">
-        <div class="title">${hero ? "Drop-everything sensor" : "Planning sensor"}</div>
+        <div class="title">Planning sensor</div>
         <div class="hint">Leave as auto-detect unless you run more than one Photography Events entry.</div>
         <div class="row"><span class="label">Entity</span>
-          ${hero
-            ? `<select data-select="hero_entity">${this._entityOptionsHtml("binary_sensor.", "action_opportunity", cfg.hero_entity)}</select>`
-            : `<select data-select="outlook_entity">${this._entityOptionsHtml("sensor.", "planning_outlook", cfg.outlook_entity)}</select>`}
+          <select data-select="outlook_entity">${this._entityOptionsHtml("sensor.", "planning_outlook", cfg.outlook_entity)}</select>
         </div>
       </div>
 
       ${hero ? `
         <div class="section">
-          <div class="title">Hero</div>
+          <div class="title">Next seven days</div>
           ${this._toggleRow("show_gear", "Show the gear recommendation")}
-          <div class="hint">This card renders nothing at all while the sensor is off.</div>
+          <div class="hint">One brief per event, with its dates, locations and details. The planning sensor supplies the whole week.</div>
         </div>` : `
         <div class="section">
           <div class="title">Range</div>
@@ -2179,6 +2244,11 @@ class PhotographyEventsCard extends HTMLElement {
     // Null until the first render knows which categories exist; a Set after.
     this._activeFilters = null;
     this._expanded = new Set();
+    this._collapsed = new Set();
+    this._calendarView = false;
+    this._calendarOffset = 0;
+    this._choiceGroups = new Map();
+    this._displayEvents = new Map();
     this._showSkipped = false;
     this._choicePending = false;
     this._choiceError = "";
@@ -2200,7 +2270,7 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   _isBackendMode() {
-    return BACKEND_MODES.has(this._config?.mode);
+    return BACKEND_MODES.has(this._config?.mode) || Boolean(this._outlookEntityId());
   }
 
   /** Every entity this card reads, so changes to them (and only them) redraw. */
@@ -2306,6 +2376,7 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   async _refreshWeather() {
+    if (this._isBackendMode()) return;
     const entityId = this._config.weather_entity;
     if (!entityId || !this._hass) {
       this._forecast = null;
@@ -2333,6 +2404,7 @@ class PhotographyEventsCard extends HTMLElement {
 
   _recomputeAndRender() {
     if (!this._hass) return;
+    if (this._isBackendMode()) { this._clearIntervals(); this._render(); return; }
     const { events, error } = buildEvents(this._hass, this._config, this._forecast, new Date());
     this._events = events;
     this._buildError = error;
@@ -2377,8 +2449,25 @@ class PhotographyEventsCard extends HTMLElement {
       this.shadowRoot.replaceChildren(style, root);
       this._root = root;
     }
+    // Replacing the scroll container reset it to zero on every expansion.
+    // Preserve both its offset and HA's outer scrollers (including shadow hosts).
+    const innerScroll = this._root.querySelector(".outlook")?.scrollTop || 0;
+    const scrollers = [];
+    let ancestor = this;
+    while (ancestor) {
+      if (typeof ancestor.scrollTop === "number") scrollers.push([ancestor, ancestor.scrollTop, ancestor.scrollLeft]);
+      ancestor = ancestor.parentElement || ancestor.getRootNode?.().host;
+    }
+    if (document.scrollingElement) scrollers.push([document.scrollingElement, document.scrollingElement.scrollTop, document.scrollingElement.scrollLeft]);
     this._root.innerHTML = html;
     this._bindEvents();
+    const inner = this._root.querySelector(".outlook");
+    if (inner) inner.scrollTop = innerScroll;
+    for (const [element, top, left] of scrollers) { element.scrollTop = top; element.scrollLeft = left; }
+    if (this._focusKey) {
+      [...this._root.querySelectorAll("[data-expand]")].find(button => button.dataset.expand === this._focusKey)?.focus?.({ preventScroll: true });
+      this._focusKey = null;
+    }
   }
 
   /**
@@ -2388,6 +2477,21 @@ class PhotographyEventsCard extends HTMLElement {
    */
   _bindEvents() {
     if (!this._root) return;
+    for (const section of this._root.querySelectorAll("[data-bucket]")) {
+      section.addEventListener("toggle", () => {
+        if (section.open) this._collapsed.delete(section.dataset.bucket);
+        else this._collapsed.add(section.dataset.bucket);
+      });
+    }
+    for (const button of this._root.querySelectorAll("[data-view]")) {
+      button.addEventListener("click", () => { this._calendarView = button.dataset.view === "calendar"; this._render(); });
+    }
+    for (const button of this._root.querySelectorAll("[data-month]")) {
+      button.addEventListener("click", () => { this._calendarOffset = clamp(this._calendarOffset + Number(button.dataset.month), 0, 12); this._render(); });
+    }
+    for (const button of this._root.querySelectorAll("[data-open]")) {
+      button.addEventListener("click", () => this._openCalendarEvent(button.dataset.open));
+    }
     for (const button of this._root.querySelectorAll("[data-skipped]")) {
       button.addEventListener("click", () => { this._showSkipped = !this._showSkipped; this._render(); });
     }
@@ -2407,6 +2511,7 @@ class PhotographyEventsCard extends HTMLElement {
       button.addEventListener("click", () => {
         const key = button.getAttribute("data-expand");
         if (!key) return;
+        this._focusKey = key;
         if (this._expanded.has(key)) this._expanded.delete(key);
         else this._expanded.add(key);
         this._render();
@@ -2419,7 +2524,8 @@ class PhotographyEventsCard extends HTMLElement {
     this._choicePending = true;
     this._choiceError = "";
     try {
-      await this._hass.callService("photography_events", "set_event_choice", { event_id: eventId, choice });
+      const ids = this._choiceGroups.get(eventId) || [eventId];
+      for (const id of ids) await this._hass.callService("photography_events", "set_event_choice", { event_id: id, choice });
       // The server publishes the updated state. Do not claim success locally
       // before it has persisted the choice for the other dashboards too.
     } catch (error) {
@@ -2449,8 +2555,8 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   _bodyHtml() {
-    if (this._config.mode === MODE_HERO) return this._heroHtml();
-    if (this._config.mode === MODE_OUTLOOK) return this._outlookHtml();
+    if (this._config.mode === MODE_HERO) return this._outlookEntityId() ? this._weekHtml() : this._heroHtml();
+    if (this._config.mode === MODE_OUTLOOK || this._outlookEntityId()) return this._outlookHtml();
     // Installed integrations share one event truth, even for older dashboard
     // configs. The legacy calculator remains only for standalone installations.
 
@@ -2747,7 +2853,7 @@ class PhotographyEventsCard extends HTMLElement {
     const running = outlook.events
       .filter((event) => event.precision === "peak" &&
         outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip")
-      .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) }))
+      .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) || parseEventDate(event.start) }))
       .filter((event) => event.startDate && event.endDate && event.startDate <= now && event.endDate >= now)
       .sort((left, right) => right.score - left.score)
       .slice(0, 2);
@@ -2762,6 +2868,112 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   // --- calendar_outlook -----------------------------------------------------
+
+  _groupEvents(events) {
+    const grouped = consolidateNights(rollUpByPlace(events));
+    for (const event of grouped) {
+      this._displayEvents.set(event.key, event);
+      if (event.choiceIds) this._choiceGroups.set(event.event_id || event.roll || event.key, event.choiceIds);
+    }
+    return grouped;
+  }
+
+  _weekHtml() {
+    const state = this._hass.states[this._outlookEntityId()];
+    if (!state) return this._setupHtml("Planning sensor unavailable", "Check the Photography Events integration.");
+    const outlook = outlookFromState(state);
+    const now = new Date();
+    const weekEnd = new Date(now.getTime() + 7 * MS_PER_DAY);
+    const visible = outlook.events.filter(e => outlook.preferences[e.event_id || e.roll || e.key]?.choice !== "skip");
+    // Group before cutting to seven days: a later best night must not disappear
+    // from a period already underway this week.
+    const events = this._groupEvents(filterOutlook(visible, { now, fromDays: 0, throughDays: 365 }))
+      .filter(e => e.startDate <= weekEnd && e.endDate >= now)
+      .sort((a, b) => (b.score || 0) - (a.score || 0));
+    return `<div class="week-card"><div class="week-heading">Next seven days <span>${events.length} opportunities</span></div>
+      ${this._choiceError ? `<div role="alert">${escapeHtml(this._choiceError)}</div>` : ""}
+      ${events.length ? events.map(e => this._outlookRowHtml(e, outlook, now)).join("") : '<p class="empty-week">No special opportunities reported yet.</p>'}
+      ${Object.values(outlook.sources).some(source => source.failures > 0) ? '<p class="source-warning">Some sources could not update. Check evidence dates in the details.</p>' : ""}
+      </div>`;
+  }
+
+  _nightComparisonHtml(event) {
+    if (!event.nights) return "";
+    const best = event.bestNight;
+    const forecast = event.nightOptions.filter(e => Number.isFinite(e.cloud_cover));
+    const geometry = [...event.nightOptions].sort((a,b) => (b.duration_minutes || 0) - (a.duration_minutes || 0) ||
+      (a.moon_illumination ?? 1) - (b.moon_illumination ?? 1))[0];
+    const weatherBest = [...forecast].sort((a,b) => (b.score || 0) - (a.score || 0) ||
+      (b.duration_minutes || 0) - (a.duration_minutes || 0))[0];
+    return `<section class="night-comparison"><h4>Which night?</h4>
+      <p>${event.nights.length} available nights, ${escapeHtml(rangeLabel(event.startDate, event.endDate))}.
+      Highest ranked: <strong>${escapeHtml(dateLabel(parseEventDate(best.start)))}</strong> at ${escapeHtml(best.where || best.zone)}.
+      Tied scores favor a longer usable window.</p>
+      <p>Longest calculated window: ${escapeHtml(dateLabel(parseEventDate(geometry.start)))} (${geometry.duration_minutes || "—"} min).
+      ${weatherBest ? `Best with a cloud forecast: ${escapeHtml(dateLabel(parseEventDate(weatherBest.start)))} at ${escapeHtml(weatherBest.where || weatherBest.zone)} (${weatherBest.cloud_cover}% cloud).` : "No cloud forecast is available for these nights yet."}
+      Calculated coverage${best.comparison_through ? ` through ${escapeHtml(dateLabel(parseEventDate(best.comparison_through)))}` : " is limited to the supplied nights"}. The end of the displayed range may be the calculation limit, not the end of the season. Forecasts can change the preferred date.</p>
+      ${event.nights.map(night => `<details class="night-option"><summary>${escapeHtml(dateLabel(parseEventDate(night.start)))} · priority ${night.score} · ${night.duration_minutes || "—"} min</summary>
+        <p>${escapeHtml(nightTradeoffs(night, best))}</p>
+        ${[night, ...(night.alternatives || [])].map(location => this._locationHtml(location)).join("")}</details>`).join("")}
+      <p>Follow / Skip applies to all listed nights. Weather and available nights update as new forecasts arrive.</p></section>`;
+  }
+
+  _locationHtml(event) {
+    const dates = !event.all_day && String(event.start).includes("T") ?
+      `${absoluteLabel(parseEventDate(event.start))} to ${absoluteLabel(parseEventDate(event.end))}` :
+      rangeLabel(parseEventDate(event.start), parseEventDate(event.end));
+    return `<section class="location-option"><strong>${escapeHtml(event.where || event.zone || "Viewing location")}</strong>
+      <div>${escapeHtml(dates)}</div>
+      ${Number.isFinite(event.drive_hours) && event.drive_hours > 0 ? `<div>Approximate drive: ${escapeHtml(driveLabel(Math.round(event.drive_hours * 60)))}</div>` : ""}
+      <div>${escapeHtml(event.evidence_note || event.awaiting || event.detail || "")}</div>
+      ${Number.isFinite(event.cloud_cover) ? `<div>Forecast cloud: ${event.cloud_cover}%</div>` : ""}
+      ${event.observed_at ? `<div>Observed ${escapeHtml(absoluteLabel(parseEventDate(event.observed_at)))}</div>` : ""}
+      ${reportLinkHtml(event)}</section>`;
+  }
+
+  _calendarHtml(events, now) {
+    const month = new Date(now.getFullYear(), now.getMonth() + this._calendarOffset, 1);
+    const first = new Date(month); first.setDate(1 - first.getDay());
+    const last = new Date(month.getFullYear(), month.getMonth() + 1, 0);
+    const weeks = [];
+    for (let start = new Date(first); start <= last; start.setDate(start.getDate() + 7)) {
+      const segments = calendarSegments(events, start);
+      const days = Array.from({ length: 7 }, (_, i) => {
+        const day = new Date(start); day.setDate(day.getDate() + i);
+        return `<span class="calendar-date ${day.getMonth() === month.getMonth() ? "" : "outside"}">${day.getDate()}</span>`;
+      }).join("");
+      weeks.push(`<div class="calendar-week"><div class="calendar-days">${days}</div><div class="calendar-bars">
+        ${segments.map(({event, start: left, end, lane}) => `<button type="button" class="calendar-event" data-open="${escapeHtml(event.key)}"
+          style="--event-color:${categoryColor(event.category)};grid-column:${left + 1}/${end + 2};grid-row:${lane + 1}"
+          title="${escapeHtml(event.title)} · ${escapeHtml(rangeLabel(event.startDate, event.endDate))}">${escapeHtml(event.title.replace(/ at .+$/, "").replace(/ \(season\)$/, ""))}</button>`).join("")}
+      </div></div>`);
+    }
+    return `<div class="calendar-nav"><button type="button" data-month="-1" ${this._calendarOffset === 0 ? "disabled" : ""} aria-label="Previous month">‹</button>
+      <strong>${MONTH_NAMES[month.getMonth()]} ${month.getFullYear()}</strong>
+      <button type="button" data-month="1" ${this._calendarOffset === 12 ? "disabled" : ""} aria-label="Next month">›</button></div>
+      <p class="calendar-note">Bars show planning windows, not confirmed activity. Open an event for its evidence and dates.</p>
+      <div class="calendar-grid"><div class="calendar-days">${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"].map(d => `<span>${d}</span>`).join("")}</div>${weeks.join("")}</div>`;
+  }
+
+  _openCalendarEvent(key) {
+    const event = this._displayEvents.get(key);
+    if (!event) return;
+    const outlook = outlookFromState(this._hass.states[this._outlookEntityId()]);
+    const dialog = document.createElement("dialog");
+    dialog.className = "event-dialog";
+    dialog.setAttribute("aria-labelledby", "pe-dialog-title");
+    dialog.innerHTML = `<button class="dialog-close" type="button" aria-label="Close event details">Close ×</button><h3 id="pe-dialog-title">${escapeHtml(event.title.replace(/ at .+$/, ""))}</h3>
+      ${this._outlookDetailHtml(event, outlook, event.planning_only ? outlook.parks[event.zone_id] : null, new Date())}`;
+    this.shadowRoot.appendChild(dialog);
+    dialog.querySelector(".dialog-close").addEventListener("click", () => dialog.close());
+    dialog.addEventListener("close", () => dialog.remove());
+    for (const button of dialog.querySelectorAll("[data-choice]")) button.addEventListener("click", async () => {
+      await this._saveChoice(button.dataset.eventid, button.dataset.choice);
+      if (!this._choiceError) dialog.close();
+      else button.textContent = this._choiceError;
+    });
+    dialog.showModal();
+  }
 
   /** The year-ahead planning view, filtered by the toggle chips. */
   _outlookHtml() {
@@ -2788,30 +3000,28 @@ class PhotographyEventsCard extends HTMLElement {
 
     const visible = outlook.events.filter(event => this._showSkipped ||
       outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip");
-    const events = filterOutlook(visible, {
-      allowed,
-      now,
-      fromDays: this._config.outlook_from_days,
-      throughDays: this._config.outlook_through_days,
-    });
-    const groups = groupByUrgency(rollUpByPlace(events), now);
+    const events = filterOutlook(visible, { allowed, now, fromDays: 0, throughDays: 365 });
+    const from = new Date(now.getTime() + this._config.outlook_from_days * MS_PER_DAY);
+    const through = new Date(now.getTime() + this._config.outlook_through_days * MS_PER_DAY);
+    const grouped = this._groupEvents(events).filter(event => event.endDate >= from && event.startDate <= through);
+    const groups = groupByUrgency(grouped, now);
 
     return `
       <div class="header">
         <div class="header-title">${escapeHtml(this._config.title)}</div>
         <div class="header-subtitle">
-          ${groups.reduce((total, group) => total + group.events.length, 0)} of ${outlook.events.length} events,
+          ${grouped.length} opportunities,
           next ${this._config.outlook_through_days} days
           ${outlook.truncated ? " (list truncated)" : ""}
         </div>
       </div>
       ${this._filterChipsHtml(known, allowed)}
-      <div class="event-toolbar"><button type="button" data-skipped="toggle" aria-pressed="${this._showSkipped}">
+      <div class="event-toolbar"><button type="button" data-view="list" aria-pressed="${!this._calendarView}">List</button><button type="button" data-view="calendar" aria-pressed="${this._calendarView}">Calendar</button><button type="button" data-skipped="toggle" aria-pressed="${this._showSkipped}">
         ${this._showSkipped ? "Hide skipped" : "Show skipped"}</button></div>
       ${this._choiceError ? `<div role="alert" class="event-error">${escapeHtml(this._choiceError)}</div>` : ""}
       ${Object.entries(outlook.sources).some(([, source]) => source.failures > 0)
         ? `<div class="source-warning">Some sources could not update. Open an event to check its evidence age.</div>` : ""}
-      ${groups.length
+      ${this._calendarView ? this._calendarHtml(grouped, now) : groups.length
         ? `<div class="outlook">${groups.map((group) => this._monthHtml(group, outlook, now)).join("")}</div>`
         : `<div class="empty-card">
              <ha-icon icon="mdi:calendar-blank-outline"></ha-icon>
@@ -2836,13 +3046,13 @@ class PhotographyEventsCard extends HTMLElement {
 
   _monthHtml(group, outlook, now) {
     return `
-      <div class="outlook-month${group.urgent ? " urgent" : ""}">
-        <div class="outlook-month-label">
+      <details class="outlook-month${group.urgent ? " urgent" : ""}" data-bucket="${escapeHtml(group.key)}" ${this._collapsed.has(group.key) ? "" : "open"}>
+        <summary class="outlook-month-label">
           ${escapeHtml(group.label)}
           <span class="outlook-month-count">${group.events.length}</span>
-        </div>
+        </summary>
         ${group.events.map((event) => this._outlookRowHtml(event, outlook, now)).join("")}
-      </div>
+      </details>
     `;
   }
 
@@ -2870,15 +3080,15 @@ class PhotographyEventsCard extends HTMLElement {
     const expanded = this._expanded.has(event.key);
     const choice = outlook.preferences[event.event_id || event.roll || event.key]?.choice || "default";
     const locations = event.locations || (park ? [park.name] : [event.where || event.zone]);
-    const total = locations.filter(Boolean).length + (event.alternatives || []).length;
+    const total = new Set([...locations, ...(event.alternatives || []).map(e => e.where || e.zone)].filter(Boolean)).size;
     const where = total > 1 ? `${total} locations` : locations[0] || "";
     const status = choice === "skip" ? "Skipped" : choice === "follow" ? "Following" :
       VERIFICATION_META[event.verification]?.label || (event.precision === "season" || park ? "Season" : "Calculated / forecast");
     const title = event.roll ? event.title.replace(/ at .+$/, "") : event.title.replace(/ \(season\)$/, "");
-    return `<div class="outlook-row ${expanded ? "open" : ""}">
+    return `<div class="outlook-row ${expanded ? "open" : ""}" style="--event-color:${categoryColor(event.category)}">
       <button type="button" class="outlook-head simple-row" data-expand="${escapeHtml(event.key)}" aria-expanded="${expanded}">
         <span class="outlook-body"><span class="outlook-title">${escapeHtml(title)}</span>
-          <span class="outlook-meta">${escapeHtml(rangeLabel(event.startDate, event.endDate))} · ${escapeHtml(where)}</span></span>
+          <span class="outlook-meta">${escapeHtml(rangeLabel(event.startDate, event.endDate))}${event.precision === "season" ? " · Typical peak" : ""} · ${escapeHtml(where)}${event.nights ? ` · ${event.nights.length} nights · Preferred ${dateLabel(parseEventDate(event.bestNight.start))}` : ""}</span></span>
         <span class="outlook-badge season">${escapeHtml(status)}</span>
         <ha-icon icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>
       </button>
@@ -2889,7 +3099,9 @@ class PhotographyEventsCard extends HTMLElement {
   _outlookDetailHtml(event, outlook, park, now) {
     const rows = [];
     rows.push(["Priority", `${event.score}/100 — ranking, not a probability`]);
-    rows.push(["Approximate drive", park ? park.drive_label : driveLabel(Math.round((event.drive_hours || 0) * 60))]);
+    const drives = [event, ...(event.nightOptions || event.alternatives || [])].map(e => e.drive_hours).filter(d => Number.isFinite(d) && d > 0);
+    if (drives.length || park?.drive_label) rows.push([drives.length > 1 ? "Closest approximate drive" : "Approximate drive", drives.length ? driveLabel(Math.round(Math.min(...drives) * 60)) : park.drive_label]);
+    if (event.category === "sunset") rows.push(["Weather source", "Open-Meteo low, middle and high cloud forecasts, with the upstream light path checked when available. Forecast layers, not measured cloud heights; no Pirate Weather entity required."]);
     if (event.observed_at) rows.push(["Observed", absoluteLabel(parseEventDate(event.observed_at))]);
     if (event.evidence_note) rows.push(["Evidence", event.evidence_note]);
     if (event.closures?.length) rows.push(["Closures", event.closures.join("; ")]);
@@ -2906,12 +3118,15 @@ class PhotographyEventsCard extends HTMLElement {
       rows.push(["Peak window",
         `${rangeLabel(event.startDate, event.endDate)} - specifics firm up inside ${outlook.horizonDays} days`]);
     } else {
-      rows.push(["Window", !event.all_day && String(event.start).includes("T") ? `${absoluteLabel(event.startDate)} to ${absoluteLabel(event.endDate)}` : rangeLabel(event.startDate, event.endDate)]);
+      rows.push([event.nights ? "Highest-ranked night" : "Window", !event.all_day && String(event.start).includes("T") ? `${absoluteLabel(parseEventDate(event.start))} to ${absoluteLabel(parseEventDate(event.end))}` : rangeLabel(event.startDate, event.endDate)]);
       if (event.season_range) rows.push(["Extended season", event.season_range]);
     }
     if (event.duration_minutes) {
       const limit = WINDOW_LIMIT_REASON[event.limited_by] || "";
       rows.push(["Usable window", `${event.duration_minutes} min${limit ? ` - ${limit}` : ""}`]);
+    }
+    if (!event.nights && (event.precision === "season" || ["watching", "unverified", "presence_only"].includes(event.verification))) {
+      rows.push(["Preferred days & alternatives", "No evidence-backed ideal day yet. The full seasonal range and typical peak are planning guides; an alternate day is not known to be worse. " + (event.awaiting || "Current reports of the named phenomenon are needed before choosing dates.")]);
     }
     if (event.best_time_of_day) rows.push(["Best time of day", event.best_time_of_day]);
 
@@ -2949,27 +3164,15 @@ class PhotographyEventsCard extends HTMLElement {
           ${escapeHtml(why)}
           ${event.confirm ? `<em> Timing shifts year to year - confirm current reports before driving.</em>` : ""}
         </div>
-        ${Array.isArray(event.alternatives) && event.alternatives.length ? `
-          <div class="outlook-alts">
-            <span class="outlook-alts-label">Also from</span>
-            ${event.alternatives.map((alt) => `
-              <span class="outlook-alt">
-                ${escapeHtml(alt.where || alt.zone || "")}
-                <em>${escapeHtml(!alt.all_day && String(alt.start).includes("T") ? `${absoluteLabel(parseEventDate(alt.start))} to ${absoluteLabel(parseEventDate(alt.end))}` : !alt.all_day && String(alt.start).includes("T") ? `${absoluteLabel(parseEventDate(alt.start))} to ${absoluteLabel(parseEventDate(alt.end))}` : rangeLabel(parseEventDate(alt.start), parseEventDate(alt.end)))} · ${escapeHtml(driveLabel(Math.round((alt.drive_hours || 0) * 60)))}${alt.score ? ` · priority ${alt.score}` : ""}</em>
-                <span>${escapeHtml(alt.evidence_note || alt.awaiting || alt.detail || "")}</span>
-                ${alt.observed_at ? `<span>Observed ${escapeHtml(new Date(alt.observed_at).toLocaleString())}</span>` : ""}
-              </span>`).join("")}
-          </div>` : ""}
+        ${this._nightComparisonHtml(event)}
+        ${!event.nights && event.alternatives?.length ? `<section class="location-options"><h4>Locations & reports</h4>${[event, ...event.alternatives].map(location => this._locationHtml(location)).join("")}</section>` : ""}
         ${this._eventControlsHtml(event.event_id || event.roll || event.key,
           outlook.preferences[event.event_id || event.roll || event.key]?.choice)}
-        ${event.source_url ? `
-          <a class="outlook-source" href="${escapeHtml(safeExternalUrl(event.source_url))}" target="_blank" rel="noopener noreferrer">
-            <ha-icon icon="mdi:open-in-new"></ha-icon>Original report
-          </a>` : ""}
+        ${!event.alternatives?.length && !event.nights ? reportLinkHtml(event) : ""}
         ${Array.isArray(event.verify) && event.verify.length ? `
           <div class="outlook-verify">
             <span class="outlook-verify-label">Check before you book</span>
-            ${event.verify.map((url) => `
+            ${event.verify.filter(url => safeExternalUrl(url)).map((url) => `
               <a href="${escapeHtml(safeExternalUrl(url))}" target="_blank" rel="noopener noreferrer">
                 <ha-icon icon="mdi:check-decagram-outline"></ha-icon>${escapeHtml(sourceLabel(url))}
               </a>`).join("")}
@@ -2979,21 +3182,8 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   _legendHtml() {
-    const items = [
-      ["high", "90+ exceptional priority"],
-      ["good", "75-89 worth considering"],
-      ["fair", "60-74 keep an eye on it"],
-      ["season", "background season, not yet actionable"],
-    ];
-    return `
-      <div class="pe-legend">
-        <span>Scores rank opportunities; evidence labels say what is known.</span>
-        ${items.map(([tone, label]) => `
-          <span class="pe-legend-item">
-            <span class="outlook-badge ${tone} tiny"></span>${escapeHtml(label)}
-          </span>`).join("")}
-      </div>
-    `;
+    return `<div class="pe-legend"><span>Color = event type. Labels describe the evidence; scores rank priority.</span>
+      ${Object.entries(CATEGORY_META).map(([category, meta]) => `<span class="pe-legend-item"><span class="category-dot" style="background:${categoryColor(category)}"></span>${escapeHtml(meta.label)}</span>`).join("")}</div>`;
   }
 
   /** What the colours mean, and what is deliberately not shown. */
@@ -3542,13 +3732,46 @@ class PhotographyEventsCard extends HTMLElement {
         .outlook-detail-grid dt { margin-top: 6px; font-size: 11px; }
         .outlook { max-height: 420px; }
       }
+      .outlook-row { border-left: 3px solid var(--event-color); padding: 0 0 0 10px; }
+      .outlook-head.simple-row { padding: 13px 0; gap: 9px; }
+      .outlook-title { font-size: 15px; line-height: 1.35; }
+      .outlook-meta { font-size: 12px; margin-top: 4px; }
+      .outlook-badge { font-size: 11px; white-space: normal; }
+      .week-heading { display:flex; justify-content:space-between; gap:12px; font-weight:700; margin-bottom:12px; }
+      .week-heading span, .calendar-note { color:var(--secondary-text-color); font-size:12px; font-weight:400; }
+      .week-card .outlook-detail { font-size:13px; }
+      .week-card .outlook-row { margin-bottom:3px; }
+      .outlook-month-label { cursor:pointer; padding:12px 0; }
+      .outlook-month:not([open]) { margin-bottom:12px; }
+      .outlook { overflow-anchor:none; }
+      .location-option { padding:12px; margin:8px 0; border:1px solid var(--divider-color); border-radius:10px; line-height:1.6; }
+      .location-option div { font-size:13px; color:var(--secondary-text-color); }
+      .night-option summary { cursor:pointer; padding:10px 0; }
+      .night-comparison p { line-height:1.6; }
+      .category-dot { width:10px; height:10px; border-radius:3px; flex-shrink:0; }
+      .event-toolbar { display:flex; flex-wrap:wrap; gap:8px; }
+      .event-toolbar button[aria-pressed="true"] { border-color:var(--primary-color); }
+      .calendar-nav { display:flex; align-items:center; justify-content:space-between; margin:16px 0; }
+      .calendar-nav button { padding:8px 18px; cursor:pointer; }
+      .calendar-grid { border:1px solid var(--divider-color); border-radius:8px; overflow:hidden; }
+      .calendar-days,.calendar-bars { display:grid; grid-template-columns:repeat(7,minmax(0,1fr)); gap:3px; }
+      .calendar-days { text-align:center; font-size:11px; color:var(--secondary-text-color); padding:6px 0; }
+      .calendar-week { min-height:72px; border-top:1px solid var(--divider-color); padding:3px; }
+      .calendar-date.outside { opacity:.4; }
+      .calendar-bars { grid-auto-rows:24px; }
+      .calendar-event { background:color-mix(in srgb,var(--event-color) 20%,var(--card-background-color,#222)); color:var(--primary-text-color); border:0; border-left:3px solid var(--event-color); border-radius:3px; font:inherit; font-size:11px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; text-align:left; padding:3px 5px; cursor:pointer; }
+      .event-dialog { color:var(--primary-text-color); background:var(--card-background-color,#222); border:1px solid var(--divider-color); border-radius:16px; width:min(620px,calc(100vw - 48px)); max-height:80vh; padding:20px; }
+      .event-dialog::backdrop { background:#0009; }
+      .dialog-close { float:right; padding:8px 12px; cursor:pointer; }
+      @media(max-width:450px) { .card-content { padding:16px; } .simple-row .outlook-badge { max-width:76px; } .outlook-detail-grid { grid-template-columns:1fr; } .outlook-detail-grid dd { margin:0 0 9px; } }
+
     `;
   }
 
   getCardSize() {
     // A hidden hero should not reserve space in a masonry column.
     if (this._config?.mode === MODE_HERO) {
-      return this._hass && heroFromState(this._hass.states[this._heroEntityId()]) ? 6 : 1;
+      return this._outlookEntityId() ? 3 : this._hass && heroFromState(this._hass.states[this._heroEntityId()]) ? 6 : 1;
     }
     if (this._config?.mode === MODE_OUTLOOK) return 12;
     const categories = CATEGORY_TOGGLE_KEYS.filter((key) => this._config?.[key] !== false).length;
@@ -3585,6 +3808,10 @@ PhotographyEventsCard.backend = {
   groupByMonth,
   groupByUrgency,
   rollUpByPlace,
+  consolidateNights,
+  calendarSegments,
+  nightTradeoffs,
+  reportLinkHtml,
   rangeLabel,
   findEntity,
   CATEGORY_META,

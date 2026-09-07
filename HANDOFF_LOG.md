@@ -1,4 +1,16 @@
-# Handoff log — 0.10.0
+# Handoff log — 0.11.0
+
+## 2026-09-06: card review and date-choice improvements (0.11.0)
+
+Publication base: 5924f8e3068046333e5e9844d1e9bfeb5c92d354 (released 0.10.0).
+
+User requested compact weekly briefs, consolidated locations, preferred/alternate dates with explanations, relevant eclipses, less ordinary-bird noise, trustworthy individual links, scroll preservation, collapsible sections, a calendar, and visible firefall/moonbow plans. Their follow-up explicitly asks to retain the full date range even when the preferred day is inconvenient.
+
+Implemented the changes described in RELEASE_NOTES.md. Existing Open-Meteo cloud-layer scoring remains the backend weather source; the obsolete standalone UI is bypassed when the integration is installed. No new live confirmation source is claimed for wildlife behavior or waterfall phenomena.
+
+Browser verification uses labelled synthetic fixtures, not current reports. Verified row expansion/collapse keeps both page and internal scroll offsets, section collapse works, and duration bars open an accessible native dialog. Automated tests cover calendar clipping/overlap, night consolidation/tradeoffs, week inclusion, integration routing, eclipse visibility, report URL identity, bird curation, cloudy alternatives and payload fairness.
+
+Release preparation and publication status is also recorded in the workspace running log. Update the final validation counts there after checks complete.
 
 ## 2026-09-06: approved direction and implementation
 

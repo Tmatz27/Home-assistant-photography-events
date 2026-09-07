@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.10.0.** `main` is the working branch; there is no PR flow.
+**Current version: 0.11.0.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -31,6 +31,16 @@ Everything below exists to prevent that. A confident wrong answer is worse than
 an admitted unknown, every time.
 
 ---
+
+## 0.11.0 handoff amendments
+
+- User clarified: show the full opportunity range, preferred days and reasons, and usable alternatives with their tradeoffs. Do not manufacture a preferred wildlife day without current evidence.
+- `action_hero` uses compact seven-day planning-sensor rows when available. `timeline` also uses the integration when found; its browser calculator is only a fallback without the integration.
+- The card consolidates adjacent Milky Way nights into lunar windows while retaining every supplied location/time. The backend calculates 35 days, including cloudy alternatives; `comparison_through` states the coverage boundary. Follow/Skip covers the listed night occurrence IDs.
+- Native collapsible time sections, a month calendar with duration bars and modal details, and scroll restoration on DOM replacement address the user's screenshots. Preserve both HA outer scrollers and the inner outlook container.
+- Bird curation is an explicit photographic preference (`PHOTOGRAPHY_BIRDS`), not an ecological rarity claim. Raw observations are not filtered out of seasonal corroboration.
+- `planning_slice` gives separate occurrences space before spending the sensor payload on extra viewpoints. Do not revert to the first 400 chronological rows.
+- A newer observation without a URL must not borrow an older observation's link. Guides and exact checklists have distinct labels.
 
 ## 0.10.0 handoff amendments
 

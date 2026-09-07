@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.11.0
+
+Compact seven-day dashboard, consolidated Milky Way dates and locations with 35-day alternate-night comparisons, collapsible planner sections, colored calendar bars and detail dialogs, scroll preservation, photography-focused bird selection, per-location source links, local eclipse filtering and unified integration-backed cards. See [release notes](RELEASE_NOTES.md) for update instructions and evidence limits.
+
 ## 0.10.0
 
 Short expandable planner rows, persistent Follow/Skip, exceptional coastal swell monitoring, dated operator report parsing, conservative local aurora signals, CDFW expected grunion intervals, new special search targets, stricter evidence gates and deduplicated opportunity events. See [release notes](RELEASE_NOTES.md) for setup and limits, and [source validation](SOURCE_VALIDATION.md) for calibration details.

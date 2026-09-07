@@ -130,6 +130,7 @@ function baseSandbox() {
     clearInterval,
     setTimeout,
     Promise,
+    URL,
   };
 }
 
@@ -1140,13 +1141,13 @@ test("the editor offers the two backend modes and asks different questions for e
   };
 
   editor.setConfig({ mode: "timeline" });
-  assert.match(editor.shadowRoot.innerHTML, /Days to look ahead/, "timeline mode configures the browser view");
+  assert.match(editor.shadowRoot.innerHTML, /Planning sensor/, "an installed integration supplies the timeline too");
   assert.doesNotMatch(editor.shadowRoot.innerHTML, /Filter switches/);
 
   editor.setConfig({ mode: "action_hero" });
   const hero = editor.shadowRoot.innerHTML;
-  assert.match(hero, /Drop-everything sensor/);
-  assert.match(hero, /binary_sensor\.photography_events_action_opportunity/);
+  assert.match(hero, /Planning sensor/);
+  assert.match(hero, /sensor\.photography_events_planning_outlook/);
   assert.doesNotMatch(hero, /Days to look ahead/, "the hero has no browser-side outlook to configure");
 
   editor.setConfig({ mode: "calendar_outlook" });
@@ -1377,7 +1378,7 @@ test("the hero names what else is peaking right now", () => {
   };
   card.connectedCallback();
   const html = card._root.innerHTML;
-  assert.match(html, /Also peaking now/);
+  assert.match(html, /Next seven days/);
   assert.match(html, /Tule elk rut/);
   assert.doesNotMatch(html, /Gray whales/, "a background season is not 'peaking now'");
   card.disconnectedCallback();
@@ -1545,7 +1546,7 @@ test("one row per thing, not one per place", () => {
   assert.match(html, /big_sur/, "the best-scoring zone won the row");
 
   rows[0].click();
-  assert.match(card._root.innerHTML, /Also from/, "the other places are one level down, not gone");
+  assert.match(card._root.innerHTML, /Locations & reports/, "the other places are one level down, not gone");
   card.disconnectedCallback();
 });
 
@@ -1676,5 +1677,102 @@ test("a failed choice save remains visible and explains the failure", async () =
   card.connectedCallback();
   await card._saveChoice("occurrence", "follow");
   assert.match(card._root.innerHTML, /Could not save your event choice/);
+  card.disconnectedCallback();
+});
+
+
+test("Milky Way consolidation retains dates, sites and skip identities across a lunar window", () => {
+  const now = new Date("2026-09-06T10:00:00Z");
+  const entries = [0,1,2,12].flatMap(day => ["near","far"].map((site,i) => ({
+    key:`milkyway-${site}-${day}`,event_id:`night-${day}`,roll:`milkyway-${day}`,
+    category:"astronomy",title:`Milky Way core at ${site}`,where:site,
+    start:new Date(now.getTime()+(day+1)*86400000).toISOString(),
+    end:new Date(now.getTime()+(day+1)*86400000+7200000).toISOString(),
+    score:day===2?95:80,drive_hours:i+1,duration_minutes:100-day,
+  })));
+  const grouped = backend.consolidateNights(backend.rollUpByPlace(backend.filterOutlook(entries,{now,fromDays:0,throughDays:35})));
+  assert.equal(grouped.length,2,"separate lunar windows must not merge");
+  assert.equal(grouped[0].nights.length,3);
+  assert.equal(grouped[0].nightOptions.length,6);
+  assert.equal(grouped[0].locations.length,2,"nights are not extra locations");
+  assert.equal(grouped[0].bestNight.event_id,"night-2");
+  assert.deepEqual(Array.from(grouped[0].choiceIds).sort(),["night-0","night-1","night-2"]);
+  assert.ok(grouped[0].startDate < grouped[0].bestNight.startDate);
+});
+
+test("alternate nights explain concrete costs without calling tied nights inferior", () => {
+  const best={key:"a",score:90,duration_minutes:100,cloud_cover:10};
+  const text=backend.nightTradeoffs({key:"b",score:90,duration_minutes:80,cloud_cover:30,moon_illumination:.2,peak_altitude:22},best);
+  assert.match(text,/20 minutes less/);
+  assert.match(text,/30% versus 10%/);
+  assert.match(text,/Moon 20%/);
+  assert.match(text,/comparable alternative/);
+  assert.match(backend.nightTradeoffs({key:"c"},best),/Cloud conditions are unknown/);
+});
+
+test("calendar spans clip across weeks and overlapping events use different lanes", () => {
+  const start=new Date(2026,9,25);
+  const events=[
+    {key:"long",startDate:new Date(2026,9,20),endDate:new Date(2026,10,9)},
+    {key:"overlap",startDate:new Date(2026,9,29),endDate:new Date(2026,10,1)},
+    {key:"outside",startDate:new Date(2026,11,1),endDate:new Date(2026,11,2)},
+  ];
+  const segments=backend.calendarSegments(events,start);
+  assert.equal(segments.length,2);
+  assert.equal(segments[0].start,0);assert.equal(segments[0].end,6);
+  assert.notEqual(segments[0].lane,segments[1].lane);
+  const next=backend.calendarSegments(events,new Date(2026,10,1));
+  assert.equal(next[1].start,0);assert.equal(next[1].end,0);
+});
+
+test("report links distinguish guides and preserve exact individual checklists", () => {
+  const one=backend.reportLinkHtml({source_url:"https://ebird.org/checklist/S123"});
+  const two=backend.reportLinkHtml({source_url:"https://ebird.org/checklist/S456"});
+  assert.match(one,/S123/);assert.match(two,/S456/);assert.notEqual(one,two);
+  assert.match(one,/eBird checklist/);
+  const guide=backend.reportLinkHtml({source_url:"https://www.nps.gov/yose/planyourvisit/horsetailfall.htm"});
+  assert.match(guide,/viewing guide/);assert.doesNotMatch(guide,/Original report/);
+  assert.equal(backend.reportLinkHtml({source_url:"javascript:alert(1)"}),"");
+});
+
+test("unknown solar visibility cannot appear in a local notable timeline", () => {
+  const kept=astro.pruneRoutine([
+    {category:"eclipse",visible:null,photographable:true},
+    {category:"eclipse",visible:false,photographable:true},
+    {category:"eclipse",visible:true,photographable:true},
+  ]);
+  assert.equal(kept.length,1);assert.equal(kept[0].visible,true);
+});
+
+test("a legacy timeline uses the integration data and does not request Pirate Weather", () => {
+  const card=new Card();let weatherCalls=0;
+  card.setConfig({mode:"timeline",outlook_entity:"sensor.outlook",weather_entity:"weather.home"});
+  card.hass={states:{"sensor.outlook":outlookState([])},callWS:async()=>{weatherCalls++;return {}}};
+  card.connectedCallback();
+  assert.match(card._root.innerHTML,/Calendar/);
+  assert.doesNotMatch(card._root.innerHTML,/Add a weather entity/);
+  assert.equal(card._eventInterval,null);assert.equal(weatherCalls,0);
+  card.disconnectedCallback();
+});
+
+test("a calendar view and collapsed buckets survive subsequent renders", () => {
+  const card=new Card();const now=new Date();
+  card.setConfig({mode:"calendar_outlook",outlook_entity:"sensor.outlook"});
+  card.hass={states:{"sensor.outlook":outlookState([{key:"elk",title:"Elk rut",category:"mammals",start:new Date(now-86400000).toISOString(),end:new Date(+now+86400000).toISOString()}])}};
+  card.connectedCallback();card._collapsed.add("now");card._render();
+  assert.match(card._root.innerHTML,/data-bucket="now" >/);
+  card._root.querySelectorAll("[data-view]").find(b=>b.dataset.view==="calendar").click();
+  assert.match(card._root.innerHTML,/calendar-event/);assert.match(card._root.innerHTML,/data-open="elk"/);
+  card._render();assert.match(card._root.innerHTML,/calendar-event/);
+  card.disconnectedCallback();
+});
+
+test("compact week includes every intersecting event with its own details, not bare chips", () => {
+  const card=new Card();const now=new Date();
+  card.setConfig({mode:"action_hero",outlook_entity:"sensor.outlook"});
+  card.hass={states:{"sensor.outlook":outlookState([1,4,9].map(d=>({key:`e-${d}`,title:`Subject ${d}`,category:"mammals",start:new Date(+now+d*86400000).toISOString(),end:new Date(+now+(d+1)*86400000).toISOString(),detail:`Details ${d}`})))}};
+  card.connectedCallback();assert.equal(card._root.querySelectorAll("[data-expand]").length,2);
+  assert.doesNotMatch(card._root.innerHTML,/Subject 9|Also peaking now|hero-grid/);
+  card._root.querySelectorAll("[data-expand]")[1].click();assert.match(card._root.innerHTML,/Details 4/);
   card.disconnectedCallback();
 });

@@ -11,6 +11,7 @@ from homeassistant.helpers.update_coordinator import CoordinatorEntity
 from .const import ALL_CATEGORIES, GEAR_PROFILES, CATEGORY_SUNSET, DOMAIN
 from .parks import PARKS
 from .phenomena import PRECISION_HORIZON_DAYS
+from .events import planning_slice
 from .coordinator import PhotographyEventsCoordinator
 
 
@@ -143,7 +144,7 @@ class PlanningOutlookSensor(_BaseSensor):
 
     @property
     def extra_state_attributes(self) -> dict:
-        upcoming = self._opportunities[: self.MAX_EVENTS]
+        upcoming = planning_slice(self._opportunities, self.MAX_EVENTS)
         return {
             "events": [item.compact() for item in upcoming],
             "preferences": (self.coordinator.data or {}).get("preferences", {}),

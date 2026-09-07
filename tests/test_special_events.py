@@ -155,3 +155,61 @@ class TestSpecialSources(unittest.TestCase):
         payload["Observation Time"] = NOW.isoformat()
         payload["coordinates"] = [[240, 65, 90]]
         self.assertEqual(spectacles.aurora_opportunities(payload, NOW, zones, EventState()), [])
+
+
+class TestCardEvidenceRegression(unittest.TestCase):
+    def test_extra_astronomy_sites_cannot_evict_future_special_targets(self):
+        from photography_events.events import planning_slice
+        many_sites = [event(key=f"mw-{i}", roll="one-night", score=90-i) for i in range(20)]
+        future = event(key="firefall", roll=None, start=NOW+timedelta(days=150))
+        kept = planning_slice(many_sites+[future], 5)
+        self.assertEqual(len(kept), 5)
+        self.assertIn(future, kept)
+        self.assertIn(many_sites[0], kept)
+
+    def test_ordinary_birds_do_not_become_standalone_photography_targets(self):
+        from photography_events import wildlife, events
+        sightings = wildlife.parse_ebird([
+            test_integration._ebird_entry(comName="Great-tailed Grackle", sciName="Quiscalus mexicanus"),
+            test_integration._ebird_entry(comName="Vermilion Flycatcher", sciName="Pyrocephalus rubinus"),
+        ], timezone.utc)
+        now = datetime(2026, 3, 20, 20, tzinfo=timezone.utc)
+        found = events.build_wildlife_opportunities(sightings, now)
+        self.assertEqual(len(found), 1)
+        self.assertIn("Vermilion", found[0].title)
+        self.assertEqual(found[0].extra["verification"], "presence_only")
+        self.assertEqual(len(sightings), 2, "raw evidence is retained for seasonal corroboration")
+
+    def test_newer_report_without_url_does_not_inherit_an_old_link(self):
+        from photography_events import wildlife
+        from dataclasses import replace
+        old = wildlife.parse_ebird([test_integration._ebird_entry()], timezone.utc)[0]
+        new = replace(old, latest=old.latest+timedelta(hours=3), url=None)
+        merged = wildlife.cluster([old, new])[0]
+        self.assertIsNone(merged.url)
+        self.assertEqual(merged.latest, new.latest)
+
+    def test_cloudy_milky_way_alternates_retain_comparison_metrics(self):
+        from photography_events import events, const
+        zone = const.TARGET_ZONES[0]
+        now = datetime(2026, 9, 6, 12, tzinfo=timezone.utc)
+        clear = events.build_milky_way_opportunities(zone, now, 7, lambda _: 0)
+        cloudy = events.build_milky_way_opportunities(zone, now, 7, lambda _: 100)
+        self.assertTrue(clear)
+        self.assertEqual([e.key for e in clear], [e.key for e in cloudy])
+        self.assertLess(cloudy[0].score, clear[0].score)
+        compact = cloudy[0].compact()
+        self.assertEqual(compact["cloud_cover"], 100)
+        self.assertIn("moon_illumination", compact)
+        self.assertIn("comparison_through", compact)
+        self.assertIn("T", compact["start"], "cloudy alternatives still have exact geometry windows")
+
+    def test_firefall_and_moonbows_remain_year_ahead_unconfirmed_targets(self):
+        from photography_events import events
+        candidates = events.build_seasonal_opportunities(NOW, 365)
+        fire = next(e for e in candidates if "horsetail_firefall" in e.key)
+        self.assertNotIn("Southside Drive viewing areas", fire.extra["primary_locations"])
+        self.assertTrue(fire.planning_only)
+        moons = [e for e in spectacles.watch_opportunities(NOW, test_integration.const.DEFAULT_HOME) if e.key.startswith("moonbow-")]
+        self.assertTrue(moons)
+        self.assertTrue(all(e.extra["verification"] == "unverified" for e in moons))

@@ -212,14 +212,13 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         longitude=-119.6339,
         primary_locations=(
             "El Capitan Picnic Area",
-            "Southside Drive viewing areas",
         ),
         recommended_gear="70-200mm or 100-400mm telephoto, sturdy tripod, remote release",
         photo_tips=(
             "Everything depends on two things holding at once: a clear western horizon at "
             "sunset, and enough snowpack actively melting to keep water on the face. Either "
             "one failing means no glow at all. The light lands roughly 17:15-17:40 and lasts "
-            "about ten minutes. Expect crowds and reservation requirements."
+            "about ten minutes. Expect crowds; check NPS access rules for the year of your visit. Southside Drive is not a viewing/parking recommendation."
         ),
         best_time_of_day="Sunset, roughly 17:15-17:40",
         confirm=True,

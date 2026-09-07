@@ -416,7 +416,8 @@ def cluster(sightings: list[Sighting]) -> list[Sighting]:
         if item.latest > existing.latest:
             existing.latest = item.latest
             # Keep the freshest report's link, so the URL matches the timestamp.
-            existing.url = item.url or existing.url
+            existing.url = item.url
+            existing.source = item.source
             existing.place = item.place or existing.place
         if item.earliest < existing.earliest:
             existing.earliest = item.earliest

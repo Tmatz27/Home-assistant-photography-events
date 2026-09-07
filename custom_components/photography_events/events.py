@@ -14,6 +14,7 @@ from . import astronomy as astro
 from .event_state import event_id
 from .const import (
     CATEGORY_ASTRO,
+    CATEGORY_BIRDS,
     CATEGORY_MARINE,
     CATEGORY_PARKS,
     CATEGORY_SUNSET,
@@ -214,6 +215,7 @@ class Opportunity:
             "special", "wave_height_m", "wave_period_s", "wave_direction_deg",
             "measurement_label", "forecast_note", "access_note", "locations_detail",
             "feed_status", "confidence_note", "coastal_advisories",
+            "moon_illumination", "peak_altitude", "cloud_cover", "comparison_through",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -463,7 +465,8 @@ def build_meteor_opportunities(
                         "duration_minutes": window.duration_minutes,
                         "limited_by": window.limited_by,
                         "zhr": shower["zhr"],
-                        "moon_illumination": round(window.moon_illumination, 3),
+                        "cloud_cover": round(cloud, 1) if cloud is not None else None,
+                    "moon_illumination": round(window.moon_illumination, 3),
                         "peak_altitude": round(window.peak_target_altitude, 1),
                         "score_ceiling": ceiling,
                     },
@@ -602,16 +605,13 @@ def build_milky_way_opportunities(
         score = min(int(max(0, min(100, score))), ceiling)
         reasons.extend(ceiling_reasons)
 
-        if score < MIN_ASTRO_SCORE:
-            continue
-
         detail = (
             f"Core above {round(astro.MIN_CORE_ALTITUDE_DEG)}deg in full darkness for "
             f"{window.duration_minutes} min. " + ", ".join(reasons) + "."
         )
         if window.is_brief and window.limited_by == "target":
             detail = (
-                f"Brief window: core sets early at {window.target_sets.strftime('%H:%M')}. " + detail
+                "Brief window: the core sets soon after darkness. " + detail
             )
 
         found.append(
@@ -635,9 +635,12 @@ def build_milky_way_opportunities(
                     "duration_minutes": window.duration_minutes,
                     "limited_by": window.limited_by,
                     "target_sets": window.target_sets.isoformat() if window.target_sets else None,
+                    "cloud_cover": round(cloud, 1) if cloud is not None else None,
                     "moon_illumination": round(window.moon_illumination, 3),
                     "peak_altitude": round(window.peak_target_altitude, 1),
                     "score_ceiling": ceiling,
+                    "verification": "computed",
+                    "comparison_through": (now + timedelta(days=horizon_days)).date().isoformat(),
                 },
             )
         )
@@ -908,6 +911,32 @@ def _report_point(report, window) -> tuple[float, float]:
     return _NOWHERE
 
 
+def planning_slice(opportunities: list[Opportunity], limit: int) -> list[Opportunity]:
+    """Reserve a row for each occurrence before spending space on extra sites.
+
+    A longer astronomy comparison must not fill the payload with near-term
+    viewpoints and silently evict next February's firefall or spring moonbows.
+    When the limit is reached, retain the strongest site for each occurrence
+    first, then distribute additional sites evenly. The sensor marks truncation.
+    """
+    if len(opportunities) <= limit:
+        return opportunities
+    groups: dict[str, list[Opportunity]] = {}
+    for item in opportunities:
+        groups.setdefault(item.roll or item.key, []).append(item)
+    for group in groups.values():
+        group.sort(key=lambda item: (-item.score, item.drive_hours))
+    selected: list[Opportunity] = []
+    depth = 0
+    while len(selected) < limit:
+        layer = [group[depth] for group in groups.values() if len(group) > depth]
+        if not layer:
+            break
+        selected.extend(layer[:limit-len(selected)])
+        depth += 1
+    return sorted(selected, key=lambda item: item.start)
+
+
 def within_drive(opportunities: list[Opportunity], max_hours: float) -> list[Opportunity]:
     """Drop what is too far to drive to, keeping the trips you plan instead.
 
@@ -966,6 +995,37 @@ MARINE_DRAW = {
 }
 
 
+# A deliberately small photography shortlist. eBird "notable" can include
+# ordinary-looking birds that are merely unusual in this reporting region.
+# Keep raw observations for seasonal corroboration; curate only standalone rows.
+PHOTOGRAPHY_BIRDS = frozenset({
+    "vermilion flycatcher",
+    "bald eagle",
+    "golden eagle",
+    "california condor",
+    "peregrine falcon",
+    "snowy owl",
+    "great gray owl",
+    "great horned owl",
+    "short-eared owl",
+    "burrowing owl",
+    "tufted puffin",
+    "horned puffin",
+    "harlequin duck",
+    "wood duck",
+    "mandarin duck",
+    "painted bunting",
+    "scarlet tanager",
+    "summer tanager",
+    "blackburnian warbler",
+    "roseate spoonbill",
+    "sandhill crane",
+    "american white pelican",
+    "long-tailed duck",
+    "king eider",
+})
+
+
 def build_wildlife_opportunities(
     sightings: list,
     now: datetime,
@@ -986,6 +1046,8 @@ def build_wildlife_opportunities(
     origin = home or DEFAULT_HOME
     found: list[Opportunity] = []
     for sighting in sightings:
+        if sighting.category == CATEGORY_BIRDS and sighting.species.casefold() not in PHOTOGRAPHY_BIRDS:
+            continue
         drive_hours = estimate_drive_hours(sighting.latitude, sighting.longitude, origin)
         match = nearest_zone(sighting.latitude, sighting.longitude)
         zone_id = match[0]["id"] if match else f"sighting-{_slug(sighting.place)}"
@@ -1077,7 +1139,7 @@ def build_wildlife_opportunities(
                 gear=_gear_for(sighting.category),
                 source_url=sighting.url,
                 extra={"observed_at": sighting.latest.isoformat(), "source_name": sighting.source,
-                       "verification": "corroborated", "evidence_note": "Species presence, not behavior."},
+                       "verification": "presence_only", "evidence_note": "Species presence, not behavior or a guarantee it remains there."},
                 drive_source="estimate",
                 latitude=sighting.latitude,
                 longitude=sighting.longitude,

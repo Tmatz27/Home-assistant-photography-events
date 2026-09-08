@@ -17,7 +17,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-const CARD_VERSION = "0.11.0";
+const CARD_VERSION = "0.11.1";
 
 /* ---------------------------------------------------------------------- *
  * Astronomy core

@@ -34,7 +34,7 @@ from .phenomena import (
     PRECISION_HORIZON_DAYS,
     active_windows,
 )
-from .weather_scoring import mark_standouts, score_sky
+from .weather_scoring import cloud_confidence, cloud_is_scorable, mark_standouts, score_sky
 from .verification import grunion_run_window
 from .wildlife import describe_drive, estimate_drive_hours, haversine_km, nearest_zone
 
@@ -545,6 +545,12 @@ def build_milky_way_opportunities(
             continue
 
         cloud = cloud_lookup(window.start) if cloud_lookup else None
+        # How far out this night is decides what the cloud number may be
+        # *called*. Inside a week it is a forecast; past that it is an outlook,
+        # and the difference is the difference between a comparison somebody can
+        # lean on and one that quietly pretends to skill it does not have.
+        lead_days = max(0.0, (window.start - now).total_seconds() / 86400)
+        forecast_cloud = cloud_is_scorable(lead_days)
         moon_down = _moon_down_throughout(window, lat, lon)
 
         score = 40
@@ -591,15 +597,23 @@ def build_milky_way_opportunities(
             reasons.append(f"Bortle {bortle} skies")
 
         if cloud is not None:
+            # Cloud ranks every night, near or far: choosing between alternates
+            # three weeks out is what this list is for, and the outlook is the
+            # only cloud information those nights have. What changes with
+            # distance is what it is called. It cannot leak into an alert either
+            # way - the drop-everything sensor only ever sees the 48-hour action
+            # window, so a distant night is structurally barred from raising one
+            # however well it scores.
+            suffix = "" if forecast_cloud else " outlook"
             if cloud <= DROP_EVERYTHING_MAX_CLOUD:
                 score += 12
-                reasons.append(f"{round(cloud)}% cloud")
+                reasons.append(f"{round(cloud)}% cloud{suffix}")
             elif cloud <= MAX_ASTRO_CLOUD:
                 score += 6
-                reasons.append(f"{round(cloud)}% cloud")
+                reasons.append(f"{round(cloud)}% cloud{suffix}")
             elif cloud > 40:
                 score -= 25
-                reasons.append(f"{round(cloud)}% cloud forecast")
+                reasons.append(f"{round(cloud)}% cloud {'forecast' if forecast_cloud else 'outlook'}")
 
         ceiling, ceiling_reasons = lunar_ceiling(night, window.moon_illumination, moon_down, cloud)
         score = min(int(max(0, min(100, score))), ceiling)
@@ -636,6 +650,10 @@ def build_milky_way_opportunities(
                     "limited_by": window.limited_by,
                     "target_sets": window.target_sets.isoformat() if window.target_sets else None,
                     "cloud_cover": round(cloud, 1) if cloud is not None else None,
+                    # So the card can say which of these it is: a forecast, or
+                    # an outlook that ranked the night without promising it.
+                    "cloud_confidence": cloud_confidence(lead_days) if cloud is not None else None,
+                    "cloud_is_forecast": bool(cloud is not None and forecast_cloud),
                     "moon_illumination": round(window.moon_illumination, 3),
                     "peak_altitude": round(window.peak_target_altitude, 1),
                     "score_ceiling": ceiling,

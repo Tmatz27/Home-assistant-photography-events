@@ -2047,3 +2047,72 @@ class TestEmailIngestion(unittest.TestCase):
         score, verification, _, _ = events._apply_evidence(window, entry, 70, None, [Loose()], NOW)
         self.assertEqual(verification, "watching")
         self.assertLessEqual(score, events.UNVERIFIED_CEILING)
+
+
+class TestForecastReach(unittest.TestCase):
+    """The Milky Way planner looks 35 nights ahead. The forecast has to try.
+
+    Asking Open-Meteo for three days while ranking thirty-five nights meant
+    thirty-two of them were compared on geometry alone, with cloud silently
+    absent from most of the list the card presents as one ranking.
+    """
+
+    def test_the_request_reaches_as_far_as_the_service_serves(self):
+        params = weather_scoring.build_open_meteo_params(34.742, -120.5724)
+        self.assertEqual(params["forecast_days"], "16")
+        self.assertEqual(weather_scoring.FORECAST_DAYS, 16)
+
+    def test_cloud_is_named_a_forecast_only_while_it_is_one(self):
+        self.assertTrue(weather_scoring.cloud_is_scorable(2))
+        self.assertTrue(weather_scoring.cloud_is_scorable(7))
+        self.assertFalse(weather_scoring.cloud_is_scorable(8))
+        self.assertIn("forecast", weather_scoring.cloud_confidence(1))
+        self.assertIn("lower confidence", weather_scoring.cloud_confidence(5))
+        self.assertIn("outlook only", weather_scoring.cloud_confidence(14))
+
+    def test_a_distant_night_says_outlook_and_still_ranks(self):
+        """Both halves matter.
+
+        Labelling it is what stops a day-fourteen number reading as a promise.
+        Still scoring it is what keeps the alternate-day comparison useful -
+        choosing between nights weeks out is the entire point of that list, and
+        the outlook is the only cloud information those nights have.
+        """
+        zone = const.ZONES_BY_ID["carrizo_plain"]
+        now = datetime(2026, 9, 1, 12, tzinfo=PACIFIC)
+
+        def nights(cloud):
+            return {
+                item.start.astimezone(PACIFIC).date().day: item
+                for item in events.build_milky_way_opportunities(
+                    zone, now, 20, cloud_lookup=lambda _moment: cloud
+                )
+            }
+
+        clear, murky = nights(5.0), nights(60.0)
+        far_clear, far_murky = clear[10], murky[10]
+
+        self.assertFalse(far_clear.extra["cloud_is_forecast"], "ten days out is not a forecast")
+        self.assertIn("outlook", far_clear.extra["cloud_confidence"])
+        self.assertTrue(any("outlook" in reason for reason in far_clear.reasons))
+        self.assertGreater(far_clear.score, far_murky.score,
+                           "an outlook must still separate a clear night from a filthy one")
+
+        near = clear[2]
+        self.assertTrue(near.extra["cloud_is_forecast"], "two days out is a forecast")
+        self.assertFalse(any("outlook" in reason for reason in near.reasons))
+
+    def test_a_distant_night_can_never_raise_a_drop_everything_alert(self):
+        """Not by score - structurally. The sensor only ever sees 48 hours."""
+        zone = const.ZONES_BY_ID["carrizo_plain"]
+        now = datetime(2026, 9, 1, 12, tzinfo=PACIFIC)
+        built = events.build_milky_way_opportunities(
+            zone, now, 20, cloud_lookup=lambda _moment: 0.0
+        )
+        acting = events.action_window(built, now)
+        for item in acting:
+            self.assertLessEqual((item.start - now).days, 2)
+        far = [item for item in built if (item.start - now).days > 2]
+        self.assertTrue(far, "fixture must contain distant nights to be meaningful")
+        for item in far:
+            self.assertNotIn(item, acting)

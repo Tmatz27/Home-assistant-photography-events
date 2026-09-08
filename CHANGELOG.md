@@ -1,5 +1,29 @@
 # Changelog
 
+
+## 0.11.1
+
+The Milky Way planner looks 35 nights ahead. The forecast request asked for 3.
+
+- **Open-Meteo is now asked for 16 days**, which is what it serves. Thirty-two
+  of the thirty-five nights being ranked had no cloud data at all, while the
+  card presented the whole run as one comparison - the alternates were real, but
+  cloud was quietly missing from most of them
+- **A cloud figure is now named for what it is.** Inside a week it is a
+  forecast; past that it is an outlook, and the row says so. It still ranks the
+  night either way, because choosing between alternates weeks out is the point
+  of that list and the outlook is the only cloud information those nights have -
+  but it no longer reads as a promise. `cloud_confidence` and
+  `cloud_is_forecast` are published for the card
+- A distant night could never have raised a drop-everything alert regardless:
+  the sensor only ever sees the 48-hour action window. That is now covered by a
+  test rather than left as an emergent property nobody had written down
+- **One line ending across the repository**, with a `.gitattributes` to keep it
+  that way. The mix meant any whole-file rewrite flipped every line, so a
+  forty-line change arrived as a three-thousand-line diff - and the generated
+  tracking inventory showed a complete diff on every regeneration, destroying
+  the one signal it exists to give
+
 ## 0.11.0
 
 Compact seven-day dashboard, consolidated Milky Way dates and locations with 35-day alternate-night comparisons, collapsible planner sections, colored calendar bars and detail dialogs, scroll preservation, photography-focused bird selection, per-location source links, local eclipse filtering and unified integration-backed cards. See [release notes](RELEASE_NOTES.md) for update instructions and evidence limits.

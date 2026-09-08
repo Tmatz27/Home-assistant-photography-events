@@ -430,7 +430,37 @@ OPEN_METEO_HOURLY = (
 )
 
 
-def build_open_meteo_params(latitude, longitude, days: int = 3) -> dict:
+# Open-Meteo serves sixteen days on the free tier, and the Milky Way planner
+# looks thirty-five nights ahead. Asking for three meant thirty-two of those
+# nights were compared on geometry alone while the card presented the whole run
+# as one ranked list - the alternates were real, but cloud was quietly absent
+# from most of them.
+FORECAST_DAYS = 16
+
+# Forecast skill does not last sixteen days. Inside a week a cloud percentage is
+# a forecast; past that it is an outlook. Both still rank a night - choosing
+# between alternates three weeks out is the entire point of that list, and the
+# outlook is the only cloud information those nights have - but only one of them
+# may be *called* a forecast, and that distinction is what keeps a comparison
+# from reading as a promise.
+CLOUD_SCORING_LEAD_DAYS = 7
+
+
+def cloud_is_scorable(lead_days: float) -> bool:
+    """Whether a cloud figure this far out is a forecast rather than an outlook."""
+    return lead_days <= CLOUD_SCORING_LEAD_DAYS
+
+
+def cloud_confidence(lead_days: float) -> str:
+    """What to call a cloud figure, given how far ahead it is."""
+    if lead_days <= 3:
+        return "forecast"
+    if lead_days <= CLOUD_SCORING_LEAD_DAYS:
+        return "forecast, lower confidence this far out"
+    return "outlook only - too far out to forecast cloud"
+
+
+def build_open_meteo_params(latitude, longitude, days: int = FORECAST_DAYS) -> dict:
     """Query parameters for the free, keyless Open-Meteo forecast endpoint.
 
     Accepts either one coordinate or a sequence of them. Open-Meteo answers a
@@ -447,7 +477,7 @@ def build_open_meteo_params(latitude, longitude, days: int = 3) -> dict:
     }
 
 
-def build_air_quality_params(latitude, longitude, days: int = 3) -> dict:
+def build_air_quality_params(latitude, longitude, days: int = 5) -> dict:
     """Aerosol load from Open-Meteo's air quality API - free, keyless, same shape.
 
     Aerosol optical depth is the difference between a sunset that holds magenta

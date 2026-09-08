@@ -186,7 +186,35 @@ not confidently wrong. Do not add an LLM to this path.
   then by month), and by **score** inside the near buckets. Strict date ordering
   buries tonight under seasons that started in March.
 
-### 10. Precision horizon: 60 days
+### 10. A forecast number must be named for what it is
+
+Open-Meteo is asked for `FORECAST_DAYS = 16`, and the Milky Way planner ranks 35
+nights. Cloud inside `CLOUD_SCORING_LEAD_DAYS` (7) is a **forecast**; past that
+it is an **outlook**.
+
+Both rank a night - refusing to rank distant cloud breaks the alternate-date
+comparison, which is the whole point of that list, and the outlook is the only
+cloud information those nights have. What must never happen is presenting the
+second as the first. `cloud_confidence` and `cloud_is_forecast` ride in the
+opportunity's `extra` so the card can show the difference.
+
+Neither can reach an alert: `action_window()` filters to 48 hours *before*
+`alert_candidate()` runs, so a distant night is structurally barred from raising
+a drop-everything however well it scores. Do not add a score cap to "fix" this -
+it is already prevented, and a cap only flattens the ranking.
+
+### 11. One line ending: LF, enforced by `.gitattributes`
+
+Not cosmetic. The repository had drifted into a CRLF/LF mix, and any tool that
+rewrites a whole file flipped every line of it - a 40-line change arrived as a
+2815-line diff with the real edit buried inside. The generated `TRACKING.md`
+showed a complete 223-line diff on *every* regeneration, destroying the one
+signal it exists to give.
+
+If you find yourself looking at a diff far larger than your edit, check the
+line endings before reading further.
+
+### 12. Precision horizon: 60 days
 
 `PRECISION_HORIZON_DAYS = 60`. Beyond it, broad season ranges are the honest
 answer. Inside it, windows carry concrete dates, locations, gear, and an
@@ -209,6 +237,10 @@ yet.").
 | `wildlife.py` | eBird / iNaturalist clients, `Sighting`, clustering, `haversine_km`, drive estimation. |
 | `field_reports.py` | BeautifulSoup hotline scrapers. `SOURCE_SELECTORS` is the maintenance table - if a site is redesigned, edit there and nowhere else. |
 | `email_reports.py` | Subscription-email → `FieldReport`. Fixed vocabulary, fail-quiet. |
+| `waves.py` | NDBC buoy measurements + CDIP coastal models, kept distinct. `recent_forecast_metadata()` refuses a freshly downloaded stale model run. |
+| `spectacles.py` | Condor reports, aurora from solar-wind input, watch targets. Every entry carries an `evidence_note` naming what is and is not confirmed. |
+| `grunion.py` | Published CDFW run schedule, Pacific local time including DST. |
+| `event_state.py` | Follow/Skip persistence for occurrences. |
 | `parks.py` | 10 parks, seasons, dog rules. |
 | `routing.py` | Google Routes API + legacy Distance Matrix. |
 | `throttle.py` | `Source` - due/succeed/fail/status, 15-min failure backoff. |
@@ -294,5 +326,6 @@ environment. Say so rather than claiming a live check happened.
 - No PRs unless explicitly asked. Commit to `main`.
 - Regenerate `TRACKING.md` after any change to `phenomena.py`, `parks.py`,
   `const.py` intervals, or the meteor table.
-- Bump `manifest.json`, `package.json` **and** `VERSION` together.
+- Bump `manifest.json`, `package.json`, `VERSION` **and** `CARD_VERSION` in the
+  card together; `node scripts/check-version.mjs` enforces it, changelog included.
 - Do not add dependencies. The no-build-step, no-numpy constraint is deliberate.

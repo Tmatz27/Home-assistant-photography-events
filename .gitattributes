@@ -1,0 +1,14 @@
+# One line ending, everywhere.
+#
+# The repository had drifted into a mix: files written on Windows came back as
+# CRLF, files written by tooling here as LF. The practical cost was that any
+# tool which rewrites a whole file - the tracking-inventory generator, most
+# scripted edits - flipped every line of it, so a forty-line change arrived as a
+# three-thousand-line diff and the real edit was unreviewable. Worse, the
+# generated inventory showed a whole-file diff on every run, which is precisely
+# the signal it exists to provide.
+* text=auto eol=lf
+
+# Binary, and must never be touched.
+*.png binary
+*.svg text eol=lf

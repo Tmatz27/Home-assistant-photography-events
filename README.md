@@ -878,3 +878,12 @@ Python tests: HTML heading/context tests require the real parser. Main
 commits with a new semantic version are released after Validate succeeds.
 Manifest, package, VERSION and card console versions must agree; release
 notes come from RELEASE_NOTES.md (with the version summary in CHANGELOG.md). Existing releases are never overwritten.
+
+
+## Source health and maintaining the card
+
+The compact week and year views have an expandable source-health strip. It names enabled sources and their last successful retrieval. Failed/stale dependencies mark affected rows as **Data degraded**. This does not remove the evidence ceiling or confirm an event. Disabled optional sources do not generate Repair issues. Repeated failures generate an HA Repair that clears on recovery; no phone notification automation is installed.
+
+Card sources are in `custom_components/photography_events/www/src/`. After editing them, run `node scripts/build-card.mjs`; CI rejects an out-of-sync generated card. Installation still uses the single `photography-events-card.js` artifact. `python -m unittest discover -s tests` runs the portable tests without HA; the HA-specific file skips locally when HA is absent and is executed in its own CI job.
+
+The NASA eclipse catalog covers 2026–2035 and contains published central-path coordinates, not inferred region descriptions. Known sites are screened against these paths and approximate drive budgets. Exact solar contacts, partial-only solar visibility and exhaustive road access are not computed. Lunar times intersect the real umbral phase with local Moon visibility. Broad wildlife seasons remain estimates unless qualifying dated evidence supports them.

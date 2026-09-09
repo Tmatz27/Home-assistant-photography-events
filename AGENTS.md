@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.11.0.** `main` is the working branch; there is no PR flow.
+**Current version: 0.12.0.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -31,6 +31,15 @@ Everything below exists to prevent that. A confident wrong answer is worse than
 an admitted unknown, every time.
 
 ---
+
+## 0.12.0 handoff amendments
+
+- Tier 2 is cancelled by explicit user direction; do not add phone notifications, the proposed blueprint, hassfest, a brand submission or the three optional UI features. See BACKLOG.md.
+- `source_health.py` distinguishes retrieval failures from lack of corroboration; never raise a score or renew an observation based on feed recovery. The three hotlines are individually monitored. A valid empty payload is not an outage.
+- HA-facing tests live in `tests/test_ha_integration.py`; they skip without HA and run in a separate CI job with HA installed. Real Store writes are covered; Windows tests stub only the absent POSIX permission syscall.
+- `eclipse_catalog.json` is sourced NASA data shared by both frontends; `tools/import_eclipse_catalog.py` regenerates it. `eclipses.py` evaluates known viewing sites and real umbral-phase windows. Central-path proximity is not proof of drivable access. Partial-only solar visibility and exact contacts are not provided.
+- `tools/check_meteor_drift.py` documents why moving radiants are applied. Preserve the noon-to-noon intersection and the J2000 solar-longitude peak solver.
+- Edit `www/src/`, then run `node scripts/build-card.mjs`; do not edit only the generated artifact. The Eclipse JSON is inserted into the catalog during assembly. Keep both generated and source `CARD_VERSION` synchronized.
 
 ## 0.11.0 handoff amendments
 
@@ -63,7 +72,7 @@ python3 -m pyflakes custom_components/photography_events/*.py tools/*.py
 python3 tools/generate_tracking_inventory.py > TRACKING.md   # after any data change
 ```
 
-See HANDOFF_LOG.md for the current validation results. There is no build step or bundler; install the existing BeautifulSoup requirement for tests: the card is vanilla `HTMLElement` + shadow DOM, and the Python tests
+See HANDOFF_LOG.md for the current validation results. There is no bundler; regenerate the checked-in card with `node scripts/build-card.mjs` after editing `www/src/`, then run `node scripts/build-card.mjs --check`. Install the existing BeautifulSoup requirement for tests: the card is vanilla `HTMLElement` + shadow DOM, and the Python tests
 load the pure modules under a synthetic package so Home Assistant is never
 imported.
 
@@ -198,10 +207,10 @@ cloud information those nights have. What must never happen is presenting the
 second as the first. `cloud_confidence` and `cloud_is_forecast` ride in the
 opportunity's `extra` so the card can show the difference.
 
-Neither can reach an alert: `action_window()` filters to 48 hours *before*
+Distant outlooks cannot reach an alert: `action_window()` filters to 48 hours *before*
 `alert_candidate()` runs, so a distant night is structurally barred from raising
 a drop-everything however well it scores. Do not add a score cap to "fix" this -
-it is already prevented, and a cap only flattens the ranking.
+both the action sensor and opportunity event are gated to 48 hours, and a cap only flattens the ranking.
 
 ### 11. One line ending: LF, enforced by `.gitattributes`
 
@@ -245,7 +254,7 @@ yet.").
 | `routing.py` | Google Routes API + legacy Distance Matrix. |
 | `throttle.py` | `Source` - due/succeed/fail/status, 15-min failure backoff. |
 | `config_flow.py` | **HA selectors only.** See below. |
-| `www/photography-events-card.js` | Three modes: `action_hero`, `calendar_outlook`, timeline. Vanilla, no build step. |
+| `www/photography-events-card.js` | Three modes: `action_hero`, `calendar_outlook`, timeline. Generated vanilla artifact; sources under `www/src/`, assembled by `scripts/build-card.mjs`. |
 | `tools/generate_tracking_inventory.py` | Generates `TRACKING.md` from the code so the two cannot drift. |
 
 ### Config flow warning
@@ -300,16 +309,8 @@ environment. Say so rather than claiming a live check happened.
    a habitat model). **Needs:** the endpoint list, whether a key is required,
    and one example response. Then wire a client in `wildlife.py` shape and add
    it as a corroboration source. Currently only linked, never read.
-2. **Eclipse drive gating.** The user wants solar/lunar eclipses filtered to
-   "visible within a 6-hour drive". `ECLIPSES` in the card carries prose region
-   strings, not path geometry, so there is nothing to measure against. Current
-   behaviour: penumbral lunar dropped (not photographable), the rest gated on
-   being above the horizon here. Real gating needs centreline coordinates per
-   eclipse - source them, do not invent them. The table also only runs to 2028.
-3. **Suggested next features** (offered, not yet accepted):
-   - a `this_week` card mode - the year view is doing double duty
-   - a toggle to collapse `watching` rows (~15 of 224 are unconfirmed)
-   - sort by score ÷ drive time - a 78 forty minutes away beats a 90 six hours out
+2. **Eclipse reach.** Sourced NASA central paths and known-site screening are implemented through 2035. Exhaustive drivable land search, exact contacts and partial-only solar visibility remain outside the model. See BACKLOG.md.
+3. **Optional Tier 2 features are cancelled**, including notification delivery. Do not revive them without a new user request.
 4. **Stale remote branch.** `claude/home-assistant-photography-events-acanhf` in
    the *other* repo (`Tmatz27/ha-sab-deluge-card`) should be deleted by the
    user; an agent attempt returned HTTP 403.
@@ -328,4 +329,4 @@ environment. Say so rather than claiming a live check happened.
   `const.py` intervals, or the meteor table.
 - Bump `manifest.json`, `package.json`, `VERSION` **and** `CARD_VERSION` in the
   card together; `node scripts/check-version.mjs` enforces it, changelog included.
-- Do not add dependencies. The no-build-step, no-numpy constraint is deliberate.
+- Do not add runtime dependencies or a bundler. The shipped card is ready to install; its source concatenation and isolated HA test dependencies are development-only.

@@ -1,0 +1,3 @@
+# Test environment only: old HA's ACME/aiodns APIs predate these major changes.
+josepy==1.14.0
+pycares==4.5.0

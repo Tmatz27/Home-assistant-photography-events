@@ -640,6 +640,8 @@ def astro_shooting_window(
     dec_deg: float = GALACTIC_CORE_DEC_DEG,
     min_target_altitude: float = MIN_CORE_ALTITUDE_DEG,
     max_moon_illumination: float = MOON_SUPPRESSION_ILLUMINATION,
+    radiant_drift: tuple[float, float] = (0.0, 0.0),
+    radiant_epoch: datetime | None = None,
 ) -> ShootingWindow | None:
     """The span where darkness, target elevation and moonlight all cooperate.
 
@@ -676,6 +678,10 @@ def astro_shooting_window(
     target_dec = math.radians(dec_deg)
 
     def target_altitude(moment: datetime) -> float:
+        if radiant_epoch is not None:
+            days = (moment - radiant_epoch).total_seconds() / 86400
+            return horizontal(math.radians(ra_deg + radiant_drift[0] * days),
+                              math.radians(dec_deg + radiant_drift[1] * days), moment, lat, lon)[0]
         return horizontal(target_ra, target_dec, moment, lat, lon)[0]
 
     high = intervals_where(
@@ -737,6 +743,11 @@ def astro_shooting_window(
         limited_by = "dawn"
 
     peak = max_altitude_in_window(ra_deg, dec_deg, best.start, best.end, lat, lon)
+    if radiant_epoch is not None:
+        # The same moving radiant must set both the gate and the reported peak.
+        steps = math.ceil((best.end - best.start).total_seconds() / 300)
+        peak = max(math.degrees(target_altitude(min(best.end, best.start + timedelta(minutes=5 * i))))
+                   for i in range(steps + 1))
 
     return ShootingWindow(
         start=best.start,

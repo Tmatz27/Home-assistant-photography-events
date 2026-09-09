@@ -39,6 +39,8 @@ class Source:
         """Whether this service may be called again yet."""
         if self.next_attempt is not None and now < self.next_attempt:
             return False
+        if self.failures:
+            return True
         if self.fetched_at is None:
             return True
         return now - self.fetched_at >= timedelta(minutes=self.min_interval_minutes)
@@ -64,7 +66,9 @@ class Source:
 
     def status(self) -> dict:
         return {
+            "name": self.name,
             "last_success": self.fetched_at.isoformat() if self.fetched_at else None,
+            "next_attempt": self.next_attempt.isoformat() if self.next_attempt else None,
             "failures": self.failures,
             "last_error": self.last_error,
         }

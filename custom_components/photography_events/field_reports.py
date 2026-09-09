@@ -259,6 +259,26 @@ def _soup(raw_html: str):
     return None
 
 
+def checked_report(raw_html, source, now):
+    """A quiet report is valid; a vanished article/challenge page is not.
+
+    The permissive parser remains useful for pasted reports. Network fetches
+    additionally require a recognizable content container and topic, so an HTTP
+    200 maintenance page cannot erase the last known reports as a success.
+    """
+    soup = _soup(raw_html or "")
+    selectors = SOURCE_SELECTORS[source["id"]]
+    container = next((node for selector in selectors["container"]
+                      if (node := soup.select_one(selector)) is not None), None) if soup else None
+    text = container.get_text(" ", strip=True).lower() if container is not None else ""
+    topics = ("color", "colour", "foliage") if source["category"] == CATEGORY_FOLIAGE else ("wildflower", "bloom")
+    if (not text or not any(topic in text for topic in topics)
+            or not container.find_all(selectors["blocks"])
+            or any(term in text for term in ("verify you are human", "access denied", "enable javascript and cookies"))):
+        raise ValueError("Report content could not be recognized; check the source layout")
+    return parse_report(raw_html, source, now)
+
+
 def extract_blocks(raw_html: str, source_id: str = "") -> list[tuple[str, str]]:
     """(heading, text) pairs for every readable block on the page.
 

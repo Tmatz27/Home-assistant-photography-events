@@ -1,11 +1,12 @@
 {
   "name": "home-assistant-photography-events",
-  "version": "0.11.1",
+  "version": "0.12.0",
   "private": true,
   "description": "Home Assistant integration and Lovelace card for photography-worthy sky and nature events",
   "type": "module",
   "scripts": {
-    "check": "node --check custom_components/photography_events/www/photography-events-card.js && node scripts/check-version.mjs",
+    "check": "node scripts/build-card.mjs --check && node --check custom_components/photography_events/www/photography-events-card.js && node scripts/check-version.mjs",
+    "build": "node scripts/build-card.mjs",
     "test": "node --test && python3 -m unittest discover -s tests -p 'test_*.py'"
   },
   "license": "MIT"

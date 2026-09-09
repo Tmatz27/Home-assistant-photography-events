@@ -48,3 +48,17 @@ These are separate series backtests, not a validation of the combined operationa
 ## Deferred source work
 
 Whale Safe access, reliable dated foliage/bloom entries, behavior-specific wildlife reporting, observed glowing surf, waterfall flow and moonbow viewing geometry still need source work. An authoritative reference link is not presented as an automatically polled confirmation feed. Eclipse path geometry remains unsourced in this release.
+
+## 0.12.0 source verification — 2026-09-08
+
+NASA's solar and lunar 2001–2100 catalogs supply 45 eclipse records for 2026–2035. The central-path index supplies published timed coordinates and widths for all 16 central solar eclipses. The importer stores provenance hashes and converts catalog TD to UT using each published Delta T. These supersede the earlier unsourced-path limitation above.
+
+- Solar catalog: https://eclipse.gsfc.nasa.gov/SEcat5/SE2001-2100.html
+- Lunar catalog: https://eclipse.gsfc.nasa.gov/LEcat5/LE2001-2100.html
+- Central paths: https://eclipse.gsfc.nasa.gov/SEpath/SEpath.html
+
+Central-path screening covers known sites, with a conservative edge margin and approximate driving budget. It does not establish road access, exact solar contacts, partial-only visibility or exhaustive reachable land coverage. Lunar viewing intervals use umbral phases and local altitude rather than visibility at an unrelated part of the night.
+
+Meteor drift rates come from Table 6 of the author's 2026 IMO Meteor Shower Calendar, DOI 10.13140/RG.2.2.36179.08480, available at https://www.researchgate.net/publication/393092133_2026_IMO_Meteor_Shower_Calendar . A 1,920-night comparison found one usable-night verdict and one preferred-night change; the published near-peak drift is therefore applied through each night instead of dismissed as immaterial.
+
+Whale Safe's public get-involved page lists API inquiries, but endpoint, authentication and example-response requirements remain unverified. No speculative client was added. Source retrieval success never refreshes an observation's date or proves that a named wildlife behavior is occurring.

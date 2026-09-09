@@ -45,3 +45,23 @@ Known limits / follow-up:
 - Solar eclipse path-based drive filtering remains blocked on sourced geometry; the explicit standalone timeline still contains the older astronomical implementation and eclipse table through 2028. It has not been silently replaced with invented backend coverage.
 - Ingested email stays fixed-vocabulary data. Its received date does not become an observation date. Reports without explicit phenomenon/date cannot corroborate a named spectacle.
 - Full Home Assistant installation, HACS upgrade and mobile delivery must be checked on the user's instance; no connection to that instance was provided.
+
+
+## 2026-09-07 — 0.12.0 implementation
+
+- Source health now distinguishes failed, stale, waiting and disabled feeds. Individual hotlines have their own status, last-success timestamps and automatic HA Repairs after repeated failures. Affected events show "Data degraded" without changing their evidence level.
+- Failed or partial API responses no longer masquerade as successful empty observations. Valid empty reports remain quiet; failed portions retain cached data with its original dates. Recognizable hotline content is required before a scrape counts as successful.
+- Forecast/outlook labels now survive the compact sensor payload and appear in night comparisons and location details. The existing opportunity-event path now shares the 48-hour limit; long-range outlooks cannot fire it.
+- Follow/Skip is committed to memory only after Store succeeds. Failed saves cannot silently skip an event or consume an unpublished update. Deferred scraper tasks and the parent coordinator shut down cleanly.
+- Added separate real Home Assistant contract tests and an executing CI job. The portable suite still runs without HA. Test dependencies do not alter the integration's runtime requirements.
+- Split the card into 11 source files with a dependency-free concatenation script. CI checks source/artifact synchronization; installation still uses one JS file.
+- Imported 45 NASA eclipses for 2026–2035, including published coordinates for all 16 central solar paths. Corrected TD versus UT labeling. The backend now evaluates lunar umbral-phase visibility and known sites inside central solar paths; the standalone card uses the same catalog. An ocean path point is never treated as a road destination. Partial-only solar visibility, exhaustive road access and exact solar contacts remain outside this model.
+- Added published near-peak meteor radiant drift after the 1,920-night audit found a usable-night change and a preferred-night change. Solar-longitude peak calculations and evidence ceilings are preserved.
+- Tier 2 cancelled at the user's request: no notification blueprint or phone delivery, hassfest, upstream brand submission, watching filter, score/drive sorting or separate this_week mode.
+
+
+See BACKLOG.md for cancelled items, remaining API information and the precise eclipse limits. Validation and publication results are recorded after final checks.
+
+### Local validation completed 2026-09-08
+
+209 portable Python tests and 97 JavaScript tests passed. All 22 isolated Home Assistant contracts passed against HA 2024.11.3 (328 executed tests total). The portable run skips those 22 contracts when HA is absent. Pyflakes, source assembly consistency and version checks passed. Browser review of synthetic examples verified compact rows, full ranges, preferred nights, alternate-night tradeoffs, explicit outlook labels and per-source failure details. CI additionally tests HA 2025.3.4; its result and publication record will be kept in the workspace running log. No connection to the user's installed HA instance was used.

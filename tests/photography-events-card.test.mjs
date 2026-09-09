@@ -140,6 +140,44 @@ const Card = sandbox.customElements.get("photography-events-card");
 const Editor = sandbox.customElements.get("photography-events-card-editor");
 const astro = Card.astro;
 
+test("cloud vocabulary preserves explicit outlook and unknown legacy confidence", () => {
+  assert.equal(Card.backend.cloudLabel({ cloud_is_forecast: true }), "Cloud forecast");
+  assert.match(Card.backend.cloudLabel({ cloud_is_forecast: false }), /outlook.*lower confidence/);
+  assert.match(Card.backend.cloudLabel({ cloud_cover: 10 }), /confidence unavailable/);
+});
+
+test("health strip names the broken source and distinguishes awaiting updates", () => {
+  const html = Card.backend.healthStripHtml({weather: {name: "Weather", state: "failed", failures: 3,
+    last_success: "2026-09-01T10:00:00Z", impact: "Cloud comparisons incomplete."},
+    ebird: {name: "eBird", enabled: false}});
+  assert.match(html, /1 data sources degraded/);
+  assert.match(html, /Weather/);
+  assert.match(html, /Cloud comparisons incomplete/);
+  assert.doesNotMatch(html, /eBird/);
+  assert.match(Card.backend.healthStripHtml({weather: {name: "Weather", state: "waiting"}}), /awaiting first update/);
+});
+
+test("night comparison never calls a distant outlook a forecast", () => {
+  const card = new Card();
+  const night = {start: "2026-09-17T20:00:00Z", end: "2026-09-17T22:00:00Z", cloud_cover: 2,
+    cloud_is_forecast: false, score: 95, duration_minutes: 120, where: "Test"};
+  const html = card._nightComparisonHtml({nights: [night], nightOptions: [night], bestNight: night,
+    startDate: new Date(night.start), endDate: new Date(night.end)});
+  assert.match(html, /Best with a longer-range cloud outlook/);
+  assert.doesNotMatch(html, /Best with a cloud forecast:/);
+  assert.match(card._locationHtml(night), /Cloud outlook \(lower confidence\)/);
+});
+
+test("solar path geometry rejects California and follows published centerline points", () => {
+  const row = astro.ECLIPSES.find(e => e.date.startsWith("2027-08-02"));
+  assert.ok(row.path.length > 50);
+  assert.ok(astro.centralPathMargin(row, [34.742, -120.5724]) < -1000);
+  assert.ok(astro.centralPathMargin(row, row.path[Math.floor(row.path.length / 2)].slice(1,3)) > 50);
+  const wrapping = {path: [["12:00",0,179,100],["12:02",0,-179,100]]};
+  assert.ok(astro.centralPathMargin(wrapping, [0,180]) > 0);
+  assert.ok(astro.centralPathMargin(wrapping, [0,0]) < 0);
+});
+
 /** Evaluate the card in a fresh browser-like context, as a <script> load would. */
 function runSource({ defineThrows = false } = {}) {
   const defined = new Map();

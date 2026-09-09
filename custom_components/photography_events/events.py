@@ -69,6 +69,17 @@ METEOR_SHOWERS: tuple[dict, ...] = (
     {"name": "Ursids", "lambda_sun": 270.66, "zhr": 10, "ra_deg": 217.0, "dec_deg": 76.0},
 )
 
+# IMO 2026 Calendar, Table 6, p26. Differences between the five-day positions
+# either side of maximum, in degrees/day (RA, Dec). The offline audit found
+# changed usable-night verdicts, so ignoring this is not harmless at the gate.
+# DOI 10.13140/RG.2.2.36179.08480; see tools/check_meteor_drift.py for anchors.
+RADIANT_DRIFT = {
+    "Quadrantids": (0.6, -0.2), "Lyrids": (1.0, 0.0),
+    "Eta Aquariids": (0.8, 0.4), "Perseids": (1.2, 0.2),
+    "Orionids": (0.8, 0.0), "Leonids": (0.6, -0.4),
+    "Geminids": (1.0, 0.0), "Ursids": (0.0, -0.4),
+}
+
 MAX_MOON_ILLUMINATION = 0.40
 MIN_RADIANT_ALTITUDE = 30.0
 MAX_ASTRO_CLOUD = 25.0
@@ -216,6 +227,7 @@ class Opportunity:
             "measurement_label", "forecast_note", "access_note", "locations_detail",
             "feed_status", "confidence_note", "coastal_advisories",
             "moon_illumination", "peak_altitude", "cloud_cover", "comparison_through",
+            "cloud_confidence", "cloud_is_forecast", "degraded_sources", "source_health_note",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -358,6 +370,8 @@ def _best_meteor_night(peak: datetime, lat: float, lon: float, shower: dict):
             dec_deg=shower["dec_deg"],
             min_target_altitude=MIN_RADIANT_ALTITUDE,
             max_moon_illumination=MAX_MOON_ILLUMINATION,
+            radiant_drift=RADIANT_DRIFT.get(shower["name"], (0.0, 0.0)),
+            radiant_epoch=peak,
         )
         if window is None:
             continue
@@ -403,6 +417,7 @@ def build_meteor_opportunities(
                 continue
 
             cloud = cloud_lookup(window.start) if cloud_lookup else None
+            lead_days = max(0, (window.start - now).total_seconds() / 86400)
             expected = expected_meteor_rate(shower["zhr"], window.peak_target_altitude)
             reasons = [
                 f"expect roughly {expected}/hr from here (ZHR {shower['zhr']} at the zenith)",
@@ -432,7 +447,7 @@ def build_meteor_opportunities(
                     reasons.append(f"{round(cloud)}% cloud")
                 else:
                     score -= 25
-                    reasons.append(f"{round(cloud)}% cloud forecast")
+                    reasons.append(f"{round(cloud)}% cloud {'forecast' if cloud_is_scorable(lead_days) else 'outlook'}")
 
             ceiling, ceiling_reasons = lunar_ceiling(
                 peak, window.moon_illumination, _moon_down_throughout(window, lat, lon), cloud
@@ -466,7 +481,9 @@ def build_meteor_opportunities(
                         "limited_by": window.limited_by,
                         "zhr": shower["zhr"],
                         "cloud_cover": round(cloud, 1) if cloud is not None else None,
-                    "moon_illumination": round(window.moon_illumination, 3),
+                        "cloud_confidence": cloud_confidence(lead_days) if cloud is not None else None,
+                        "cloud_is_forecast": bool(cloud is not None and cloud_is_scorable(lead_days)),
+                        "moon_illumination": round(window.moon_illumination, 3),
                         "peak_altitude": round(window.peak_target_altitude, 1),
                         "score_ceiling": ceiling,
                     },

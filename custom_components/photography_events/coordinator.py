@@ -26,6 +26,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import json
+from copy import deepcopy
 from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from typing import Any, Awaitable, Callable
@@ -34,11 +35,12 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.util import dt as dt_util
 
 from . import events as event_builder
 from .event_state import EventState, event_id
-from . import waves, spectacles, grunion
+from . import waves, spectacles, grunion, source_health, eclipses
 from homeassistant.helpers.storage import Store
 from . import field_reports as reports_module
 
@@ -124,6 +126,14 @@ ROUTING_HORIZON_HOURS = 48
 ROUTING_SLACK = 1.5
 
 
+class PartialFetchError(ValueError):
+    """Keep successful parts and cached failed parts without claiming success."""
+
+    def __init__(self, message, value):
+        super().__init__(message)
+        self.value = value
+
+
 class PhotographyEventsCoordinator(DataUpdateCoordinator):
     """Polls every source on its own cadence and rebuilds the opportunity list."""
 
@@ -162,11 +172,17 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         self.event_state = EventState()
         self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.events")
         self._choice_lock = asyncio.Lock()
+        self._batch_cache: dict[str, dict] = {}
+        self._deferred_task = None
+        for source in reports_module.REPORT_SOURCES:
+            self._sources[source["id"]] = Source(source["name"], MIN_INTERVAL_FIELD_REPORTS)
 
     async def async_initialize(self):
         self.event_state = EventState(await self._store.async_load())
         self._calibration = await self.hass.async_add_executor_job(
             lambda: json.loads(Path(__file__).with_name("wave_calibration.json").read_text()))
+        self._eclipse_catalog = await self.hass.async_add_executor_job(
+            lambda: json.loads(Path(__file__).with_name("eclipse_catalog.json").read_text(encoding="utf-8")))
 
     async def async_set_event_choice(self, key, choice):
         async with self._choice_lock:
@@ -175,8 +191,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             if not matching:
                 raise ValueError("This occurrence is no longer in the planning outlook")
             expires = max(item.end or item.start for item in matching) + timedelta(days=31)
-            self.event_state.set_choice(key, choice, expires)
-            await self._store.async_save(self.event_state.dump())
+            candidate = EventState(deepcopy(self.event_state.dump()))
+            candidate.set_choice(key, choice, expires)
+            await self._store.async_save(candidate.dump())
+            self.event_state = candidate
             data = dict(self.data or {})
             data["preferences"] = dict(self.event_state.choices)
             action = [item for item in data.get("action_events", []) if self.event_state.choice(event_id(item)) != "skip"]
@@ -217,7 +235,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if latitude is not None and longitude is not None:
             return float(latitude), float(longitude)
         # Home Assistant's own configured location beats the packaged default.
-        if self.hass.config.latitude and self.hass.config.longitude:
+        if self.hass.config.latitude is not None and self.hass.config.longitude is not None:
             return float(self.hass.config.latitude), float(self.hass.config.longitude)
         return DEFAULT_HOME
 
@@ -271,7 +289,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         # that only changes once a week.
         if self.field_reports_enabled and categories & {CATEGORY_BLOOMS, CATEGORY_FOLIAGE}:
             if self._cold_start:
-                self.hass.async_create_task(self._async_deferred_field_reports())
+                if self._deferred_task is None or self._deferred_task.done():
+                    self._deferred_task = self.hass.async_create_task(self._async_deferred_field_reports())
             else:
                 await self._refresh(
                     self._sources["field_reports"], now, lambda: self._fetch_field_reports(session, now)
@@ -300,15 +319,20 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         opportunities = await self._apply_routing(session, now, opportunities)
 
         opportunities = event_builder.within_drive(opportunities, self.max_drive_hours)
+        health = source_health.snapshot(self._sources, self._enabled_sources(), now)
+        source_health.annotate(opportunities, health)
+        self._update_repairs(health)
         action = event_builder.action_window(opportunities, now)
         top = next((item for item in action if self.event_state.choice(event_id(item)) != "skip"
                     and event_builder.alert_candidate(item, self.alert_score)), None)
         async with self._choice_lock:
-            notices = self.event_state.changes(opportunities, now,
-                lambda item: item.start <= now + timedelta(days=60)
+            candidate = EventState(deepcopy(self.event_state.dump()))
+            notices = candidate.changes(opportunities, now,
+                lambda item: item.start <= now + timedelta(hours=48)
                 and event_builder.alert_candidate(item, self.alert_score))
             # Persist before publishing so restart cannot replay a notice.
-            await self._store.async_save(self.event_state.dump())
+            await self._store.async_save(candidate.dump())
+            self.event_state = candidate
         for notice in notices:
             self.hass.bus.async_fire(f"{DOMAIN}_opportunity", {**notice, "entry_id": self.entry.entry_id})
         self._cold_start = False
@@ -321,7 +345,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "preferences": dict(self.event_state.choices),
             "zone_count": len(zones),
             "forecast_zones": sorted(forecasts),
-            "sources": {key: source.status() for key, source in self._sources.items()},
+            "sources": health,
             "routing_endpoint": self._routing_endpoint,
         }
 
@@ -426,6 +450,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             opportunities.extend(spectacles.report_opportunities(self._sources["condor_reports"].value or [], now, self.home))
         if CATEGORY_ASTRO in categories:
             opportunities.extend(spectacles.aurora_opportunities(self._sources["aurora"].value or {}, now, zones, self.event_state))
+            opportunities.extend(await self.hass.async_add_executor_job(
+                eclipses.opportunities, self._eclipse_catalog, now, zones, self.home, self.max_drive_hours))
         return [item for item in opportunities if item.category in categories]
 
     async def _refresh(self, source: Source, now: datetime, fetcher: Callable[[], Awaitable[Any]]) -> None:
@@ -435,6 +461,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         try:
             source.succeed(now, await fetcher())
         except Exception as err:  # noqa: BLE001 - one dead service must not stop the rest
+            if isinstance(err, PartialFetchError):
+                source.value = err.value
             source.fail(now, f"{type(err).__name__}: {err}")
             _LOGGER.warning("%s update failed (%s); keeping last known data", source.name, err)
 
@@ -475,8 +503,66 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         session = async_get_clientsession(self.hass)
         now = dt_util.utcnow()
         await self._refresh(self._sources["field_reports"], now, lambda: self._fetch_field_reports(session, now))
-        if self._sources["field_reports"].value:
-            await self.async_request_refresh()
+        # Publish failures too. Otherwise the first scraper outage is invisible
+        # until an unrelated successful fetch happens to rebuild the sensor.
+        await self.async_request_refresh()
+
+    def _enabled_sources(self):
+        cats = self.enabled_categories
+        enabled = set()
+        if cats & {CATEGORY_ASTRO, CATEGORY_SUNSET}:
+            enabled.add("weather")
+        if CATEGORY_ASTRO in cats:
+            enabled.add("aurora")
+        if CATEGORY_SUNSET in cats:
+            enabled.add("air_quality")
+        if CATEGORY_BIRDS in cats and self.ebird_key:
+            enabled.add("ebird")
+        if cats & {"marine", "mammals", "rare_phenomena", "birds"}:
+            enabled.add("inaturalist")
+        if CATEGORY_MARINE in cats:
+            enabled.add("condor_reports")
+        if CATEGORY_RARE in cats:
+            enabled.update(("grunion", "tides"))
+        if "waves" in cats:
+            enabled.update(("ndbc", "cdip", "surf_alerts"))
+        if CATEGORY_PARKS in cats and self.nps_key:
+            enabled.add("park_alerts")
+        if self.google_key and self.routing_mode != ROUTING_OFF:
+            enabled.add("routing")
+        if self.field_reports_enabled:
+            enabled.update(s["id"] for s in reports_module.REPORT_SOURCES if s["category"] in cats)
+        return enabled
+
+    def _update_repairs(self, health):
+        for key, status in health.items():
+            issue_id = f"{self.entry.entry_id}_{key}"
+            if status["enabled"] and (status["failures"] >= 3 or status["stale"]):
+                ir.async_create_issue(
+                    self.hass, DOMAIN, issue_id, is_fixable=False, is_persistent=False,
+                    severity=ir.IssueSeverity.WARNING, translation_key="source_unavailable",
+                    translation_placeholders={"source": status["name"],
+                        "last_success": status["last_success"] or "Never during this session",
+                        "impact": status["impact"]},
+                )
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    async def async_shutdown(self):
+        await super().async_shutdown()
+        if self._deferred_task is not None:
+            self._deferred_task.cancel()
+            await asyncio.gather(self._deferred_task, return_exceptions=True)
+        for key in self._sources:
+            ir.async_delete_issue(self.hass, DOMAIN, f"{self.entry.entry_id}_{key}")
+
+    def _finish_batch(self, key, successful, failed, *, mapping=False):
+        cache = self._batch_cache.setdefault(key, {})
+        cache.update(successful)
+        value = dict(cache) if mapping else [row for rows in cache.values() for row in rows]
+        if failed:
+            raise PartialFetchError("Could not refresh: " + ", ".join(failed), value)
+        return value
 
     # --- Fetchers -----------------------------------------------------------
 
@@ -550,7 +636,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             async with semaphore:
                 payload = await self._get_json(session, OPEN_METEO_URL, params=params, label=zone["name"])
             parts = weather_scoring.split_multi_location(payload)
-            if not parts:
+            if not parts or len(parts) != 1 + len(order) or any(
+                not isinstance(part.get("hourly"), dict) or not part["hourly"].get("time")
+                for part in parts
+            ):
                 return zone["id"], None
             bundle = {"local": parts[0], "upstream": {}}
             for index, key in enumerate(order, start=1):
@@ -559,12 +648,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             return zone["id"], bundle
 
         results = await asyncio.gather(*(fetch(zone) for zone in zones))
-        found = {zone_id: payload for zone_id, payload in results if payload}
-        if not found:
-            # Every zone failing is a real outage, not a blip, and should show
-            # up as a failed source rather than as an empty forecast set.
-            raise RuntimeError("no zone returned a forecast")
-        return found
+        return self._finish_batch("weather",
+            {key: payload for key, payload in results if payload},
+            [key for key, payload in results if not payload], mapping=True)
 
     async def _fetch_air_quality(self, session, zones: list[dict]) -> dict[str, dict]:
         """Aerosol optical depth per zone - one request for the whole map.
@@ -581,7 +667,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         )
         payload = await self._get_json(session, OPEN_METEO_AIR_QUALITY_URL, params=params, label="air quality")
         parts = weather_scoring.split_multi_location(payload)
-        return {zone["id"]: parts[index] for index, zone in enumerate(zones) if index < len(parts)}
+        if len(parts) != len(zones) or any(not p.get("hourly", {}).get("time") for p in parts):
+            raise ValueError("Air quality returned incomplete forecast locations")
+        return {zone["id"]: parts[index] for index, zone in enumerate(zones)}
 
     async def _fetch_ebird(self, session) -> list:
         """Notable observations across the covered counties, one region at a time."""
@@ -589,7 +677,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         params = wildlife_module.build_ebird_params()
         local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
 
-        sightings: list = []
+        successful, failed = {}, []
         for index, region in enumerate(EBIRD_REGIONS):
             if index:
                 await asyncio.sleep(0.5)
@@ -600,9 +688,12 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 headers=headers,
                 label=f"eBird {region}",
             )
-            if payload:
-                sightings.extend(wildlife_module.parse_ebird(payload, local_tz))
-        return sightings
+            # An empty array is a valid quiet county. A 401/error object is not.
+            if isinstance(payload, list):
+                successful[region] = wildlife_module.parse_ebird(payload, local_tz)
+            else:
+                failed.append(region)
+        return self._finish_batch("ebird", successful, failed)
 
     async def _fetch_inaturalist(self, session, now: datetime) -> list:
         """Recent observations, one taxon at a time and deliberately slowly.
@@ -617,7 +708,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
         taxa = list(dict.fromkeys((*MARINE_TAXA, *phenomena_module.corroboration_taxa())))
 
-        sightings: list = []
+        successful, failed = {}, []
         for index, taxon in enumerate(taxa):
             if index:
                 await asyncio.sleep(INATURALIST_SPACING_SECONDS)
@@ -628,25 +719,31 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 headers=headers,
                 label=f"iNaturalist {taxon}",
             )
-            if payload:
-                sightings.extend(wildlife_module.parse_inaturalist(payload, local_tz))
-        return sightings
+            if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+                successful[taxon] = wildlife_module.parse_inaturalist(payload, local_tz)
+            else:
+                failed.append(str(taxon))
+        return self._finish_batch("inaturalist", successful, failed)
 
     async def _fetch_field_reports(self, session, now: datetime) -> list:
         """Scrape the three hotlines, one at a time, once a day."""
         found: list = []
         for index, source in enumerate(reports_module.REPORT_SOURCES):
+            if source["category"] not in self.enabled_categories:
+                continue
             if index:
                 await asyncio.sleep(GROUP_STAGGER_SECONDS)
-            markup = await self._get_text(session, source["url"], label=source["name"])
-            if not markup:
-                continue
-            try:
-                found.extend(
-                    await self.hass.async_add_executor_job(reports_module.parse_report, markup, source, now)
-                )
-            except Exception:  # noqa: BLE001 - a layout change must not break the update
-                _LOGGER.warning("Could not parse %s; skipping it this cycle", source["name"], exc_info=True)
+            async def fetch(source=source):
+                markup = await self._get_text(session, source["url"], label=source["name"])
+                return await self.hass.async_add_executor_job(reports_module.checked_report, markup, source, now)
+            state = self._sources[source["id"]]
+            await self._refresh(state, now, fetch)
+            found.extend(state.value or [])
+        failed = [s.name for key, s in self._sources.items()
+                  if key in self._enabled_sources() and key in {r["id"] for r in reports_module.REPORT_SOURCES}
+                  and s.failures]
+        if failed:
+            raise PartialFetchError("Could not refresh: " + ", ".join(failed), found)
         return found
 
     async def _fetch_tides(self, session, now: datetime) -> list:
@@ -673,7 +770,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             list(verify_module.NPS_PARK_CODES.values()), self.nps_key
         )
         payload = await self._get_json(session, url, params=params, label="NPS alerts")
-        if payload is None:
+        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
             raise RuntimeError("NPS alerts unavailable")
         return verify_module.parse_nps_alerts(payload)
 
@@ -807,7 +904,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                     # text/plain content type, so the check is waived.
                     return await response.json(content_type=None)
                 return await response.text()
-        except (TimeoutError, asyncio.CancelledError):
+        except TimeoutError:
             _LOGGER.debug("%s timed out", label or url)
             return None
         except Exception:  # noqa: BLE001 - never let one request break a cycle

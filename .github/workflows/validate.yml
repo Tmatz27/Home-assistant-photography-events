@@ -10,6 +10,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  ha-contracts:
+    name: Home Assistant contracts
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - python: "3.12"
+            homeassistant: "2024.11.3"
+          - python: "3.13"
+            homeassistant: "2025.3.4"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install test-only Home Assistant
+        run: python -m pip install -c tests/ha-constraints.txt "homeassistant==${{ matrix.homeassistant }}" beautifulsoup4
+      - name: Exercise coordinator, entities and real Store
+        run: |
+          python -c "import homeassistant.core"
+          python -m unittest discover -s tests -p test_ha_integration.py -v
+
   hacs:
     name: HACS
     runs-on: ubuntu-latest
@@ -49,4 +71,3 @@ jobs:
         run: |
           npm test
           python -m pyflakes custom_components/photography_events/*.py tools/*.py
-

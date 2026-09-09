@@ -83,5 +83,11 @@
         "off": "Off — use the built-in distance estimate"
       }
     }
+  },
+  "issues": {
+    "source_unavailable": {
+      "title": "{source} is not updating",
+      "description": "Last successful update: {last_success}.\n\n{impact}\n\nCheck the source website and any configured API credentials. Retained reports keep their original observation dates; this issue clears after a successful update."
+    }
   }
 }

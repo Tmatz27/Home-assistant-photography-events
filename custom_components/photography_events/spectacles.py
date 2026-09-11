@@ -241,7 +241,31 @@ MOONBOW_LONGITUDE = -119.596
 MOONBOW_HORIZON_DAYS = 365
 
 
-def moonbow_opportunities(now, home, streamflow=None):
+# Donald Olson's team at Texas State published six conditions a Yosemite
+# moonbow needs, after field work at the falls in 2005 and a spherical-trig
+# derivation of the geometry. They are the frame this is measured against, and
+# naming them is more honest than "viewpoint geometry" as a catch-all:
+#
+#   1. Correct rainbow geometry ....... computed (Moon below 42 degrees)
+#   2. Bright moonlight ............... computed (illumination threshold)
+#   3. Dark skies ..................... computed (Sun below -12 degrees)
+#   4. Abundant mist and spray ........ proxied  (USGS discharge, basin-wide)
+#   5. Clear skies .................... forecast (Open-Meteo, near dates only)
+#   6. Moonlight not blocked by cliffs. NOT MODELLED
+#
+# Six is the one that keeps this a search window rather than a prediction. The
+# valley walls shadow the fall for part of every night, and which part depends
+# on the Moon's azimuth against a specific skyline from a specific overlook.
+# That is terrain data this does not have.
+MOONBOW_SOURCES = (
+    "https://www.nps.gov/yose/learn/photosmultimedia/ynn15-moonbows.htm",
+    # Olson's method, and the successor site still publishing predictions.
+    "https://digital.library.txst.edu/items/da48c8d5-77ef-4d6b-b8a3-8cf87ad41138",
+    "https://www.yosemitemoonbow.com/",
+)
+
+
+def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
     """Nights the moonbow geometry actually permits, not a guess near a full Moon.
 
     This replaced a window of "the full Moon, plus or minus two days" in April,
@@ -269,6 +293,7 @@ def moonbow_opportunities(now, home, streamflow=None):
         if end < now:
             continue
         minutes = round((end - start).total_seconds() / 60)
+        cloud = cloud_lookup(start) if cloud_lookup else None
 
         detail = (
             f"Geometry permits a moonbow for {minutes} min: the Moon is "
@@ -278,10 +303,13 @@ def moonbow_opportunities(now, home, streamflow=None):
             "in full darkness."
         )
         awaiting = (
-            "The azimuth the Moon must hold to light one specific fall from one specific "
-            "overlook. That is viewpoint geometry this does not model, so these are nights "
-            "the sky permits a moonbow, not nights one is predicted."
+            "Whether the valley walls shadow the fall at these hours - the sixth of Olson's "
+            "six conditions, and the only one left unmodelled. It depends on the Moon's "
+            "azimuth against a specific skyline from a specific overlook, which is terrain "
+            "data this does not have. So these are nights the sky permits a moonbow, not "
+            "nights one is predicted."
         )
+        score = 58
         reasons = [
             f"{minutes} min of usable geometry",
             f"moon {round(illumination * 100)}% lit, below {round(MOONBOW_MAX_MOON_ALTITUDE)}deg",
@@ -293,13 +321,24 @@ def moonbow_opportunities(now, home, streamflow=None):
         else:
             awaiting = "Current basin flow, plus " + awaiting[4:]
 
+        if cloud is not None:
+            # Olson's first condition, and the only one of the six that a
+            # forecast can answer. Beyond the forecast's reach it is simply
+            # absent rather than assumed clear.
+            reasons.append(f"{round(cloud)}% cloud forecast")
+            if cloud <= 25:
+                score += 8
+            elif cloud >= 60:
+                score -= 15
+
         found.append(Opportunity(
             key=f"moonbow-{start.date()}", title="Yosemite moonbow window", category="rare_phenomena",
             zone_id="yosemite_valley", zone_name="Yosemite Falls - viewpoint still needs confirming",
-            start=start, end=end, score=58, planning_only=True, detail=detail, reasons=reasons,
+            start=start, end=end, score=max(0, min(100, score)), planning_only=True,
+            detail=detail, reasons=reasons,
             drive_hours=estimate_drive_hours(MOONBOW_LATITUDE, MOONBOW_LONGITUDE, home),
             latitude=MOONBOW_LATITUDE, longitude=MOONBOW_LONGITUDE, drive_source="estimate",
-            source_url="https://www.nps.gov/yose/learn/photosmultimedia/ynn15-moonbows.htm",
+            source_url=MOONBOW_SOURCES[0],
             extra={
                 # The *timing* is computed and exact. The *phenomenon* is not
                 # confirmed, and in this codebase "computed" means exact and
@@ -316,13 +355,16 @@ def moonbow_opportunities(now, home, streamflow=None):
                 "streamflow_cfs": round(streamflow.cfs) if streamflow else None,
                 "streamflow_trend": streamflow.trend if streamflow else None,
                 "streamflow_url": streamflow.url if streamflow else None,
+                "cloud_cover": round(cloud, 1) if cloud is not None else None,
+                "verify_urls": list(MOONBOW_SOURCES),
+                "conditions_met": "5 of Olson's 6" if cloud is not None and streamflow is not None else "4 of Olson's 6",
                 "recommended_gear": "Fast wide lens, sturdy tripod, remote release and protection from spray",
             },
         ))
     return found
 
 
-def watch_opportunities(now, home, streamflow=None):
+def watch_opportunities(now, home, streamflow=None, cloud_lookup=None):
     result = []
     for slug, title, category, zone_id, first, last, detail, url in WATCH_TARGETS:
         # Waterfowl has its own sourced refuge coordinates, not Carrizo's.
@@ -342,5 +384,5 @@ def watch_opportunities(now, home, streamflow=None):
                 extra={"verification": "unverified", "awaiting": detail, "special": True,
                        "confidence_note": "Search target; no automatic live confirmation source connected for this phenomenon."},
             ))
-    result.extend(moonbow_opportunities(now, home, streamflow))
+    result.extend(moonbow_opportunities(now, home, streamflow, cloud_lookup))
     return result

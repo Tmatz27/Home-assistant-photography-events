@@ -2,6 +2,42 @@
 
 
 
+
+## 0.13.1
+
+Moonbow conditions measured against the published framework rather than a
+phrase of my own.
+
+Donald Olson's team at Texas State did the field work at Yosemite Falls in 2005
+and derived the geometry in spherical trigonometry. They set out six conditions
+a moonbow needs. Naming them, and saying which are answered, is more useful
+than "viewpoint geometry" as a catch-all:
+
+| Olson's condition | Here |
+| --- | --- |
+| Correct rainbow geometry | computed - Moon below 42 degrees |
+| Bright moonlight | computed - illumination threshold |
+| Dark skies | computed - Sun below -12 degrees |
+| Abundant mist and spray | proxied - USGS discharge, basin-wide |
+| **Clear skies** | **forecast - new in this release** |
+| Moonlight not blocked by cliffs | **not modelled** |
+
+- **Clear skies is now scored.** Yosemite Valley was already a zone with an
+  Open-Meteo forecast; the moonbow rows simply were not reading it. Beyond the
+  forecast's reach cloud is absent rather than assumed clear.
+- Rows carry `conditions_met` ("5 of Olson's 6"), and link Olson's paper and
+  the successor site still publishing per-viewpoint predictions.
+- The sixth condition is named for what it is: the valley walls shadow the fall
+  for part of every night, and which part depends on the Moon's azimuth against
+  a specific skyline from a specific overlook. That is terrain data this does
+  not have, and it is why these remain nights the sky permits a moonbow rather
+  than nights one is predicted.
+
+Also recorded: no central solar eclipse path in the 2026-2035 catalogue comes
+within 4,100 km of here, so an empty solar list is the correct answer for the
+whole range rather than a broken feed. `TRACKING.md` states it and regenerates
+it from the catalogue.
+
 ## 0.13.0
 
 Two of the three unknowns behind a Yosemite moonbow are now answered.

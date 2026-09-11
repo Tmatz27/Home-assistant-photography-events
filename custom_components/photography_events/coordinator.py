@@ -445,7 +445,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
         opportunities.extend(
             await self.hass.async_add_executor_job(
-                spectacles.watch_opportunities, now, self.home, self._fresh_streamflow(now)
+                spectacles.watch_opportunities, now, self.home, self._fresh_streamflow(now),
+                _make_cloud_lookup((forecasts.get("yosemite_valley") or {}).get("local"))
             )
         )
         if "waves" in categories:

@@ -367,6 +367,26 @@ class TestMoonbowOpportunities(unittest.TestCase):
             self.assertTrue(item.planning_only)
             self.assertIn("azimuth", item.extra["awaiting"])
 
+    def test_clear_skies_is_olsons_first_condition_and_now_forecast(self):
+        """Five of the six published conditions are answered; the sixth is named."""
+        reading = streamflow.parse_streamflow(
+            _usgs([("2026-09-06T06:00:00+00:00", 1150)]), streamflow.GAUGES["yosemite_valley"])
+        clear = spectacles.moonbow_opportunities(
+            NOW, test_integration.const.DEFAULT_HOME, reading, lambda _when: 5.0)
+        murky = spectacles.moonbow_opportunities(
+            NOW, test_integration.const.DEFAULT_HOME, reading, lambda _when: 85.0)
+        blind = spectacles.moonbow_opportunities(NOW, test_integration.const.DEFAULT_HOME, reading)
+
+        self.assertGreater(clear[0].score, murky[0].score, "cloud has to move the score")
+        self.assertEqual(clear[0].extra["conditions_met"], "5 of Olson's 6")
+        self.assertIsNone(blind[0].extra["cloud_cover"], "beyond the forecast, absent not assumed clear")
+        self.assertEqual(blind[0].extra["conditions_met"], "4 of Olson's 6")
+
+        # The one that is not modelled is named, on every row, as terrain.
+        for item in clear + murky + blind:
+            self.assertIn("valley walls", item.extra["awaiting"])
+            self.assertIn("yosemitemoonbow.com", " ".join(item.extra["verify_urls"]))
+
     def test_flow_is_reported_when_measured_and_named_when_missing(self):
         reading = streamflow.parse_streamflow(
             _usgs([("2026-09-06T06:00:00+00:00", 1150)]), streamflow.GAUGES["yosemite_valley"])

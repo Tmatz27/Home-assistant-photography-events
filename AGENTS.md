@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.12.0.** `main` is the working branch; there is no PR flow.
+**Current version: 0.13.0.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -249,6 +249,7 @@ yet.").
 | `waves.py` | NDBC buoy measurements + CDIP coastal models, kept distinct. `recent_forecast_metadata()` refuses a freshly downloaded stale model run. |
 | `spectacles.py` | Condor reports, aurora from solar-wind input, watch targets. Every entry carries an `evidence_note` naming what is and is not confirmed. |
 | `grunion.py` | Published CDFW run schedule, Pacific local time including DST. |
+| `streamflow.py` | USGS 11264500 discharge. A basin proxy for Yosemite's falls, never a measurement of one — read its docstring before touching any string it produces. |
 | `event_state.py` | Follow/Skip persistence for occurrences. |
 | `parks.py` | 10 parks, seasons, dog rules. |
 | `routing.py` | Google Routes API + legacy Distance Matrix. |

@@ -99,6 +99,7 @@ from .const import (
 )
 from .throttle import Source
 from . import phenomena as phenomena_module
+from . import streamflow as streamflow_module
 from . import weather_scoring
 from .weather_scoring import build_air_quality_params, build_open_meteo_params
 
@@ -147,6 +148,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         self.entry = entry
         self._sources: dict[str, Source] = {
             "grunion": Source("CDFW expected grunion schedule", 1440),
+            # Snowmelt moves over hours, not minutes, and this is a small
+            # volunteer-scale service run by a public agency.
+            "streamflow": Source("USGS Merced River discharge", 180),
             "ndbc": Source("NOAA offshore waves", 30),
             "cdip": Source("CDIP coastal forecast", 180),
             "surf_alerts": Source("NWS coastal alerts", 60),
@@ -301,6 +305,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if CATEGORY_RARE in categories:
             await self._refresh(self._sources["grunion"], now, lambda: self._fetch_grunion(session))
             await self._refresh(self._sources["tides"], now, lambda: self._fetch_tides(session, now))
+            await self._refresh(self._sources["streamflow"], now, lambda: self._fetch_streamflow(session))
         if CATEGORY_PARKS in categories and self.nps_key:
             await self._refresh(self._sources["park_alerts"], now, lambda: self._fetch_park_alerts(session))
 
@@ -438,7 +443,11 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 )
             )
 
-        opportunities.extend(await self.hass.async_add_executor_job(spectacles.watch_opportunities, now, self.home))
+        opportunities.extend(
+            await self.hass.async_add_executor_job(
+                spectacles.watch_opportunities, now, self.home, self._fresh_streamflow(now)
+            )
+        )
         if "waves" in categories:
             # A failed download cannot keep a forecast authoritative indefinitely.
             source = self._sources["cdip"]
@@ -651,6 +660,30 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         return self._finish_batch("weather",
             {key: payload for key, payload in results if payload},
             [key for key, payload in results if not payload], mapping=True)
+
+    async def _fetch_streamflow(self, session) -> dict:
+        """Measured discharge for the gauges a phenomenon depends on.
+
+        Allowed to fail entirely: a moonbow window is computed from geometry
+        and merely *annotated* with flow, so losing this costs a sentence
+        rather than the window.
+        """
+        found: dict = {}
+        for key, gauge in streamflow_module.GAUGES.items():
+            url, params = streamflow_module.build_streamflow_request(gauge["site"])
+            payload = await self._get_json(session, url, params=params, label=f"USGS {gauge['site']}")
+            reading = streamflow_module.parse_streamflow(payload, gauge) if payload else None
+            if reading is not None:
+                found[key] = reading
+        if not found:
+            raise RuntimeError("no gauge returned a reading")
+        return found
+
+    def _fresh_streamflow(self, now: datetime):
+        """The Yosemite gauge, only while its reading still describes today."""
+        readings = self._sources["streamflow"].value or {}
+        reading = readings.get("yosemite_valley")
+        return reading if reading is not None and reading.fresh(now) else None
 
     async def _fetch_air_quality(self, session, zones: list[dict]) -> dict[str, dict]:
         """Aerosol optical depth per zone - one request for the whole map.

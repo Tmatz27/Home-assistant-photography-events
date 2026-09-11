@@ -1,6 +1,54 @@
 # Changelog
 
 
+
+## 0.13.0
+
+Two of the three unknowns behind a Yosemite moonbow are now answered.
+
+### The nights are computed, not guessed
+
+Moonbow candidates were "the full Moon, plus or minus two days, in April, May
+or June". That included nights when the Moon never drops below 42 degrees while
+it is dark - on which the bow is underfoot the whole time - and excluded
+perfectly good nights for falling in the wrong month.
+
+A moonbow is optics. The bow is a circle of radius ~42 degrees about the
+antilunar point, which sits as far below the horizon as the Moon sits above it,
+so the geometry only permits a bow while the Moon is **below 42 degrees** and
+still high enough to light the spray. Add a Moon bright enough to see by and a
+sky dark enough to see it in, and the nights fall out of the ephemeris.
+
+Reported as the **longest contiguous** run, not first-to-last sample. Near a
+full Moon the geometry opens after moonrise, shuts while the Moon is too high,
+then reopens as it descends - spanning that gap would report a nine-hour window
+across hours with nothing to photograph, which is the same mistake as calling
+astronomical darkness a Milky Way window.
+
+### The water is measured
+
+New source: **USGS 11264500, Merced River at Happy Isles Bridge** - the gauge
+every Yosemite flow page quotes, continuous since 1915, free and keyless.
+
+It is reported as what it is. The gauge drains 181 square miles of the upper
+Merced basin; **Yosemite Falls is on Yosemite Creek and Horsetail Fall on a
+small ephemeral pocket atop El Capitan** - different drainages, either of which
+can be dry when the Merced is healthy. So this is a basin snowmelt proxy and
+every string says so. No flow-to-spray threshold is wired, because none was
+found to source and inventing one is the failure this project exists to avoid.
+
+Trend is measured from the start of the window rather than against its peak: a
+reading a whisker below the last three days' maximum was reading as "rising"
+when the basin had been flat.
+
+### Still not claimed
+
+The timing is computed; the phenomenon is not confirmed. Those are two facts and
+they now live in two fields - `timing_basis` and `verification` - because
+collapsing them is how a search lead starts reading as a promise. The azimuth
+the Moon must hold to light one specific fall from one specific overlook remains
+unmodelled, and is named on every row.
+
 ## 0.12.0
 
 - Source health now distinguishes failed, stale, waiting and disabled feeds. Individual hotlines have their own status, last-success timestamps and automatic HA Repairs after repeated failures. Affected events show "Data degraded" without changing their evidence level.

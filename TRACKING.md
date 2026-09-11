@@ -4,7 +4,7 @@ _Generated from the code by `tools/generate_tracking_inventory.py`. Every date,
 evidence level and link below is read out of the modules that run, so this file
 cannot drift from the thing it describes._
 
-Generated 2026-09-08.
+Generated 2026-09-11.
 
 ## How to read this
 

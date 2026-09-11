@@ -142,7 +142,187 @@ WATCH_TARGETS = (
 )
 
 
-def watch_opportunities(now, home):
+
+# --- Moonbow geometry ------------------------------------------------------
+#
+# A lunar rainbow obeys the same optics as a solar one: the bow is a circle of
+# radius about 42 degrees centred on the *antilunar* point, directly opposite
+# the Moon. Two consequences decide whether a night is possible at all, and
+# both are arithmetic rather than folklore:
+#
+# - The antilunar point sits as far below the horizon as the Moon sits above
+#   it. So the bow only clears the ground when the Moon is **below 42 degrees**
+#   of altitude. A high Moon puts the entire bow underfoot.
+# - The Moon still has to be up, and high enough to light the spray rather than
+#   being screened by the valley wall. Below a few degrees there is nothing on
+#   the falls at all.
+#
+# Add a bright Moon - moonbows are faint enough that the eye sees them white,
+# and a gibbous Moon does not deliver the light - and full darkness, and the
+# candidate nights fall out of the ephemeris instead of being guessed at as
+# "within two days of the full Moon", which is what this replaced.
+#
+# What is still not modelled, and is named rather than papered over: the
+# azimuth the Moon has to occupy to light one specific fall from one specific
+# overlook. That is viewpoint geometry nobody has published in a form worth
+# computing against, and it is the difference between a possible night and a
+# predicted moonbow.
+MOONBOW_MIN_ILLUMINATION = 0.90
+MOONBOW_MAX_MOON_ALTITUDE = 42.0
+MOONBOW_MIN_MOON_ALTITUDE = 6.0
+# Full darkness, so the bow is not washed out by twilight.
+MOONBOW_MAX_SUN_ALTITUDE = -12.0
+MOONBOW_SAMPLE_MINUTES = 20
+# A window shorter than this is a sampling artefact at the edge of the
+# geometry, not an evening. Yosemite moonbows are a late-evening to small-hours
+# phenomenon, so the search has to span a whole local night rather than stopping
+# at midnight - an earlier version clipped every window at 01:00 local and
+# reported the best nights of the year as ending exactly then, which is the
+# signature of a search boundary rather than of the sky.
+MOONBOW_MIN_MINUTES = 30
+
+
+def moonbow_window(night, latitude, longitude):
+    """The span on one night when the geometry actually permits a moonbow.
+
+    Returns (start, end, peak_illumination) or None, for the **longest
+    contiguous** run of qualifying samples.
+
+    Contiguous is load-bearing. Near a full Moon the geometry opens after
+    moonrise, shuts again while the Moon is higher than 42 degrees and the bow
+    is underfoot, then reopens as it descends. Taking the first and last
+    qualifying sample reports one nine-hour window across a gap in the middle
+    when there is nothing to photograph - which is the same mistake as calling
+    astronomical darkness a Milky Way window, made about a different object.
+    """
+    lat = math.radians(latitude)
+    lon = math.radians(longitude)
+    # Anchored on local mid-morning and run for a full 24 hours, so exactly one
+    # night falls inside and neither end of it is cut off.
+    start = night.replace(hour=18, minute=0, second=0, microsecond=0)
+    step = timedelta(minutes=MOONBOW_SAMPLE_MINUTES)
+
+    runs: list[list[tuple]] = []
+    current: list[tuple] = []
+    moment = start
+    while moment <= start + timedelta(hours=24):
+        illumination, _phase, _distance = astronomy.moon_illumination(moment)
+        qualifies = False
+        if illumination >= MOONBOW_MIN_ILLUMINATION:
+            moon = math.degrees(astronomy.moon_altitude(moment, lat, lon))
+            sun = math.degrees(astronomy.sun_altitude(moment, lat, lon))
+            qualifies = (
+                MOONBOW_MIN_MOON_ALTITUDE <= moon <= MOONBOW_MAX_MOON_ALTITUDE
+                and sun <= MOONBOW_MAX_SUN_ALTITUDE
+            )
+        if qualifies:
+            current.append((moment, illumination))
+        elif current:
+            runs.append(current)
+            current = []
+        moment += step
+    if current:
+        runs.append(current)
+
+    best = None
+    for run in runs:
+        length = run[-1][0] - run[0][0]
+        if length < timedelta(minutes=MOONBOW_MIN_MINUTES):
+            continue
+        if best is None or length > best[-1][0] - best[0][0]:
+            best = run
+    if best is None:
+        return None
+    return best[0][0], best[-1][0], max(value for _moment, value in best)
+
+
+MOONBOW_LATITUDE = 37.756
+MOONBOW_LONGITUDE = -119.596
+MOONBOW_HORIZON_DAYS = 365
+
+
+def moonbow_opportunities(now, home, streamflow=None):
+    """Nights the moonbow geometry actually permits, not a guess near a full Moon.
+
+    This replaced a window of "the full Moon, plus or minus two days" in April,
+    May and June. That was a reasonable guess and it was still a guess: it
+    included nights when the Moon never drops below 42 degrees while it is dark,
+    on which the bow is underfoot the entire time, and it excluded perfectly good
+    nights in March and July because of the month they fell in.
+
+    Two of the three unknowns the old entry listed are now answered. The
+    geometry is computed. The water is measured - by a gauge on the Merced,
+    which is the basin these falls drain and not the falls themselves, and the
+    text says so in as many words. The third, the azimuth the Moon must occupy
+    to light one specific fall from one specific overlook, is still not modelled
+    and is still named.
+    """
+    found = []
+    horizon = now + timedelta(days=MOONBOW_HORIZON_DAYS)
+    night = now - timedelta(days=1)
+    while night <= horizon:
+        window = moonbow_window(night, MOONBOW_LATITUDE, MOONBOW_LONGITUDE)
+        night += timedelta(days=1)
+        if window is None:
+            continue
+        start, end, illumination = window
+        if end < now:
+            continue
+        minutes = round((end - start).total_seconds() / 60)
+
+        detail = (
+            f"Geometry permits a moonbow for {minutes} min: the Moon is "
+            f"{round(illumination * 100)}% lit and stays between "
+            f"{round(MOONBOW_MIN_MOON_ALTITUDE)} and {round(MOONBOW_MAX_MOON_ALTITUDE)} degrees, "
+            "which is the band that puts the bow above the ground rather than underfoot, "
+            "in full darkness."
+        )
+        awaiting = (
+            "The azimuth the Moon must hold to light one specific fall from one specific "
+            "overlook. That is viewpoint geometry this does not model, so these are nights "
+            "the sky permits a moonbow, not nights one is predicted."
+        )
+        reasons = [
+            f"{minutes} min of usable geometry",
+            f"moon {round(illumination * 100)}% lit, below {round(MOONBOW_MAX_MOON_ALTITUDE)}deg",
+        ]
+
+        if streamflow is not None:
+            detail += " " + streamflow.summary()
+            reasons.append(f"{streamflow.name.split(' at ')[0]} {round(streamflow.cfs):,} cfs, {streamflow.trend}")
+        else:
+            awaiting = "Current basin flow, plus " + awaiting[4:]
+
+        found.append(Opportunity(
+            key=f"moonbow-{start.date()}", title="Yosemite moonbow window", category="rare_phenomena",
+            zone_id="yosemite_valley", zone_name="Yosemite Falls - viewpoint still needs confirming",
+            start=start, end=end, score=58, planning_only=True, detail=detail, reasons=reasons,
+            drive_hours=estimate_drive_hours(MOONBOW_LATITUDE, MOONBOW_LONGITUDE, home),
+            latitude=MOONBOW_LATITUDE, longitude=MOONBOW_LONGITUDE, drive_source="estimate",
+            source_url="https://www.nps.gov/yose/learn/photosmultimedia/ynn15-moonbows.htm",
+            extra={
+                # The *timing* is computed and exact. The *phenomenon* is not
+                # confirmed, and in this codebase "computed" means exact and
+                # free to alert - which a moonbow is not, because the viewpoint
+                # azimuth is unmodelled and the water is only proxied. Two
+                # different facts, two different fields, and collapsing them
+                # into one is how a search lead starts reading as a promise.
+                "verification": "unverified",
+                "timing_basis": "computed geometry",
+                "special": True,
+                "duration_minutes": minutes,
+                "moon_illumination": round(illumination, 3),
+                "awaiting": awaiting,
+                "streamflow_cfs": round(streamflow.cfs) if streamflow else None,
+                "streamflow_trend": streamflow.trend if streamflow else None,
+                "streamflow_url": streamflow.url if streamflow else None,
+                "recommended_gear": "Fast wide lens, sturdy tripod, remote release and protection from spray",
+            },
+        ))
+    return found
+
+
+def watch_opportunities(now, home, streamflow=None):
     result = []
     for slug, title, category, zone_id, first, last, detail, url in WATCH_TARGETS:
         # Waterfowl has its own sourced refuge coordinates, not Carrizo's.
@@ -162,18 +342,5 @@ def watch_opportunities(now, home):
                 extra={"verification": "unverified", "awaiting": detail, "special": True,
                        "confidence_note": "Search target; no automatic live confirmation source connected for this phenomenon."},
             ))
-    for full in astronomy.full_moons_between(now - timedelta(days=2), now + timedelta(days=365)):
-        if full.month not in (4, 5, 6):
-            continue
-        result.append(Opportunity(
-            key=f"moonbow-{full.date()}", title="Yosemite moonbow candidate nights", category="rare_phenomena",
-            zone_id="yosemite_valley", zone_name="Yosemite Falls — viewing position needs confirmation",
-            start=full-timedelta(days=2), end=full+timedelta(days=2), score=55, planning_only=True,
-            detail="Full Moon timing is calculated. These surrounding nights are a search window, not a predicted moonbow: viewpoint geometry, flowing water, spray and clear moonlight must all align.",
-            drive_hours=estimate_drive_hours(37.756, -119.596, home), latitude=37.756, longitude=-119.596,
-            source_url="https://www.nps.gov/yose/learn/photosmultimedia/ynn15-moonbows.htm",
-            extra={"verification": "unverified", "special": True,
-                   "awaiting": "Published viewpoint-specific moonbow times and current waterfall conditions. No live confirmation connected.",
-                   "recommended_gear": "Fast wide lens, sturdy tripod, remote release and protection from spray"},
-        ))
+    result.extend(moonbow_opportunities(now, home, streamflow))
     return result

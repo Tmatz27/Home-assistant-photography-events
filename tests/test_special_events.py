@@ -6,7 +6,8 @@ from datetime import datetime, timedelta, timezone
 import test_integration  # Load the pure package without Home Assistant.
 from photography_events.event_state import EventState
 from photography_events.events import Opportunity, alert_candidate, action_window
-from photography_events import spectacles, waves, grunion
+from photography_events import spectacles, streamflow, waves, grunion
+import math
 
 NOW = datetime(2026, 9, 6, 7, tzinfo=timezone.utc)
 
@@ -213,3 +214,167 @@ class TestCardEvidenceRegression(unittest.TestCase):
         moons = [e for e in spectacles.watch_opportunities(NOW, test_integration.const.DEFAULT_HOME) if e.key.startswith("moonbow-")]
         self.assertTrue(moons)
         self.assertTrue(all(e.extra["verification"] == "unverified" for e in moons))
+
+
+def _usgs(readings):
+    """An instantaneous-values payload in the shape USGS actually returns."""
+    return {"value": {"timeSeries": [{"values": [{"value": [
+        {"dateTime": moment, "value": str(value)} for moment, value in readings
+    ]}]}]}}
+
+
+class TestStreamflow(unittest.TestCase):
+    """Measured discharge, and the care taken not to call it a waterfall."""
+
+    GAUGE = streamflow.GAUGES["yosemite_valley"]
+
+    def test_parses_the_latest_reading_and_its_trend(self):
+        reading = streamflow.parse_streamflow(_usgs([
+            ("2026-05-01T00:00:00+00:00", 900),
+            ("2026-05-01T06:00:00+00:00", 1200),
+            ("2026-05-01T12:00:00+00:00", 1180),
+        ]), self.GAUGE)
+        self.assertEqual(reading.cfs, 1180)
+        self.assertEqual(reading.window_peak_cfs, 1200)
+        self.assertEqual(reading.trend, "rising", "900 to 1180 across the window is rising")
+        self.assertEqual(reading.observed_at.hour, 12)
+
+    def test_at_the_peak_is_not_the_same_as_rising(self):
+        """Measured from the start of the window, not against its highest value.
+
+        Against the peak, a reading a whisker below the last three days' maximum
+        reads as "rising" when the basin has in fact been flat.
+        """
+        flat = streamflow.parse_streamflow(_usgs([
+            ("2026-06-01T00:00:00+00:00", 1200),
+            ("2026-06-01T06:00:00+00:00", 1240),
+            ("2026-06-01T12:00:00+00:00", 1210),
+        ]), self.GAUGE)
+        self.assertEqual(flat.trend, "steady")
+        self.assertEqual(flat.window_peak_cfs, 1240)
+
+    def test_trend_separates_snowmelt_from_recession(self):
+        rising = streamflow.parse_streamflow(_usgs([
+            ("2026-05-01T00:00:00+00:00", 700), ("2026-05-01T12:00:00+00:00", 1400)]), self.GAUGE)
+        falling = streamflow.parse_streamflow(_usgs([
+            ("2026-07-01T00:00:00+00:00", 1400), ("2026-07-01T12:00:00+00:00", 400)]), self.GAUGE)
+        self.assertEqual(rising.trend, "rising")
+        self.assertEqual(falling.trend, "falling")
+
+    def test_the_missing_data_sentinel_is_not_a_flood(self):
+        """USGS writes -999999 for a gap. Read as discharge it is a catastrophe."""
+        reading = streamflow.parse_streamflow(_usgs([
+            ("2026-05-01T00:00:00+00:00", -999999),
+            ("2026-05-01T06:00:00+00:00", 850),
+        ]), self.GAUGE)
+        self.assertEqual(reading.cfs, 850)
+        self.assertEqual(reading.window_peak_cfs, 850)
+
+    def test_a_stale_reading_is_not_about_today(self):
+        reading = streamflow.parse_streamflow(
+            _usgs([("2026-05-01T12:00:00+00:00", 900)]), self.GAUGE)
+        self.assertTrue(reading.fresh(datetime(2026, 5, 1, 18, tzinfo=timezone.utc)))
+        self.assertFalse(reading.fresh(datetime(2026, 5, 4, 12, tzinfo=timezone.utc)))
+
+    def test_the_summary_never_claims_to_have_measured_a_waterfall(self):
+        """The gauge is on the Merced. Yosemite Falls is a different drainage."""
+        reading = streamflow.parse_streamflow(
+            _usgs([("2026-05-01T12:00:00+00:00", 1100)]), self.GAUGE)
+        text = reading.summary()
+        self.assertIn("Merced", text)
+        self.assertIn("not the fall itself", text)
+        self.assertNotIn("Yosemite Falls is", text)
+
+    def test_garbage_yields_nothing_rather_than_a_guess(self):
+        for payload in (None, {}, {"value": {}}, {"value": {"timeSeries": []}}):
+            self.assertIsNone(streamflow.parse_streamflow(payload, self.GAUGE))
+
+    def test_the_request_asks_for_discharge_without_a_key(self):
+        url, params = streamflow.build_streamflow_request("11264500")
+        self.assertIn("waterservices.usgs.gov", url)
+        self.assertEqual(params["parameterCd"], "00060")
+        self.assertEqual(params["sites"], "11264500")
+        self.assertNotIn("api_key", params)
+
+
+class TestMoonbowGeometry(unittest.TestCase):
+    """A moonbow is optics, not folklore, so the nights are computed.
+
+    The bow is a circle of radius ~42 degrees about the antilunar point, which
+    sits as far below the horizon as the Moon sits above it. So a Moon higher
+    than 42 degrees puts the whole bow underfoot.
+    """
+
+    LAT, LON = spectacles.MOONBOW_LATITUDE, spectacles.MOONBOW_LONGITUDE
+
+    def _windows(self, year, first, last):
+        found = []
+        night = datetime(year, first, 1, tzinfo=timezone.utc)
+        while night < datetime(year, last, 1, tzinfo=timezone.utc):
+            window = spectacles.moonbow_window(night, self.LAT, self.LON)
+            if window:
+                found.append(window)
+            night += timedelta(days=1)
+        return found
+
+    def test_the_moon_stays_inside_the_band_for_the_whole_window(self):
+        """The bug this guards: taking the first and last qualifying sample.
+
+        Near a full Moon the geometry opens after moonrise, shuts while the
+        Moon is above 42 degrees, then reopens as it descends. Spanning that
+        reports one nine-hour window across a gap with nothing to photograph -
+        the same error as calling astronomical darkness a Milky Way window.
+        """
+        lat, lon = math.radians(self.LAT), math.radians(self.LON)
+        for start, end, _illumination in self._windows(2027, 3, 6):
+            moment = start
+            while moment <= end:
+                altitude = math.degrees(spectacles.astronomy.moon_altitude(moment, lat, lon))
+                self.assertGreaterEqual(altitude, spectacles.MOONBOW_MIN_MOON_ALTITUDE - 1.0)
+                self.assertLessEqual(
+                    altitude, spectacles.MOONBOW_MAX_MOON_ALTITUDE + 1.0,
+                    f"the bow is underfoot at {altitude:.1f}deg inside a reported window",
+                )
+                moment += timedelta(minutes=20)
+
+    def test_windows_cluster_on_bright_moons_and_are_never_trivial(self):
+        windows = self._windows(2027, 3, 6)
+        self.assertTrue(windows)
+        for start, end, illumination in windows:
+            self.assertGreaterEqual(illumination, spectacles.MOONBOW_MIN_ILLUMINATION)
+            self.assertGreaterEqual(
+                (end - start).total_seconds() / 60, spectacles.MOONBOW_MIN_MINUTES,
+                "a sampling artefact at the edge of the geometry is not an evening",
+            )
+
+    def test_a_dark_moon_produces_nothing_at_all(self):
+        """Not a low score - nothing. There is no light to make a bow from."""
+        for offset in range(0, 6):
+            night = datetime(2027, 4, 4, tzinfo=timezone.utc) + timedelta(days=offset)
+            window = spectacles.moonbow_window(night, self.LAT, self.LON)
+            if window:
+                self.assertGreaterEqual(window[2], spectacles.MOONBOW_MIN_ILLUMINATION)
+
+
+class TestMoonbowOpportunities(unittest.TestCase):
+    def test_timing_is_computed_but_the_phenomenon_is_not_confirmed(self):
+        """Two different facts. Collapsing them is how a lead reads as a promise."""
+        built = spectacles.moonbow_opportunities(NOW, test_integration.const.DEFAULT_HOME)
+        self.assertTrue(built)
+        for item in built:
+            self.assertEqual(item.extra["verification"], "unverified")
+            self.assertEqual(item.extra["timing_basis"], "computed geometry")
+            self.assertTrue(item.planning_only)
+            self.assertIn("azimuth", item.extra["awaiting"])
+
+    def test_flow_is_reported_when_measured_and_named_when_missing(self):
+        reading = streamflow.parse_streamflow(
+            _usgs([("2026-09-06T06:00:00+00:00", 1150)]), streamflow.GAUGES["yosemite_valley"])
+        with_flow = spectacles.moonbow_opportunities(NOW, test_integration.const.DEFAULT_HOME, reading)
+        without = spectacles.moonbow_opportunities(NOW, test_integration.const.DEFAULT_HOME)
+
+        self.assertIn("1,150 cfs", with_flow[0].detail)
+        self.assertIn("not the fall itself", with_flow[0].detail)
+        self.assertEqual(with_flow[0].extra["streamflow_cfs"], 1150)
+        self.assertIsNone(without[0].extra["streamflow_cfs"])
+        self.assertIn("basin flow", without[0].extra["awaiting"])

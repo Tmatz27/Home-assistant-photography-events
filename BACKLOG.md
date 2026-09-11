@@ -69,15 +69,24 @@ reusing this one's thresholds.
 Also open: verified elevated viewpoints for big-swell photography. Currently
 there is swell data and no confirmed place to stand.
 
-### 3. Moonbow geometry and waterfall flow
+### 3. Moonbow viewpoint azimuth, and a sourced flow threshold
 
-Moonbows need viewpoint-specific geometry (moon altitude and azimuth relative to
-a specific overlook and spray cone) plus confirmation that water is actually
-flowing. Neither exists. The targets are correctly labelled as search leads;
-promoting them needs both halves, and the flow half has no feed.
+Two of the three unknowns closed in 0.13.0: the **altitude** geometry is
+computed (the bow only clears the ground while the Moon is below 42 degrees),
+and the water is **measured** by USGS 11264500 on the Merced.
 
-The same gap covers firefall: seasonal light geometry is solved, flowing water
-and clear western horizon are not.
+What is left is narrower and both halves need sourcing, not coding:
+
+- **Viewpoint azimuth.** Which bearing the Moon must hold to light one specific
+  fall from one specific overlook. Nobody has published this in a form worth
+  computing against, and it is the difference between "the sky permits a
+  moonbow" and "a moonbow is predicted".
+- **A flow-to-spray threshold.** The gauge reads the Merced; Yosemite Creek and
+  Horsetail's catchment are separate drainages. No published cfs figure was
+  found that says "above this, the falls are running". Do not invent one.
+
+Firefall keeps the same shape: light geometry solved, flowing water now proxied,
+clear western horizon still unmodelled.
 
 ### 4. Solar eclipse model limits
 

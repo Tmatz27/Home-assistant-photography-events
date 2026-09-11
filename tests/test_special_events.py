@@ -378,3 +378,64 @@ class TestMoonbowOpportunities(unittest.TestCase):
         self.assertEqual(with_flow[0].extra["streamflow_cfs"], 1150)
         self.assertIsNone(without[0].extra["streamflow_cfs"])
         self.assertIn("basin flow", without[0].extra["awaiting"])
+
+
+class TestEclipseReachability(unittest.TestCase):
+    """An ocean coordinate is not a place you can stand.
+
+    The temptation, when a decade of solar eclipses produces no rows, is to
+    loosen the test until something appears - to accept the nearest centreline
+    sample as a destination. That would put a trip on the calendar to a point in
+    the Pacific. The empty list is the correct answer, and these lock in why.
+    """
+
+    def setUp(self):
+        import json
+        from pathlib import Path
+        root = Path(test_integration.__file__).resolve().parent.parent / "custom_components" / "photography_events"
+        self.catalog = json.loads((root / "eclipse_catalog.json").read_text(encoding="utf-8"))
+
+    def test_no_central_solar_path_is_drivable_from_home(self):
+        """A fact about this decade, not a bug. Recorded so it stays visible."""
+        from photography_events.wildlife import haversine_km
+        home = test_integration.const.DEFAULT_HOME
+        paths = [row for row in self.catalog["events"] if row.get("kind") == "solar" and row.get("path")]
+        self.assertGreaterEqual(len(paths), 16, "catalogue should carry the sampled central paths")
+
+        nearest = min(
+            haversine_km(home[0], home[1], point[1], point[2])
+            for row in paths for point in row["path"]
+        )
+        self.assertGreater(
+            nearest, 3000,
+            "a central path has come within driving range - the vetted-site list now "
+            "needs real places inside it, and this test needs rewriting rather than deleting",
+        )
+
+    def test_a_site_outside_the_corridor_is_refused(self):
+        from photography_events import eclipses
+        row = next(r for r in self.catalog["events"] if r.get("kind") == "solar" and r.get("path"))
+        inside = row["path"][len(row["path"]) // 2]
+        self.assertGreaterEqual(
+            eclipses.central_path_margin(row, (inside[1], inside[2])), 0,
+            "the centreline itself must be inside its own corridor",
+        )
+        self.assertLess(
+            eclipses.central_path_margin(row, test_integration.const.DEFAULT_HOME), 0,
+            "home is thousands of km away and must never read as inside a path",
+        )
+
+    def test_penumbral_lunar_eclipses_never_reach_the_calendar(self):
+        """A camera records a full Moon. Listing them teaches you to skip the row."""
+        from photography_events import eclipses
+        built = eclipses.opportunities(
+            self.catalog, NOW, list(test_integration.const.TARGET_ZONES),
+            test_integration.const.DEFAULT_HOME, max_drive_hours=6.0, horizon_days=3650,
+        )
+        self.assertFalse([item for item in built if "penumbral" in item.title.lower()])
+        self.assertFalse(
+            [item for item in built if "solar" in item.title.lower()],
+            "no solar eclipse in this catalogue has a vetted site inside its path",
+        )
+        self.assertTrue([item for item in built if "lunar" in item.title.lower()],
+                        "umbral lunar eclipses are visible from home and must still appear")

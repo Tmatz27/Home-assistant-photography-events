@@ -12,6 +12,7 @@ the modules that actually run.
 from __future__ import annotations
 
 import importlib.util
+import json
 import math
 import sys
 import types
@@ -39,6 +40,7 @@ def load():
 pkg = load()
 const, phenomena, events, astronomy = pkg.const, pkg.phenomena, pkg.events, pkg.astronomy
 parks, verification, weather_scoring = pkg.parks, pkg.verification, pkg.weather_scoring
+wildlife = pkg.wildlife
 
 YEARS = (2026, 2027)
 EVIDENCE_LABEL = {
@@ -137,6 +139,42 @@ out("runs start one to two hours after the night high tide, and without a tide t
 out("card says the hour is unknown rather than inventing one.")
 out()
 out("Verify against: <" + phenomena.SOURCE_CDFW_GRUNION + ">")
+out()
+
+out("### Eclipses")
+out()
+eclipse_catalog = json.loads((ROOT / "eclipse_catalog.json").read_text(encoding="utf-8"))
+eclipse_events = eclipse_catalog.get("events", [])
+solar = [row for row in eclipse_events if row.get("kind") == "solar" and row.get("path")]
+first_year, last_year = eclipse_catalog.get("coverage", ["?", "?"])
+out(f"{len(eclipse_events)} events from NASA's catalogues covering {first_year}-{last_year}, "
+    f"{len(solar)} of them with published central-path coordinates. Times are the NASA")
+out("catalogue's TD less its published Delta T, so approximate UT to about a minute.")
+out()
+out("A **solar** eclipse is only ever reported at a *vetted* site - your Home Assistant")
+out("location or one of the zones - that falls inside the published central path. A")
+out("centreline coordinate in the middle of an ocean or on a roadless ridge is not")
+out("somewhere anybody can stand, and treating one as a destination is how a calendar")
+out("sends you to a point in the sea.")
+out()
+home_point = const.DEFAULT_HOME
+reachable = []
+for row in solar:
+    nearest = min(row["path"], key=lambda p: wildlife.haversine_km(home_point[0], home_point[1], p[1], p[2]))
+    reachable.append((wildlife.haversine_km(home_point[0], home_point[1], nearest[1], nearest[2]), row))
+reachable.sort(key=lambda pair: pair[0])
+closest_km, closest_row = reachable[0]
+out("**No central solar path in this catalogue is drivable from here.** The nearest any")
+out(f"of them comes is **{round(closest_km):,} km** ({closest_row['date'][:10]}, {closest_row['type']}) -")
+out("a flight, not a drive. So an empty solar-eclipse list is the correct answer for the")
+out("whole of this catalogue's range, not a broken feed. Extending the catalogue past")
+out(f"{last_year} is what changes that.")
+out()
+out("Lunar eclipses are unaffected: they are visible from wherever the Moon is up, and")
+out("the umbral phase is intersected with local Moon altitude. Penumbral eclipses are")
+out("excluded - the Moon only grazes the outer shadow and a camera records a full Moon.")
+out()
+out("Verify against: <https://eclipse.gsfc.nasa.gov/SEcat5/SE2001-2100.html>")
 out()
 
 out("## 2. Sky quality (sunset, sunrise, and cloud gating for astro)")

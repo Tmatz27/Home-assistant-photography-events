@@ -78,6 +78,29 @@ card says the hour is unknown rather than inventing one.
 
 Verify against: <https://wildlife.ca.gov/Fishing/Ocean/Regulations/Grunion>
 
+### Eclipses
+
+45 events from NASA's catalogues covering 2026-2035, 16 of them with published central-path coordinates. Times are the NASA
+catalogue's TD less its published Delta T, so approximate UT to about a minute.
+
+A **solar** eclipse is only ever reported at a *vetted* site - your Home Assistant
+location or one of the zones - that falls inside the published central path. A
+centreline coordinate in the middle of an ocean or on a roadless ridge is not
+somewhere anybody can stand, and treating one as a destination is how a calendar
+sends you to a point in the sea.
+
+**No central solar path in this catalogue is drivable from here.** The nearest any
+of them comes is **4,101 km** (2031-11-14, hybrid) -
+a flight, not a drive. So an empty solar-eclipse list is the correct answer for the
+whole of this catalogue's range, not a broken feed. Extending the catalogue past
+2035 is what changes that.
+
+Lunar eclipses are unaffected: they are visible from wherever the Moon is up, and
+the umbral phase is intersected with local Moon altitude. Penumbral eclipses are
+excluded - the Moon only grazes the outer shadow and a camera records a full Moon.
+
+Verify against: <https://eclipse.gsfc.nasa.gov/SEcat5/SE2001-2100.html>
+
 ## 2. Sky quality (sunset, sunrise, and cloud gating for astro)
 
 Rebuilt around where the light actually comes from. A sunset has two separate

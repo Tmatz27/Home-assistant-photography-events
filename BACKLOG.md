@@ -1,29 +1,113 @@
-# Backlog disposition — 0.12.0
+# What is left, in the order it is worth doing
 
-User direction on 2026-09-07: execute Tier 1 and the remaining data work; cancel all Tier 2 work. Phone notifications are deferred until explicitly requested later.
+Rewritten 2026-09-11, after v0.12.0. The previous version of this file is now
+history: of its ten items, three were delivered in 0.12.0, six were cancelled by
+the user, and one was closed by an audit. Read `AGENTS.md` first.
 
-## Tier 1 — implemented
+---
 
-1. Separate Home Assistant contract suite covers source isolation, throttles/backoff, multi-coordinate forecast bundles, partial API failure, cold-start deferral, entity payloads, real Store reloads and failed writes, routing deduplication, repairs, cancellation and unload. CI installs HA and actually executes this file; only this file skips in a portable checkout.
-2. Named source-health details, per-hotline last success, persistent-on-screen degraded event markers, and automatic nonpersistent HA Repairs after three failures or stale cached data. Recovery/disable/unload clears issues. Fetch health is not confirmation of a phenomenon; observation times still govern corroboration.
-3. Card split into 11 plain JavaScript sources. `node scripts/build-card.mjs` regenerates the single shipped card. `--check` and version checks run in CI. No bundler or new runtime dependency.
+## Done — do not re-open
 
-The original review's numerical wording needed correction: 17 of 22 windows are eligible for live corroboration, not necessarily confirmed now. Existing event_state pure tests and generic card source warnings predated this work; this release adds HA storage/cycle coverage and actionable health detail.
+Delivered in 0.12.0. Listed because a stale backlog is how work gets done twice.
 
-## Tier 2 — cancelled by the user
+- **Coordinator and entity coverage.** 22 real Home Assistant contract tests in
+  `tests/test_ha_integration.py`, executed by their own CI job against HA
+  2024.11.3 and 2025.3.4. The portable suite still runs with no HA installed.
+- **Source health.** Failed / stale / waiting / disabled are now distinct
+  states, per-hotline, with last-success timestamps and automatic HA Repairs
+  after repeated failures. Affected rows show "Data degraded" *without* changing
+  their evidence level — which was the important half.
+- **Failed responses no longer look like empty ones.** A partial or failed fetch
+  retains cached data with its original dates; only a genuinely empty valid
+  response is quiet.
+- **Card split** into 11 files under `www/src/` with a dependency-free
+  concatenation script, CI-checked for source/artifact sync.
+- **Eclipse catalogue**: 45 NASA eclipses 2026–2035 with published coordinates
+  for all 16 central solar paths, TD vs UT corrected. An ocean path point is
+  never treated as a road destination.
+- **Meteor radiant drift**, added after a 1,920-night audit found it changed
+  both a usable-night and a preferred-night verdict. Worth noting the audit was
+  the right move: the previous backlog said "verify it matters before building
+  it", and it did.
 
-- Notification blueprint and phone delivery: deferred until a later explicit request.
-- Hassfest integration: cancelled.
-- Upstream brand-icon submission: cancelled.
-- Watching-only filter, score divided by drive sorting, separate this_week mode: cancelled. Existing collapsible time sections and compact seven-day view remain.
+## Cancelled by the user — do not propose again
 
-## Tier 3 — implemented checks and explicit limits
+Notification blueprint, phone delivery, hassfest in CI, upstream brand
+submission, a `watching` filter, score ÷ drive sorting, and a separate
+`this_week` mode.
 
-- NASA catalog extended through 2035: 45 eclipses, 16 sourced central solar paths. TD converted using each row's published Delta T. Lunar windows use the actual umbral phases above the local horizon. Solar rows require a known viewing site inside the central path and inside the approximate drive budget. No ocean-centerline point is presented as a drive destination.
-- Exact solar contacts, partial-only solar visibility and an exhaustive search of drivable land along every path remain outside the model. These require more than a centerline table; no prose-derived geometry or road claims were invented.
-- Meteor drift audit: 1,920 candidate nights, 12 configured zones, eight showers, 2026–2035. Fixed versus moving radiants change one usable-night verdict (2030 Lyrids, Antelope Valley) and one preferred night (2031 Geminids, Pinnacles). Maximum boundary shift 7.29 minutes. Published Table 6 drift is now applied throughout each candidate night. Reproduce with `python tools/check_meteor_drift.py`.
-- Five deliberately static biological windows remain static. No new reliable reporting feed was established for them.
+---
 
-## External information still needed
+## Tier 1 — the largest remaining unknown
 
-Whale Safe API: the public operator page https://whalesafe.com/get-involved/ directs API inquiries to its team. The supplied docs URL did not return usable documentation. Endpoint list, authentication requirements and an example response remain unverified. Existing dated operator reports/iNaturalist continue; an API presence rating would still not prove a feeding aggregation.
+### 1. None of this has ever run on the user's Home Assistant
+
+Everything is validated by CI, contract tests and synthetic browser fixtures.
+No connection to the user's instance has ever been available to any agent
+working on this. That makes installation, HACS upgrade, entity registration,
+dashboard rendering at real payload size and mobile behaviour the only
+completely untested surface left — and it is the one the user actually touches.
+
+**This is not agent work.** It needs the user to install, restart, and report
+what breaks. Until then, treat "it works" as unverified.
+
+Worth preparing for that first contact: the served card is now 226 KB. Check
+first paint and scroll on a real dashboard with a full year of events, on
+phone as well as desktop, before assuming the split changed nothing.
+
+---
+
+## Tier 2 — coverage the data honestly lacks
+
+### 2. Wave coverage is one calibrated stretch of coast
+
+NDBC 46011 / CDIP B1500 cover the Vandenberg area. The calibration is
+Vandenberg-specific and the hindcast frequency is explicitly not forecast skill.
+Extending to other California coastlines means calibrating each one, not
+reusing this one's thresholds.
+
+Also open: verified elevated viewpoints for big-swell photography. Currently
+there is swell data and no confirmed place to stand.
+
+### 3. Moonbow geometry and waterfall flow
+
+Moonbows need viewpoint-specific geometry (moon altitude and azimuth relative to
+a specific overlook and spray cone) plus confirmation that water is actually
+flowing. Neither exists. The targets are correctly labelled as search leads;
+promoting them needs both halves, and the flow half has no feed.
+
+The same gap covers firefall: seasonal light geometry is solved, flowing water
+and clear western horizon are not.
+
+### 4. Solar eclipse model limits
+
+Central path coordinates are in. Still outside the model: partial-only solar
+visibility, exhaustive road access to a path point, and exact contact times.
+A path point being within six hours as the crow flies is not the same as
+reachable, and the model should keep saying so rather than implying otherwise.
+
+### 5. Behaviour still has no live confirmation
+
+Rut, cubs, pupping, monarch clustering, foliage, bloom and bioluminescence have
+no feed that confirms the *behaviour* — only that a species was reported. The
+current labelling ("Species reported, not behavior confirmed") is correct and
+should stay that way until a real source appears. Do not close this gap by
+inference.
+
+---
+
+## Blocked on the user, not on work
+
+- **Whale Safe API.** Needs the endpoint list, whether a key is required, and
+  one example response body. `api.whalesafe.com` is unreachable from every
+  review sandbox so far and is not indexed anywhere searchable. It remains the
+  strongest single corroboration source available for this coast.
+
+---
+
+## Standing rule
+
+The evidence model is the product. Every item above is a place where the honest
+answer is currently "we do not know", and each one is only closed by a real
+source — never by widening a window, softening a label, or inferring behaviour
+from presence.

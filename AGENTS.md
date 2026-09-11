@@ -303,13 +303,11 @@ environment. Say so rather than claiming a live check happened.
 
 ## Open items
 
-1. **Whale Safe API.** The user found `https://api.whalesafe.com/__docs__/`. It
-   could not be fetched from here and is not indexed anywhere searchable. Whale
-   Safe is the strongest corroboration source on this coast (daily
-   presence rating for the Santa Barbara Channel from hydrophones + observers +
-   a habitat model). **Needs:** the endpoint list, whether a key is required,
-   and one example response. Then wire a client in `wildlife.py` shape and add
-   it as a corroboration source. Currently only linked, never read.
+1. **Whale Safe — settled, do not re-open.** Its public API carries ship
+   compliance data only (nine endpoints, all operator/vessel side). The whale
+   presence rating is not in it and is only available by request to
+   `boi-whalesafe@ucsb.edu`. The VSR seasons are declared in advance and must
+   never be used as a presence proxy. See `BACKLOG.md`.
 2. **Eclipse reach.** Sourced NASA central paths and known-site screening are implemented through 2035. Exhaustive drivable land search, exact contacts and partial-only solar visibility remain outside the model. See BACKLOG.md.
 3. **Optional Tier 2 features are cancelled**, including notification delivery. Do not revive them without a new user request.
 4. **Stale remote branch.** `claude/home-assistant-photography-events-acanhf` in

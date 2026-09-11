@@ -80,12 +80,26 @@ LIVE_CORROBORATION_KM = 120.0
 # honest answer to "are these dates right" is "here is who actually counts the
 # animals - go and look before you book".
 #
-# Whale Safe is the strongest of these: a daily whale-presence rating for the
-# Santa Barbara Channel and San Francisco built from hydrophone detections,
-# trained observers and a habitat model. Its API is not public - access is by
-# request to the Benioff Ocean Science Lab - so this integration links to it
-# rather than pretending to read it. If you obtain a key, it is the single best
-# corroboration source on this coast and slots straight into ``verification``.
+# Whale Safe would be the strongest of these: a near-real-time whale-presence
+# rating for the Santa Barbara Channel and San Francisco, built from hydrophone
+# detections, trained observers and a blue whale habitat model.
+#
+# **Its public API does not carry it, and this is worth writing down because the
+# API looks like it should.** api.whalesafe.com publishes an OpenAPI spec at
+# /__docs__/ with nine endpoints, and every one of them is about *ships*:
+# operator scorecards, vessel-speed-reduction compliance grades, AIS track
+# segments as GeoJSON. That is the accountability half of the project - grading
+# shipping companies on whether they slowed down - not the whale half. There is
+# no presence endpoint, no detection endpoint, no sightings endpoint.
+#
+# The presence rating goes to the shipping industry through private feeds and
+# to everyone else through the map on the website. The only route to it as data
+# is still a request to the Benioff Ocean Science Lab, boi-whalesafe@ucsb.edu.
+#
+# Do not reach for the VSR data as a substitute. Speed-reduction seasons are
+# fixed calendar periods declared in advance, so they encode an expectation of
+# whales rather than an observation of them - which is precisely the kind of
+# broad seasonal window this table exists to stop alerting on.
 SOURCE_WHALE_SAFE = "https://whalesafe.com/"
 SOURCE_NOAA_WHALEWATCH = "https://www.fisheries.noaa.gov/west-coast/marine-mammal-protection/whalewatch"
 SOURCE_WHALE_ALERT = "https://www.fisheries.noaa.gov/resource/tool-app/whale-alert"

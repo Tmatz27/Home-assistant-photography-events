@@ -105,14 +105,30 @@ inference.
 
 ---
 
-## Blocked on the user, not on work
+## Resolved: Whale Safe is not available as data
 
-- **Whale Safe API.** Needs the endpoint list, whether a key is required, and
-  one example response body. `api.whalesafe.com` is unreachable from every
-  review sandbox so far and is not indexed anywhere searchable. It remains the
-  strongest single corroboration source available for this coast.
+Chased across several sessions as "the strongest corroboration source on this
+coast". It is - and its public API does not carry it.
 
----
+`api.whalesafe.com` publishes an OpenAPI spec at `/__docs__/` with nine
+endpoints, every one ship-side: operator scorecards, vessel-speed-reduction
+compliance grades, AIS track segments as GeoJSON, CSV dumps of ships and
+operators. No presence endpoint, no detection endpoint, no sightings endpoint.
+That API is the accountability half of the project - grading shipping companies
+on whether they slowed down - not the whale half.
+
+The near-real-time whale-presence rating (acoustic detections + trained
+observers + blue whale habitat model, graded low/medium/high/very high) reaches
+the shipping industry through private feeds and everyone else through the map on
+the website. The only route to it as data remains a request to the Benioff Ocean
+Science Lab, `boi-whalesafe@ucsb.edu`.
+
+**Do not substitute the VSR data.** Speed-reduction seasons are fixed periods
+declared in advance, so they encode an expectation of whales rather than an
+observation of one. Wiring them in would manufacture exactly the broad seasonal
+confidence the evidence model exists to refuse.
+
+Nothing to build here. Marine windows stay on iNaturalist corroboration.
 
 ## Standing rule
 

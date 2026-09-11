@@ -3,6 +3,30 @@
 
 
 
+
+## 0.13.2
+
+Whale Safe settled, after several sessions of treating it as the biggest
+outstanding source.
+
+Its public API was read from the OpenAPI spec it publishes. All nine endpoints
+are ship-side - operator scorecards, vessel-speed-reduction compliance grades,
+AIS track segments, CSV dumps. **There is no whale data in it.** That API is the
+accountability half of the project, grading shipping companies on whether they
+slowed down, and not the half that detects whales.
+
+The near-real-time presence rating does exist - acoustic detections, trained
+observers and a blue whale habitat model, graded low to very high - and reaches
+the shipping industry privately and everyone else through the website map. As
+data it is still only available by request to the Benioff Ocean Science Lab.
+
+Recorded in the source comments, the inventory and the backlog so it is not
+chased a fourth time, along with the reason the vessel-speed data must not be
+substituted for it: speed-reduction seasons are declared in advance, so they
+encode an expectation of whales rather than an observation of one.
+
+No code change. Marine windows continue to rest on iNaturalist corroboration.
+
 ## 0.13.1
 
 Moonbow conditions measured against the published framework rather than a

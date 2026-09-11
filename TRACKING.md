@@ -223,11 +223,14 @@ fire everything at once, and each source backs off on its own after a failure.
 
 Written down rather than papered over.
 
-- **Whale Safe** (<https://whalesafe.com/>) is the best corroboration
-  source on this coast - a daily whale-presence rating for the Santa Barbara Channel
-  built from hydrophones, observers and a habitat model. Its API is by request only
-  (`boi-whalesafe@ucsb.edu`). The code is shaped for a key to drop straight in; it
-  links out rather than inventing an endpoint.
+- **Whale Safe's public API does not carry whale data.** Checked against its
+  OpenAPI spec: all nine endpoints are ship-side - operator scorecards,
+  vessel-speed-reduction compliance grades, AIS track segments. The near-real-time
+  whale-presence rating (acoustic detections + sightings + habitat model) reaches
+  the shipping industry privately and everyone else through the website map. The
+  only route to it as data is a request to boi-whalesafe@ucsb.edu. The VSR data is
+  not a substitute: speed-reduction seasons are declared in advance, so they encode
+  an expectation of whales rather than an observation of them.
 - The 5 `static` entries above have no connected live confirmation feed. No claim is made
   that all possible sources have been exhausted. Species presence cannot establish rut or
   pupping data. They are flagged, capped, and never alert.

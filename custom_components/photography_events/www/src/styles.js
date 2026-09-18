@@ -516,6 +516,20 @@ const CARD_STYLES = `
       .outlook-title { font-size: 15px; line-height: 1.35; }
       .outlook-meta { font-size: 12px; margin-top: 4px; }
       .outlook-badge { font-size: 11px; white-space: normal; }
+      .update-time { color: var(--pe-muted); font-size: 11px; margin: 8px 0; }
+      .bucket-preview { display: block; margin-top: 5px; font-size: 12px; font-weight: 400; letter-spacing: normal; text-transform: none; color: var(--pe-muted); }
+      .view-options { margin: 10px 0; color: var(--pe-muted); font-size: 13px; }
+      .view-options > summary, .detail-section > summary { cursor: pointer; padding: 10px 0; }
+      .detail-section { border-top: 1px solid var(--divider-color, #ffffff20); }
+      .detail-section > summary { font-size: 14px; font-weight: 600; color: var(--primary-text-color); }
+      .event-intro { color: var(--primary-text-color); font-size: 14px; line-height: 1.55; margin: 8px 0; }
+      .event-recommendation { font-size: 13px; line-height: 1.5; }
+      .freshness-warning { background: #ba790f18; border-left: 3px solid #d69a38; padding: 10px; font-size: 13px; line-height: 1.5; }
+      .show-more { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid var(--divider-color, #ffffff30); border-radius: 8px; background: transparent; color: var(--primary-text-color); cursor: pointer; }
+      .outlook-detail, .outlook-detail-grid { font-size: 13px; line-height: 1.55; }
+      .simple-row .outlook-title { font-size: 15px; line-height: 1.4; }
+      .outlook-meta { overflow-wrap: anywhere; }
+      .detail-section a { overflow-wrap: anywhere; }
       .week-heading { display:flex; justify-content:space-between; gap:12px; font-weight:700; margin-bottom:12px; }
       .week-heading span, .calendar-note { color:var(--secondary-text-color); font-size:12px; font-weight:400; }
       .week-card .outlook-detail { font-size:13px; }

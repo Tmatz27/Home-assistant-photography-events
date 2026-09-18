@@ -20,6 +20,8 @@ class PhotographyEventsCard extends HTMLElement {
     this._activeFilters = null;
     this._expanded = new Set();
     this._collapsed = new Set();
+    this._openedBuckets = new Set();
+    this._moreBuckets = new Set();
     this._calendarView = false;
     this._calendarOffset = 0;
     this._choiceGroups = new Map();
@@ -54,7 +56,7 @@ class PhotographyEventsCard extends HTMLElement {
   }
 
   _trackedStatesChanged(previous, next) {
-    if (!previous) return true;
+    if (!previous || previous.connected !== next?.connected) return true;
     return this._trackedEntities().some((id) => previous.states?.[id] !== next.states?.[id]);
   }
 
@@ -104,6 +106,7 @@ class PhotographyEventsCard extends HTMLElement {
       // stale until a full reload.
       if (this._isBackendMode()) {
         this._render();
+        this._scheduleBackendRefresh();
         return;
       }
       this._recomputeAndRender();
@@ -125,6 +128,7 @@ class PhotographyEventsCard extends HTMLElement {
     // done it, and state arrives on its own.
     if (this._isBackendMode()) {
       this._render();
+      this._scheduleBackendRefresh();
       return;
     }
     this._render();
@@ -138,6 +142,12 @@ class PhotographyEventsCard extends HTMLElement {
     if (this._weatherInterval) clearInterval(this._weatherInterval);
     this._eventInterval = null;
     this._weatherInterval = null;
+  }
+
+  _scheduleBackendRefresh() {
+    this._clearIntervals();
+    // The clock must keep aging cached data even when HA sends no updates.
+    if (this._connected) this._eventInterval = setInterval(() => this._render(), 60000);
   }
 
   _scheduleRefresh() {
@@ -179,7 +189,7 @@ class PhotographyEventsCard extends HTMLElement {
 
   _recomputeAndRender() {
     if (!this._hass) return;
-    if (this._isBackendMode()) { this._clearIntervals(); this._render(); return; }
+    if (this._isBackendMode()) { this._scheduleBackendRefresh(); this._render(); return; }
     const { events, error } = buildEvents(this._hass, this._config, this._forecast, new Date());
     this._events = events;
     this._buildError = error;
@@ -189,6 +199,7 @@ class PhotographyEventsCard extends HTMLElement {
   _render() {
     if (!this.shadowRoot) return;
     const body = this._hass ? this._bodyHtml() : this._loadingHtml("Waiting for Home Assistant");
+    if (this._dialog?.open) this._updateEventDialog();
 
     // A hero with nothing to announce leaves no trace at all. An empty card
     // still draws a border and takes a slot in the layout, which is its own
@@ -234,8 +245,20 @@ class PhotographyEventsCard extends HTMLElement {
       ancestor = ancestor.parentElement || ancestor.getRootNode?.().host;
     }
     if (document.scrollingElement) scrollers.push([document.scrollingElement, document.scrollingElement.scrollTop, document.scrollingElement.scrollLeft]);
+    const detailState = new Map([...this._root.querySelectorAll("[data-section]")].map(el => [el.dataset.section, el.open]));
+    const focused = this.shadowRoot.activeElement;
+    const focusedSection = focused?.tagName === "SUMMARY" ? focused.parentElement?.dataset.section : null;
+    const focusAttributes = ["data-expand", "data-category", "data-view", "data-month", "data-more", "data-skipped"];
+    const focusIdentity = focused && focusAttributes.map(attr => [attr, focused.getAttribute?.(attr)]).find(([, value]) => value != null);
     this._root.innerHTML = html;
+    for (const el of this._root.querySelectorAll("[data-section]")) {
+      if (detailState.has(el.dataset.section)) el.open = detailState.get(el.dataset.section);
+    }
     this._bindEvents();
+    if (focusIdentity) [...this._root.querySelectorAll(`[${focusIdentity[0]}]`)]
+      .find(el => el.getAttribute(focusIdentity[0]) === focusIdentity[1])?.focus?.({preventScroll: true});
+    if (focusedSection) [...this._root.querySelectorAll("[data-section]")]
+      .find(el => el.dataset.section === focusedSection)?.querySelector("summary")?.focus?.({preventScroll: true});
     const inner = this._root.querySelector(".outlook");
     if (inner) inner.scrollTop = innerScroll;
     for (const [element, top, left] of scrollers) { element.scrollTop = top; element.scrollLeft = left; }
@@ -254,8 +277,16 @@ class PhotographyEventsCard extends HTMLElement {
     if (!this._root) return;
     for (const section of this._root.querySelectorAll("[data-bucket]")) {
       section.addEventListener("toggle", () => {
-        if (section.open) this._collapsed.delete(section.dataset.bucket);
+        if (section.open) { this._collapsed.delete(section.dataset.bucket); this._openedBuckets.add(section.dataset.bucket); }
         else this._collapsed.add(section.dataset.bucket);
+      });
+    }
+    for (const button of this._root.querySelectorAll("[data-more]")) {
+      button.addEventListener("click", () => {
+        const key = button.dataset.more;
+        if (this._moreBuckets.has(key)) this._moreBuckets.delete(key);
+        else this._moreBuckets.add(key);
+        this._render();
       });
     }
     for (const button of this._root.querySelectorAll("[data-view]")) {

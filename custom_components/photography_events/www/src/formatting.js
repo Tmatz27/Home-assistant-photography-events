@@ -154,6 +154,8 @@ function outlookFromState(state) {
     horizonDays: Number.isFinite(attributes.precision_horizon_days)
       ? attributes.precision_horizon_days
       : 60,
+    generated: parseEventDate(attributes.generated),
+    unavailable: !state || ["unavailable", "unknown"].includes(state.state),
     missing: !state,
   };
 }
@@ -171,7 +173,7 @@ const VERIFICATION_META = {
   presence_only: { label: "Species reported", tone: "warn", text: "The named behavior or gathering is not confirmed." },
   forecast: { label: "Forecast", tone: "warn", text: "Conditions are forecast, not yet observed." },
   watching: { label: "Watching", tone: "warn", text: "Nothing reported yet - this is where to look, not when to go." },
-  unverified: { label: "Estimate", tone: "warn", text: "A calendar estimate. No live source can confirm it." },
+  unverified: { label: "Estimate", tone: "warn", text: "Not confirmed. Check the event’s timing basis and outstanding conditions." },
 };
 
 /**
@@ -266,14 +268,15 @@ function rollUpByPlace(events) {
 }
 
 function consolidateNights(events) {
-  const other = events.filter(event => !event.key?.startsWith("milkyway-"));
-  const nights = events.filter(event => event.key?.startsWith("milkyway-"))
-    .sort((a, b) => a.startDate - b.startDate);
+  const family = event => event.key?.startsWith("milkyway-") ? "milkyway" : event.key?.startsWith("moonbow-") ? "moonbow" : null;
+  const other = events.filter(event => !family(event));
+  const nights = events.filter(event => family(event))
+    .sort((a, b) => family(a).localeCompare(family(b)) || a.startDate - b.startDate);
   const periods = [];
   for (const night of nights) {
     const last = periods.at(-1);
     // Do not join different lunar windows across a gap in usable nights.
-    if (!last || night.startDate - last.at(-1).startDate > 3 * MS_PER_DAY) periods.push([night]);
+    if (!last || family(night) !== family(last[0]) || night.startDate - last.at(-1).startDate > 3 * MS_PER_DAY) periods.push([night]);
     else last.push(night);
   }
   for (const period of periods) {
@@ -282,7 +285,8 @@ function consolidateNights(events) {
       (b.duration_minutes || 0) - (a.duration_minutes || 0) || a.startDate - b.startDate);
     const best = ranked[0];
     const places = [...new Set(options.map(event => event.where || event.zone).filter(Boolean))];
-    other.push({ ...best, title: "Milky Way core", nights: period, nightOptions: options,
+    other.push({ ...best, key: `${family(best)}-period-${period[0].startDate.toISOString().slice(0, 10)}`,
+      title: family(best) === "moonbow" ? "Yosemite moonbow" : "Milky Way core", nights: period, nightOptions: options,
       startDate: period[0].startDate, endDate: new Date(Math.max(...period.map(e => e.endDate))),
       locations: places, alternatives: [], bestNight: best,
       choiceIds: [...new Set(options.map(e => e.event_id || e.roll || e.key))] });
@@ -301,7 +305,7 @@ function healthStripHtml(sources) {
   if (!entries.length) return "";
   const degraded = entries.filter(([, s]) => s.failures > 0 || s.stale || s.state === "failed");
   const waiting = entries.filter(([, s]) => !s.last_success && !s.failures);
-  return `<details class="source-health ${degraded.length ? "source-warning" : ""}"><summary>${degraded.length ? `${degraded.length} data sources degraded` : waiting.length ? `${waiting.length} data sources awaiting first update` : "Data sources updated"}</summary>
+  return `<details class="source-health ${degraded.length ? "source-warning" : ""}" data-section="source-health"><summary>${degraded.length ? `${degraded.length} data sources degraded` : waiting.length ? `${waiting.length} data sources awaiting first update` : "Data sources updated"}</summary>
     <p>These are source retrieval checks. Open an event for its observation dates and evidence.</p>
     ${entries.map(([key, s]) => `<div class="source-health-entry"><strong>${escapeHtml(s.name || key)}</strong> · ${escapeHtml(s.state || (s.failures ? "failed" : "unknown"))}<br>
       Last success: ${s.last_success ? escapeHtml(absoluteLabel(parseEventDate(s.last_success))) : "Not yet this session"}
@@ -312,7 +316,7 @@ function nightTradeoffs(night, best) {
   const parts = [];
   if (night.key === best.key) parts.push("Highest ranked among these supplied nights and locations.");
   const duration = (night.duration_minutes || 0) - (best.duration_minutes || 0);
-  if (night.duration_minutes && best.duration_minutes) parts.push(duration === 0 ? "Same usable duration as the preferred night." : `${Math.abs(duration)} minutes ${duration > 0 ? "more" : "less"} usable darkness than the preferred night.`);
+  if (night.duration_minutes && best.duration_minutes) parts.push(duration === 0 ? "Same usable duration as the preferred night." : `${Math.abs(duration)} minutes ${duration > 0 ? "more" : "less"} usable shooting time than the preferred night.`);
   if (Number.isFinite(night.moon_illumination)) parts.push(`Moon ${Math.round(night.moon_illumination * 100)}% illuminated; the usable interval already accounts for moonlight and altitude.`);
   if (Number.isFinite(night.peak_altitude)) parts.push(`Core peaks at ${night.peak_altitude}°.`);
   if (Number.isFinite(night.cloud_cover)) parts.push(`${cloudLabel(night)} ${night.cloud_cover}%${Number.isFinite(best.cloud_cover) ? ` versus ${best.cloud_cover}% (${cloudLabel(best).toLowerCase()}) on the preferred night` : ""}.`);

@@ -316,6 +316,8 @@ const CARD_MODES = {
 
   _groupEvents(events) {
     const grouped = consolidateNights(rollUpByPlace(events));
+    this._displayEvents.clear();
+    this._choiceGroups.clear();
     for (const event of grouped) {
       this._displayEvents.set(event.key, event);
       if (event.choiceIds) this._choiceGroups.set(event.event_id || event.roll || event.key, event.choiceIds);
@@ -336,8 +338,9 @@ const CARD_MODES = {
       .filter(e => e.startDate <= weekEnd && e.endDate >= now)
       .sort((a, b) => (b.score || 0) - (a.score || 0));
     return `<div class="week-card"><div class="week-heading">Next seven days <span>${events.length} opportunities</span></div>
+      ${this._freshnessHtml(outlook, now)}
       ${this._choiceError ? `<div role="alert">${escapeHtml(this._choiceError)}</div>` : ""}
-      ${events.length ? events.map(e => this._outlookRowHtml(e, outlook, now)).join("") : '<p class="empty-week">No special opportunities reported yet.</p>'}
+      ${events.length ? this._previewRowsHtml(events, outlook, now, "dashboard") : `<p class="empty-week">${outlook.unavailable || this._hass.connected === false || (outlook.generated && now - outlook.generated > 45 * 60000) ? "Calendar unavailable. Waiting for an update." : "No special opportunities reported yet."}</p>`}
       ${healthStripHtml(outlook.sources)}
       </div>`;
   },
@@ -345,6 +348,7 @@ const CARD_MODES = {
   _nightComparisonHtml(event) {
     if (!event.nights) return "";
     const best = event.bestNight;
+    const candidate = event.key?.startsWith("moonbow-");
     const forecast = event.nightOptions.filter(e => Number.isFinite(e.cloud_cover) && e.cloud_is_forecast === true);
     const outlookBest = event.nightOptions.filter(e => Number.isFinite(e.cloud_cover) && e.cloud_is_forecast === false)
       .sort((a,b) => (b.score || 0) - (a.score || 0))[0];
@@ -352,15 +356,15 @@ const CARD_MODES = {
       (a.moon_illumination ?? 1) - (b.moon_illumination ?? 1))[0];
     const weatherBest = [...forecast].sort((a,b) => (b.score || 0) - (a.score || 0) ||
       (b.duration_minutes || 0) - (a.duration_minutes || 0))[0];
-    return `<section class="night-comparison"><h4>Which night?</h4>
-      <p>${event.nights.length} available nights, ${escapeHtml(rangeLabel(event.startDate, event.endDate))}.
-      Highest ranked: <strong>${escapeHtml(dateLabel(parseEventDate(best.start)))}</strong> at ${escapeHtml(best.where || best.zone)}.
-      Tied scores favor a longer usable window.</p>
+    return `<section class="night-comparison"><h4>${candidate ? "Compare sky candidates" : "Which night?"}</h4>
+      <p>${event.nights.length} ${candidate ? "candidate nights" : "available nights"}, ${escapeHtml(rangeLabel(event.startDate, event.endDate))}.
+      ${candidate ? "Highest-ranked sky candidate" : "Highest ranked"}: <strong>${escapeHtml(dateLabel(parseEventDate(best.start)))}</strong> at ${escapeHtml(best.where || best.zone)}.
+      ${candidate ? "These hours do not predict how long a moonbow appears. Use a dated viewpoint timetable to choose an actual shooting time." : "Tied scores favor a longer usable window."}</p>
       <p>Longest calculated window: ${escapeHtml(dateLabel(parseEventDate(geometry.start)))} (${geometry.duration_minutes || "—"} min).
       ${weatherBest ? `Best with a cloud forecast: ${escapeHtml(dateLabel(parseEventDate(weatherBest.start)))} at ${escapeHtml(weatherBest.where || weatherBest.zone)} (${weatherBest.cloud_cover}% cloud).` : "No cloud forecast is available for these nights yet."}
       ${outlookBest ? `Best with a longer-range cloud outlook: ${escapeHtml(dateLabel(parseEventDate(outlookBest.start)))} (${outlookBest.cloud_cover}% cloud; lower confidence).` : ""}
       Calculated coverage${best.comparison_through ? ` through ${escapeHtml(dateLabel(parseEventDate(best.comparison_through)))}` : " is limited to the supplied nights"}. The end of the displayed range may be the calculation limit, not the end of the season. Forecasts can change the preferred date.</p>
-      ${event.nights.map(night => `<details class="night-option"><summary>${escapeHtml(dateLabel(parseEventDate(night.start)))} · priority ${night.score} · ${night.duration_minutes || "—"} min</summary>
+      ${event.nights.map(night => `<details class="night-option" data-section="${escapeHtml(event.key)}-night-${escapeHtml(night.key)}"><summary>${escapeHtml(dateLabel(parseEventDate(night.start)))} · priority ${night.score} · ${night.duration_minutes || "—"} min</summary>
         <p>${escapeHtml(nightTradeoffs(night, best))}</p>
         ${[night, ...(night.alternatives || [])].map(location => this._locationHtml(location)).join("")}</details>`).join("")}
       <p>Follow / Skip applies to all listed nights. Weather and available nights update as new forecasts arrive.</p></section>`;
@@ -386,7 +390,13 @@ const CARD_MODES = {
     const last = new Date(month.getFullYear(), month.getMonth() + 1, 0);
     const weeks = [];
     for (let start = new Date(first); start <= last; start.setDate(start.getDate() + 7)) {
-      const segments = calendarSegments(events, start);
+      const allSegments = calendarSegments(events, start);
+      const weekKey = `calendar-${start.toISOString().slice(0,10)}`;
+      const showAll = this._moreBuckets.has(weekKey);
+      // Broad seasons must not fill the entire month before a timed event can
+      // be seen. Keep five ranked bars, with an explicit route to every other.
+      const selected = [...allSegments].sort((a,b)=>(b.event.score || 0)-(a.event.score || 0)).slice(0,5).map(s=>s.event);
+      const segments = showAll ? allSegments : calendarSegments(selected, start);
       const days = Array.from({ length: 7 }, (_, i) => {
         const day = new Date(start); day.setDate(day.getDate() + i);
         return `<span class="calendar-date ${day.getMonth() === month.getMonth() ? "" : "outside"}">${day.getDate()}</span>`;
@@ -395,7 +405,7 @@ const CARD_MODES = {
         ${segments.map(({event, start: left, end, lane}) => `<button type="button" class="calendar-event" data-open="${escapeHtml(event.key)}"
           style="--event-color:${categoryColor(event.category)};grid-column:${left + 1}/${end + 2};grid-row:${lane + 1}"
           title="${escapeHtml(event.title)} · ${escapeHtml(rangeLabel(event.startDate, event.endDate))}">${escapeHtml(event.title.replace(/ at .+$/, "").replace(/ \(season\)$/, ""))}</button>`).join("")}
-      </div></div>`);
+      </div>${allSegments.length > 5 ? `<button class="show-more" type="button" data-more="${weekKey}" aria-expanded="${showAll}">${showAll ? "Show fewer" : `+ ${allSegments.length - 5} more this week`}</button>` : ""}</div>`);
     }
     return `<div class="calendar-nav"><button type="button" data-month="-1" ${this._calendarOffset === 0 ? "disabled" : ""} aria-label="Previous month">‹</button>
       <strong>${MONTH_NAMES[month.getMonth()]} ${month.getFullYear()}</strong>
@@ -405,23 +415,56 @@ const CARD_MODES = {
   },
 
   _openCalendarEvent(key) {
-    const event = this._displayEvents.get(key);
-    if (!event) return;
-    const outlook = outlookFromState(this._hass.states[this._outlookEntityId()]);
+    if (!this._displayEvents.has(key)) return;
+    this._dialog?.close();
+    this._dialogKey = key;
+    this._dialogReturnFocus = this.shadowRoot.activeElement;
     const dialog = document.createElement("dialog");
+    this._dialog = dialog;
     dialog.className = "event-dialog";
     dialog.setAttribute("aria-labelledby", "pe-dialog-title");
-    dialog.innerHTML = `<button class="dialog-close" type="button" aria-label="Close event details">Close ×</button><h3 id="pe-dialog-title">${escapeHtml(event.title.replace(/ at .+$/, ""))}</h3>
-      ${this._outlookDetailHtml(event, outlook, event.planning_only ? outlook.parks[event.zone_id] : null, new Date())}`;
     this.shadowRoot.appendChild(dialog);
+    dialog.addEventListener("close", () => {
+      dialog.remove();
+      if (this._dialog === dialog) this._dialog = null;
+      const target = [...this._root.querySelectorAll("[data-open]")].find(el => el.dataset.open === key);
+      (target || this._dialogReturnFocus)?.focus?.({preventScroll: true});
+    });
+    this._updateEventDialog();
+    dialog.showModal();
+  },
+
+  _updateEventDialog() {
+    const dialog = this._dialog;
+    if (!dialog) return;
+    const event = this._displayEvents.get(this._dialogKey);
+    const outlook = outlookFromState(this._hass.states[this._outlookEntityId()]);
+    const now = new Date();
+    const html = `<button class="dialog-close" type="button" aria-label="Close event details">Close ×</button>
+      <h3 id="pe-dialog-title">${escapeHtml(event?.title.replace(/ at .+$/, "") || "Event no longer in this view")}</h3>
+      ${this._freshnessHtml(outlook, now)}
+      ${this._choiceError ? `<p role="alert">${escapeHtml(this._choiceError)}</p>` : ""}
+      ${event ? this._outlookDetailHtml(event, outlook, event.planning_only ? outlook.parks[event.zone_id] : null, now) : "<p>The calendar changed. Close this detail to review the latest events.</p>"}`;
+    if (dialog._content === html) return;
+    dialog._content = html;
+    const open = new Set([...dialog.querySelectorAll("[data-section]")].filter(el=>el.open).map(el=>el.dataset.section));
+    const focus = this.shadowRoot.activeElement;
+    const section = focus?.tagName === "SUMMARY" ? focus.parentElement?.dataset.section : null;
+    const choice = focus?.dataset?.choice;
+    const top = dialog.scrollTop;
+    dialog.innerHTML = html;
+    for (const el of dialog.querySelectorAll("[data-section]")) el.open = open.has(el.dataset.section);
     dialog.querySelector(".dialog-close").addEventListener("click", () => dialog.close());
-    dialog.addEventListener("close", () => dialog.remove());
     for (const button of dialog.querySelectorAll("[data-choice]")) button.addEventListener("click", async () => {
       await this._saveChoice(button.dataset.eventid, button.dataset.choice);
       if (!this._choiceError) dialog.close();
-      else button.textContent = this._choiceError;
     });
-    dialog.showModal();
+    if (dialog.open) {
+      const target = section ? [...dialog.querySelectorAll("[data-section]")].find(el=>el.dataset.section===section)?.querySelector("summary") :
+        choice ? [...dialog.querySelectorAll("[data-choice]")].find(el=>el.dataset.choice===choice) : dialog.querySelector(".dialog-close");
+      target?.focus?.({preventScroll:true});
+    }
+    dialog.scrollTop = top;
   },
 
   /** The year-ahead planning view, filtered by the toggle chips. */
@@ -464,17 +507,17 @@ const CARD_MODES = {
           ${outlook.truncated ? " (list truncated)" : ""}
         </div>
       </div>
-      ${this._filterChipsHtml(known, allowed)}
+      <details class="view-options" data-section="filters"><summary>Event types · ${allowed.size} of ${known.length}</summary>${this._filterChipsHtml(known, allowed)}</details>
       <div class="event-toolbar"><button type="button" data-view="list" aria-pressed="${!this._calendarView}">List</button><button type="button" data-view="calendar" aria-pressed="${this._calendarView}">Calendar</button><button type="button" data-skipped="toggle" aria-pressed="${this._showSkipped}">
         ${this._showSkipped ? "Hide skipped" : "Show skipped"}</button></div>
       ${this._choiceError ? `<div role="alert" class="event-error">${escapeHtml(this._choiceError)}</div>` : ""}
-      ${healthStripHtml(outlook.sources)}
+      ${this._freshnessHtml(outlook, now)}${healthStripHtml(outlook.sources)}
       ${this._calendarView ? this._calendarHtml(grouped, now) : groups.length
         ? `<div class="outlook">${groups.map((group) => this._monthHtml(group, outlook, now)).join("")}</div>`
         : `<div class="empty-card">
              <ha-icon icon="mdi:calendar-blank-outline"></ha-icon>
-             <strong>Nothing in this window</strong>
-             <span>Every category may be switched off, or the range may be too narrow.</span>
+             <strong>${outlook.unavailable || this._hass.connected === false || (outlook.generated && now - outlook.generated > 45 * 60000) ? "Calendar unavailable" : "Nothing in this window"}</strong>
+             <span>${outlook.unavailable || this._hass.connected === false || (outlook.generated && now - outlook.generated > 45 * 60000) ? "Waiting for a successful update; this is not evidence of a quiet season." : "Check the selected event types and date range."}</span>
            </div>`}
       ${this._legendHtml()}
     `;
@@ -494,12 +537,13 @@ const CARD_MODES = {
 
   _monthHtml(group, outlook, now) {
     return `
-      <details class="outlook-month${group.urgent ? " urgent" : ""}" data-bucket="${escapeHtml(group.key)}" ${this._collapsed.has(group.key) ? "" : "open"}>
+      <details class="outlook-month${group.urgent ? " urgent" : ""}" data-bucket="${escapeHtml(group.key)}" ${!this._collapsed.has(group.key) && (group.key === "now" || group.key === "week" || this._openedBuckets.has(group.key)) ? "open" : ""}>
         <summary class="outlook-month-label">
           ${escapeHtml(group.label)}
           <span class="outlook-month-count">${group.events.length}</span>
+          ${!group.urgent ? `<span class="bucket-preview">${escapeHtml(group.events.slice(0, 2).map(e => e.title.replace(/ at .+$/, "").replace(/ \(season\)$/, "")).join(" · "))}${group.events.length > 2 ? "…" : ""}</span>` : ""}
         </summary>
-        ${group.events.map((event) => this._outlookRowHtml(event, outlook, now)).join("")}
+        ${this._previewRowsHtml(group.events, outlook, now, group.key)}
       </details>
     `;
   },
@@ -536,103 +580,74 @@ const CARD_MODES = {
     return `<div class="outlook-row ${expanded ? "open" : ""}" style="--event-color:${categoryColor(event.category)}">
       <button type="button" class="outlook-head simple-row" data-expand="${escapeHtml(event.key)}" aria-expanded="${expanded}">
         <span class="outlook-body"><span class="outlook-title">${escapeHtml(title)}</span>
-          <span class="outlook-meta">${escapeHtml(rangeLabel(event.startDate, event.endDate))}${event.precision === "season" ? " · Typical peak" : ""} · ${escapeHtml(where)}${event.nights ? ` · ${event.nights.length} nights · Preferred ${dateLabel(parseEventDate(event.bestNight.start))}` : ""}</span></span>
-        <span class="outlook-badge season">${escapeHtml(status)}${[event, ...(event.nightOptions || event.alternatives || [])].some(e => e.degraded_sources?.length) ? " · Data degraded" : ""}</span>
+          <span class="outlook-meta">${escapeHtml(rangeLabel(event.startDate, event.endDate))}${where ? ` · ${escapeHtml(where)}` : ""}</span></span>
+        <span class="outlook-badge season">${escapeHtml(status)}${[event, ...(event.nightOptions || event.alternatives || [])].some(e => e.degraded_sources?.length) ? " · Update issue" : ""}</span>
         <ha-icon icon="${expanded ? "mdi:chevron-up" : "mdi:chevron-down"}"></ha-icon>
       </button>
       ${expanded ? this._outlookDetailHtml(event, outlook, park, now) : ""}
     </div>`;
   },
 
+  _freshnessHtml(outlook, now) {
+    const age = outlook.generated ? now - outlook.generated : null;
+    const issue = this._hass.connected === false ? "Home Assistant disconnected" : outlook.unavailable ? "Planning sensor unavailable" : age === null ? "Update time unavailable" : age > 45 * 60000 ? "Calendar update overdue" : age < -5 * 60000 ? "Update clock mismatch" : "";
+    if (!issue) return `<p class="update-time">Calendar updated ${escapeHtml(absoluteLabel(outlook.generated))}</p>`;
+    return `<p class="freshness-warning" role="status"><strong>${issue}.</strong> ${outlook.generated ? `Last calendar update: ${escapeHtml(absoluteLabel(outlook.generated))}.` : "Waiting for a dated update."} ${outlook.events.length ? "Showing saved information; current conditions may have changed." : "An empty view does not mean nothing is happening."}</p>`;
+  },
+
+  _previewRowsHtml(events, outlook, now, key) {
+    const all = this._moreBuckets.has(key);
+    return `${(all ? events : events.slice(0, 5)).map(event => this._outlookRowHtml(event, outlook, now)).join("")}
+      ${events.length > 5 ? `<button type="button" class="show-more" data-more="${escapeHtml(key)}" aria-expanded="${all}">${all ? "Show fewer" : `Show ${events.length - 5} more opportunities`}</button>` : ""}`;
+  },
+
   _outlookDetailHtml(event, outlook, park, now) {
-    const rows = [];
-    if (event.source_health_note) rows.push(["Data degraded", event.source_health_note]);
-    rows.push(["Priority", `${event.score}/100 — ranking, not a probability`]);
-    const drives = [event, ...(event.nightOptions || event.alternatives || [])].map(e => e.drive_hours).filter(d => Number.isFinite(d) && d > 0);
-    if (drives.length || park?.drive_label) rows.push([drives.length > 1 ? "Closest approximate drive" : "Approximate drive", drives.length ? driveLabel(Math.round(Math.min(...drives) * 60)) : park.drive_label]);
-    if (event.category === "sunset") rows.push(["Weather source", "Open-Meteo low, middle and high cloud forecasts, with the upstream light path checked when available. Forecast layers, not measured cloud heights; no Pirate Weather entity required."]);
-    if (event.observed_at) rows.push(["Observed", absoluteLabel(parseEventDate(event.observed_at))]);
-    if (event.evidence_note) rows.push(["Evidence", event.evidence_note]);
-    if (event.closures?.length) rows.push(["Closures", event.closures.join("; ")]);
-    if (event.coastal_advisories?.length) rows.push(["Coastal advisories", event.coastal_advisories.join("; ")]);
-    if (event.closure_source) rows.push(["Access check", event.closure_source]);
-    if (event.access_note) rows.push(["Access", event.access_note]);
-    if (event.tide_window_start && event.tide_window_end) rows.push(["Tide window", `${absoluteLabel(parseEventDate(event.tide_window_start))} to ${absoluteLabel(parseEventDate(event.tide_window_end))}`]);
-    if (event.measurement_label) rows.push([event.measurement_label, [Number.isFinite(event.wave_height_m) ? `${event.wave_height_m} m` : "Height unknown", Number.isFinite(event.wave_period_s) ? `${event.wave_period_s} s` : "", Number.isFinite(event.wave_direction_deg) ? `from ${event.wave_direction_deg}°` : ""].filter(Boolean).join(" · ")]);
-    if (event.forecast_note) rows.push(["Forecast", event.forecast_note]);
-    if (event.confidence_note) rows.push(["Limits", event.confidence_note]);
-
-    if (event.precision === "season") {
-      rows.push(["Extended season", event.season_range || "-"]);
-      rows.push(["Peak window",
-        `${rangeLabel(event.startDate, event.endDate)} - specifics firm up inside ${outlook.horizonDays} days`]);
-    } else {
-      rows.push([event.nights ? "Highest-ranked night" : "Window", !event.all_day && String(event.start).includes("T") ? `${absoluteLabel(parseEventDate(event.start))} to ${absoluteLabel(parseEventDate(event.end))}` : rangeLabel(event.startDate, event.endDate)]);
-      if (event.season_range) rows.push(["Extended season", event.season_range]);
-    }
-    if (event.duration_minutes) {
-      const limit = WINDOW_LIMIT_REASON[event.limited_by] || "";
-      rows.push(["Usable window", `${event.duration_minutes} min${limit ? ` - ${limit}` : ""}`]);
-    }
-    if (!event.nights && (event.precision === "season" || ["watching", "unverified", "presence_only"].includes(event.verification))) {
-      rows.push(["Preferred days & alternatives", "No evidence-backed ideal day yet. The full seasonal range and typical peak are planning guides; an alternate day is not known to be worse. " + (event.awaiting || "Current reports of the named phenomenon are needed before choosing dates.")]);
-    }
-    if (event.best_time_of_day) rows.push(["Best time of day", event.best_time_of_day]);
-
-    const locations = event.locations || [event.where || event.zone || park?.name].filter(Boolean);
-    if (locations.length) rows.push(["Where", locations.join(" - ")]);
-
-    const gear = event.gear || outlook.gear?.[event.category]?.glass;
-    if (gear) rows.push(["Gear", gear]);
-    const support = outlook.gear?.[event.category]?.support;
-    if (support && !event.gear) rows.push(["Support", support]);
-
-    if (park) rows.push(["Dogs", park.dog_detail]);
-
-    // The row that stops a trip being booked against a date nothing confirms.
-    const verification = VERIFICATION_META[event.verification];
-    if (verification) {
-      rows.push(["Confirmed?", `${verification.label} - ${event.awaiting || verification.text}`]);
-    }
-    if (event.light_path === "local") {
-      rows.push(["Light path", "Not checked - scored from local cloud only, so treat the number as optimistic."]);
-    }
-
-    const why = event.tips || event.detail
-      || (event.reasons || []).join(", ")
-      || "Scored from the season table; no live signal for this one yet.";
-
-    return `
-      <div class="outlook-detail">
-        <dl class="outlook-detail-grid">
-          ${rows.map(([label, value]) => `
-            <dt>${escapeHtml(label)}</dt><dd>${escapeHtml(value)}</dd>`).join("")}
-        </dl>
-        <div class="outlook-why">
-          <span class="outlook-why-label">Why this score</span>
-          ${escapeHtml(why)}
-          ${event.confirm ? `<em> Timing shifts year to year - confirm current reports before driving.</em>` : ""}
-        </div>
-        ${this._nightComparisonHtml(event)}
-        ${!event.nights && event.alternatives?.length ? `<section class="location-options"><h4>Locations & reports</h4>${[event, ...event.alternatives].map(location => this._locationHtml(location)).join("")}</section>` : ""}
-        ${this._eventControlsHtml(event.event_id || event.roll || event.key,
-          outlook.preferences[event.event_id || event.roll || event.key]?.choice)}
-        ${!event.alternatives?.length && !event.nights ? reportLinkHtml(event) : ""}
-        ${Array.isArray(event.verify) && event.verify.length ? `
-          <div class="outlook-verify">
-            <span class="outlook-verify-label">Check before you book</span>
-            ${event.verify.filter(url => safeExternalUrl(url)).map((url) => `
-              <a href="${escapeHtml(safeExternalUrl(url))}" target="_blank" rel="noopener noreferrer">
-                <ha-icon icon="mdi:check-decagram-outline"></ha-icon>${escapeHtml(sourceLabel(url))}
-              </a>`).join("")}
-          </div>` : ""}
-      </div>
-    `;
+    const list = rows => `<dl class="outlook-detail-grid">${rows.filter(([, v]) => v !== undefined && v !== null && v !== "").map(([k,v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(v)}</dd>`).join("")}</dl>`;
+    const section = (id, title, body) => `<details class="detail-section" data-section="${escapeHtml(event.key)}-${id}"><summary>${title}</summary>${body}</details>`;
+    const best = event.bestNight || event;
+    const candidate = event.key?.startsWith("moonbow-");
+    const dates = [["Full supplied range", rangeLabel(event.startDate, event.endDate)], ["Broader season", event.season_range]];
+    const bestWindow = !best.all_day && String(best.start).includes("T") ? `${absoluteLabel(parseEventDate(best.start))} to ${absoluteLabel(parseEventDate(best.end))}` : rangeLabel(event.startDate, event.endDate);
+    dates.push([event.nights ? (candidate ? "Sky candidate" : "Preferred supplied night") : "Window", bestWindow]);
+    if (event.precision === "season") dates.push(["Date precision", `Details firm up inside ${outlook.horizonDays} days; current reports are still required.`]);
+    if (best.duration_minutes) dates.push([candidate ? "Candidate sky interval" : "Usable window", `${best.duration_minutes} minutes${best.limited_by ? ` · ${WINDOW_LIMIT_REASON[best.limited_by] || best.limited_by}` : ""}`]);
+    dates.push(["Best time of day", event.best_time_of_day], ["Timing basis", event.timing_basis]);
+    if (!event.nights && (event.precision === "season" || ["watching", "unverified", "presence_only"].includes(event.verification))) dates.push(["Preferred days & alternatives", "No evidence-backed ideal day yet. An alternate date within the season is not known to be worse; current reports must narrow the timing."]);
+    const options = event.nightOptions || [event, ...(event.alternatives || [])];
+    const drives = options.map(e => e.drive_hours).filter(d => Number.isFinite(d) && d > 0);
+    const places = Array.isArray(event.locations_detail) && event.locations_detail.length ? event.locations_detail.map(p=>p.name) : event.locations || [event.where || event.zone || park?.name].filter(Boolean);
+    const evidence = [["Status", VERIFICATION_META[event.verification]?.label], ["What is known", event.evidence_note], ["Still needed", event.awaiting], ["Observed", event.observed_at ? absoluteLabel(parseEventDate(event.observed_at)) : null], ["Priority", `${event.score}/100 — ranking, not a probability`], ["Data degraded", event.source_health_note]];
+    if (event.condition_states && typeof event.condition_states === "object") evidence.push(...Object.entries(event.condition_states));
+    if (Number.isFinite(event.cloud_cover)) evidence.push([cloudLabel(event), `${event.cloud_cover}%`]);
+    if (Number.isFinite(event.streamflow_cfs)) evidence.push(["Basin flow observation", `${event.streamflow_cfs} cfs · ${event.streamflow_trend || "trend unknown"} · ${absoluteLabel(parseEventDate(event.streamflow_observed_at))}. Merced basin proxy, not waterfall spray or future flow.`]);
+    if (event.category === "sunset") evidence.push(["Weather source", "Open-Meteo low, middle and high cloud forecasts with upstream light-path assessment. Forecast layers, not measured cloud heights; no Pirate Weather entity required."]);
+    if (event.light_path === "local") evidence.push(["Light path", "Not checked; only local cloud was available, so this score may be optimistic."]);
+    evidence.push(["Forecast", event.forecast_note], ["Limits", event.confidence_note]);
+    if (event.measurement_label) evidence.push([event.measurement_label, `${event.wave_height_m ?? "Unknown"} m · ${event.wave_period_s ?? "Unknown"} s · from ${event.wave_direction_deg ?? "Unknown"}°`]);
+    const locationGuides = (Array.isArray(event.locations_detail) ? event.locations_detail : []).map(place => `<section class="location-option"><strong>${escapeHtml(place.name)}</strong><p>${escapeHtml(place.note)}</p>${safeExternalUrl(place.url) ? `<a href="${escapeHtml(safeExternalUrl(place.url))}" target="_blank" rel="noopener noreferrer">Viewpoint guide / current access</a>` : ""}</section>`).join("");
+    const access = [["Locations", places.join(" · ")], ["Closest approximate drive", drives.length ? driveLabel(Math.round(Math.min(...drives) * 60)) : park?.drive_label], ["Access", event.access_note], ["Closures", event.closures?.join("; ")], ["Access check", event.closure_source], ["Coastal advisories", event.coastal_advisories?.join("; ")], ["Dogs", park?.dog_detail]];
+    if (event.tide_window_start && event.tide_window_end) access.push(["Tide window", `${absoluteLabel(parseEventDate(event.tide_window_start))} to ${absoluteLabel(parseEventDate(event.tide_window_end))}`]);
+    const why = event.tips || event.detail || (event.reasons || []).join(", ") || "A seasonal photography lead; current conditions still need checking.";
+    // Keep the first opening useful without exposing every technical field.
+    // The original explanation stays intact behind the evidence section.
+    const intro = why.match(/^.{1,220}?[.!?](?:\s|$)/)?.[0]?.trim() || (why.length > 220 ? why.slice(0, 217) + "…" : why);
+    const urls = [...new Set([...(Array.isArray(event.verify) ? event.verify : []), event.streamflow_url, ...(event.closure_urls || [])].map(safeExternalUrl).filter(Boolean))];
+    const links = urls.map(url => `<a href="${escapeHtml(url)}" target="_blank" rel="noopener noreferrer">${escapeHtml(sourceLabel(url))}</a>`).join("");
+    return `<div class="outlook-detail">
+      ${event.source_health_note ? `<p class="source-warning">Some supporting data could not update. Check evidence before choosing a date.</p>` : ""}
+      <p class="event-intro">${escapeHtml(intro)}</p>
+      <p class="event-recommendation"><strong>${event.nights ? (candidate ? "Sky candidate:" : "Preferred:") : "Timing:"}</strong> ${escapeHtml(event.nights ? dateLabel(parseEventDate(best.start)) : event.precision === "season" || event.planning_only ? "Planning window; no confirmed ideal day yet" : bestWindow)}${event.nights ? ` · ${best.duration_minutes || "—"} min. Open dates to compare alternatives and why they differ.` : ""}</p>
+      ${this._eventControlsHtml(event.event_id || event.roll || event.key, outlook.preferences[event.event_id || event.roll || event.key]?.choice)}
+      ${section("dates", "Dates & alternatives", list(dates) + this._nightComparisonHtml(event))}
+      ${section("places", `Locations & access${places.length > 1 ? ` · ${places.length}` : ""}`, list(access) + locationGuides + (!event.nights && event.alternatives?.length ? options.map(location => this._locationHtml(location)).join("") : ""))}
+      ${section("evidence", "Evidence & source reports", list(evidence) + (why !== intro ? `<p>${escapeHtml(why)}</p>` : "") + reportLinkHtml(event) + `<div class="outlook-verify">${links}</div>`)}
+      ${this._config.show_gear ? section("gear", "Photography gear", list([["Lens", event.gear || outlook.gear?.[event.category]?.glass], ["Support", outlook.gear?.[event.category]?.support], ["Settings", outlook.gear?.[event.category]?.settings]])) : ""}
+    </div>`;
   },
 
   _legendHtml() {
-    return `<div class="pe-legend"><span>Color = event type. Labels describe the evidence; scores rank priority.</span>
-      ${Object.entries(CATEGORY_META).map(([category, meta]) => `<span class="pe-legend-item"><span class="category-dot" style="background:${categoryColor(category)}"></span>${escapeHtml(meta.label)}</span>`).join("")}</div>`;
+    return `<details class="view-options" data-section="legend"><summary>Colors & labels</summary><div class="pe-legend"><span>Color = event type. Labels describe the evidence; scores rank priority.</span>
+      ${Object.entries(CATEGORY_META).map(([category, meta]) => `<span class="pe-legend-item"><span class="category-dot" style="background:${categoryColor(category)}"></span>${escapeHtml(meta.label)}</span>`).join("")}</div></details>`;
   },
 
   /** What the colours mean, and what is deliberately not shown. */

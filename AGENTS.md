@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.13.0.** `main` is the working branch; there is no PR flow.
+**Current version: 0.14.0.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -31,6 +31,15 @@ Everything below exists to prevent that. A confident wrong answer is worse than
 an admitted unknown, every time.
 
 ---
+
+## 0.14.0 handoff amendments
+
+- Keep the first view brief: five ranked previews with a visible more control, compact titles/ranges, collapsed later buckets and progressive event detail. Full supplied ranges and alternatives must remain reachable.
+- Grouped nightly events have stable period keys; changing the preferred night must not collapse open details. Preserve nested sections, focus and scroll when HA pushes updates, including inside calendar dialogs.
+- `generated` and entity/connection availability drive a local stale clock. An outage must never look like a successfully empty calendar.
+- USGS uses OGC v1 continuous values. Station 11264500, discharge 00060, instantaneous statistic 00011 and ft^3/s must match. Reject partial pages and invalid/qualified/non-finite readings; never infer waterfall spray from Merced discharge.
+- Moonbows carry individual condition states, forecast/outlook confidence and sampled candidate hours. Planning-only is an evidence restriction, not permission to strip real candidate timestamps. Generic intervals are much wider than published viewpoint windows; never present them as actual moonbow duration.
+- `tests/card-browser-fixture.html` provides labelled synthetic outage, save-failure, automatic-update and 400-row scenarios. See BROWSER_VALIDATION.md and SOURCE_VALIDATION.md for checks and remaining limits.
 
 ## 0.12.0 handoff amendments
 

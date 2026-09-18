@@ -4,6 +4,13 @@
 
 
 
+## 0.14.0
+
+- Readability: short event previews, progressive details, grouped moonbow nights, collapsed later months and bounded calendar bars.
+- Reliability: independent stale/offline indicators, stable expansion/focus/scroll, refreshing calendar dialogs and explicit failed saves.
+- Evidence: USGS OGC v1 migration, strict payload validation, rare-only weather/streamflow health wiring, honest moonbow condition states and preserved candidate timestamps.
+- Added browser fixtures and regression cases; version checks now include release notes and the handoff version.
+
 ## 0.13.2
 
 Whale Safe settled, after several sessions of treating it as the biggest

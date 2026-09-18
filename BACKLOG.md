@@ -1,138 +1,21 @@
-# What is left, in the order it is worth doing
+# Remaining work after 0.14.0
 
-Rewritten 2026-09-11, after v0.12.0. The previous version of this file is now
-history: of its ten items, three were delivered in 0.12.0, six were cancelled by
-the user, and one was closed by an audit. Read `AGENTS.md` first.
+Updated 2026-09-17. Read AGENTS.md first. The cancelled feature list below remains authoritative.
 
----
+## Delivered
 
-## Done — do not re-open
+Source-health/HA contract foundations, card source split and sourced eclipse paths shipped in 0.12.0. Version 0.14.0 adds readable progressive details, five-row/list/calendar previews, stable grouped moonbow occurrences, stale/offline states, popup/scroll/focus preservation, USGS OGC v1 migration and strict validation, rare-only weather/streamflow health wiring, separate moonbow condition states and candidate-time preservation. See RELEASE_NOTES.md and BROWSER_VALIDATION.md.
 
-Delivered in 0.12.0. Listed because a stale backlog is how work gets done twice.
+## Still requires real data or installation access
 
-- **Coordinator and entity coverage.** 22 real Home Assistant contract tests in
-  `tests/test_ha_integration.py`, executed by their own CI job against HA
-  2024.11.3 and 2025.3.4. The portable suite still runs with no HA installed.
-- **Source health.** Failed / stale / waiting / disabled are now distinct
-  states, per-hotline, with last-success timestamps and automatic HA Repairs
-  after repeated failures. Affected rows show "Data degraded" *without* changing
-  their evidence level — which was the important half.
-- **Failed responses no longer look like empty ones.** A partial or failed fetch
-  retains cached data with its original dates; only a genuinely empty valid
-  response is quiet.
-- **Card split** into 11 files under `www/src/` with a dependency-free
-  concatenation script, CI-checked for source/artifact sync.
-- **Eclipse catalogue**: 45 NASA eclipses 2026–2035 with published coordinates
-  for all 16 central solar paths, TD vs UT corrected. An ocean path point is
-  never treated as a road destination.
-- **Meteor radiant drift**, added after a 1,920-night audit found it changed
-  both a usable-night and a preferred-night verdict. Worth noting the audit was
-  the right move: the previous backlog said "verify it matters before building
-  it", and it did.
+- **Installed Home Assistant:** the user's screenshots show it has run. Agents have tested isolated HA contracts and real browser fixtures, but have not inspected the user's HA version, logs or upgrade. Await the version/local URL; then validate actual installation/restart/options/resource refresh and one full live update cycle.
+- **Moonbow predictions:** generic sky geometry is not a viewpoint model. A historical Lower Falls timetable was cross-checked; its actual viewing interval is substantially shorter. Links and separate viewpoint guidance are present, but current dated predictions, terrain shadow and waterfall spray still need verification. No future date is copied from a past-year table, and no flow-to-spray threshold is invented.
+- **Firefall:** seasonal alignment dates are a planning guide. Contrary to the previous backlog, this builder does not consume the Merced gauge and does not solve exact firefall light geometry. Actual Horsetail flow and the western light path remain unconfirmed. A river in another drainage would not close these gaps.
+- **Waves:** only NDBC 46011/CDIP B1500 are calibrated. The Point Sal public trail and closure links were researched, but they do not establish safe storm access or validate B1500 heights at a different viewpoint. A verified elevated shooting position remains open. Expanding coastline coverage requires separate historical calibration/exposure checks.
+- **Wildlife:** species reports remain distinct from rut, pupping and mass-aggregation reports. Unconfirmed subjects retain explicit verification routes; no new behavior feed is claimed.
+- **Eclipses:** sourced central paths and known-site screening are implemented through 2035. Partial-only solar visibility, exhaustive drivable-land search and exact contacts remain outside the model.
+- **Whale Safe:** settled. The public API has ship/compliance data, not whale presence. Presence access needs an external data agreement; do not use VSR dates as whale evidence.
 
-## Cancelled by the user — do not propose again
+## Cancelled by the user
 
-Notification blueprint, phone delivery, hassfest in CI, upstream brand
-submission, a `watching` filter, score ÷ drive sorting, and a separate
-`this_week` mode.
-
----
-
-## Tier 1 — the largest remaining unknown
-
-### 1. None of this has ever run on the user's Home Assistant
-
-Everything is validated by CI, contract tests and synthetic browser fixtures.
-No connection to the user's instance has ever been available to any agent
-working on this. That makes installation, HACS upgrade, entity registration,
-dashboard rendering at real payload size and mobile behaviour the only
-completely untested surface left — and it is the one the user actually touches.
-
-**This is not agent work.** It needs the user to install, restart, and report
-what breaks. Until then, treat "it works" as unverified.
-
-Worth preparing for that first contact: the served card is now 226 KB. Check
-first paint and scroll on a real dashboard with a full year of events, on
-phone as well as desktop, before assuming the split changed nothing.
-
----
-
-## Tier 2 — coverage the data honestly lacks
-
-### 2. Wave coverage is one calibrated stretch of coast
-
-NDBC 46011 / CDIP B1500 cover the Vandenberg area. The calibration is
-Vandenberg-specific and the hindcast frequency is explicitly not forecast skill.
-Extending to other California coastlines means calibrating each one, not
-reusing this one's thresholds.
-
-Also open: verified elevated viewpoints for big-swell photography. Currently
-there is swell data and no confirmed place to stand.
-
-### 3. Moonbow viewpoint azimuth, and a sourced flow threshold
-
-Two of the three unknowns closed in 0.13.0: the **altitude** geometry is
-computed (the bow only clears the ground while the Moon is below 42 degrees),
-and the water is **measured** by USGS 11264500 on the Merced.
-
-What is left is narrower and both halves need sourcing, not coding:
-
-- **Viewpoint azimuth.** Which bearing the Moon must hold to light one specific
-  fall from one specific overlook. Nobody has published this in a form worth
-  computing against, and it is the difference between "the sky permits a
-  moonbow" and "a moonbow is predicted".
-- **A flow-to-spray threshold.** The gauge reads the Merced; Yosemite Creek and
-  Horsetail's catchment are separate drainages. No published cfs figure was
-  found that says "above this, the falls are running". Do not invent one.
-
-Firefall keeps the same shape: light geometry solved, flowing water now proxied,
-clear western horizon still unmodelled.
-
-### 4. Solar eclipse model limits
-
-Central path coordinates are in. Still outside the model: partial-only solar
-visibility, exhaustive road access to a path point, and exact contact times.
-A path point being within six hours as the crow flies is not the same as
-reachable, and the model should keep saying so rather than implying otherwise.
-
-### 5. Behaviour still has no live confirmation
-
-Rut, cubs, pupping, monarch clustering, foliage, bloom and bioluminescence have
-no feed that confirms the *behaviour* — only that a species was reported. The
-current labelling ("Species reported, not behavior confirmed") is correct and
-should stay that way until a real source appears. Do not close this gap by
-inference.
-
----
-
-## Resolved: Whale Safe is not available as data
-
-Chased across several sessions as "the strongest corroboration source on this
-coast". It is - and its public API does not carry it.
-
-`api.whalesafe.com` publishes an OpenAPI spec at `/__docs__/` with nine
-endpoints, every one ship-side: operator scorecards, vessel-speed-reduction
-compliance grades, AIS track segments as GeoJSON, CSV dumps of ships and
-operators. No presence endpoint, no detection endpoint, no sightings endpoint.
-That API is the accountability half of the project - grading shipping companies
-on whether they slowed down - not the whale half.
-
-The near-real-time whale-presence rating (acoustic detections + trained
-observers + blue whale habitat model, graded low/medium/high/very high) reaches
-the shipping industry through private feeds and everyone else through the map on
-the website. The only route to it as data remains a request to the Benioff Ocean
-Science Lab, `boi-whalesafe@ucsb.edu`.
-
-**Do not substitute the VSR data.** Speed-reduction seasons are fixed periods
-declared in advance, so they encode an expectation of whales rather than an
-observation of one. Wiring them in would manufacture exactly the broad seasonal
-confidence the evidence model exists to refuse.
-
-Nothing to build here. Marine windows stay on iNaturalist corroboration.
-
-## Standing rule
-
-The evidence model is the product. Every item above is a place where the honest
-answer is currently "we do not know", and each one is only closed by a real
-source — never by widening a window, softening a label, or inferring behaviour
-from presence.
+Phone notifications/delivery, notification blueprint, hassfest, brand submission, the optional watching filter, score divided by drive sorting, and a separate this_week mode. Do not revive these without a new request.

@@ -1,4 +1,4 @@
-# Handoff log — 0.11.0
+# Handoff log — current release 0.14.0
 
 ## 2026-09-06: card review and date-choice improvements (0.11.0)
 
@@ -65,3 +65,16 @@ See BACKLOG.md for cancelled items, remaining API information and the precise ec
 ### Local validation completed 2026-09-08
 
 209 portable Python tests and 97 JavaScript tests passed. All 22 isolated Home Assistant contracts passed against HA 2024.11.3 (328 executed tests total). The portable run skips those 22 contracts when HA is absent. Pyflakes, source assembly consistency and version checks passed. Browser review of synthetic examples verified compact rows, full ranges, preferred nights, alternate-night tradeoffs, explicit outlook labels and per-source failure details. CI additionally tests HA 2025.3.4; its result and publication record will be kept in the workspace running log. No connection to the user's installed HA instance was used.
+
+
+## 2026-09-17: readability and reliability (0.14.0)
+
+Base: 4b4062c28be888472dad8e4bb54183b638664f27 (v0.13.2). The user approved the finishing review and emphasized avoiding information overload. Changes are described in RELEASE_NOTES.md; source limitations and real-browser checks are recorded in SOURCE_VALIDATION.md and BROWSER_VALIDATION.md.
+
+Short rows and five-item previews now lead into progressive details; later months and crowded calendar weeks stay compact without removing access to remaining events. Grouped moonbow keys survive changes in preferred night. Local stale/connection handling and updating native dialogs retain sections, focus and scroll. Corrected USGS health dependencies, rare-only weather fetching, OGC v1 parsing, non-finite cloud rejection, individual moonbow condition states and preservation of timed planning-only candidates.
+
+The installed HA version/local URL was requested but not supplied during this implementation. Do not claim a successful upgrade on the user's instance. No phone delivery or cancelled Tier 2 features were added. Remaining source/installation work is accurately listed in BACKLOG.md rather than described as completed.
+
+Validation for 0.14.0: 231 portable Python tests, 25 real HA contract tests and 102 JS tests pass (358 total). Pyflakes is clean; build/artifact and version checks pass. HA tests used the existing isolated HA 2024.11.3 installation; CI additionally covers HA 2025.3.4. Browser checks and their limits are in BROWSER_VALIDATION.md.
+
+Final documentation review corrected the old HACS resource URL, minimum HA version, 30-day horizon, Whale Safe API claim, timeline-mode behavior and eclipse coverage. Removed the obsolete standalone sunset-notification example and conflicting hardcoded meteor-date claim. Documented source assembly and the local freshness timer.

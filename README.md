@@ -76,10 +76,10 @@ under **Check before you book**:
 | [CDFW](https://wildlife.ca.gov/Conservation/Mammals/Black-Bear) · [Bear Tracker](https://keepbearswild.org/bear-tracker/) | Black bear denning and emergence timing, and live sightings |
 | [Western Monarch Count](https://westernmonarchcount.org/) · [eBird](https://ebird.org/) | Roost counts and week-by-week arrival charts |
 
-**Whale Safe is linked rather than read.** Its API is real but not public -
-access is by request to the Benioff Ocean Science Lab. Rather than invent an
-endpoint, the integration links to it and is shaped so a key drops straight in;
-if you obtain one it is the single best corroboration source on this coast.
+**Whale Safe is linked rather than read.** Its public API supplies ship and
+compliance data, not whale presence. Presence data requires an agreement with
+the Benioff Ocean Science Lab and a verified response contract before integration.
+Vessel speed-reduction seasons are not evidence of whales being present.
 
 ### Seasons versus peak windows
 
@@ -91,9 +91,9 @@ apart:
 | **Background season** | "Gray whales, December to May" | Appears in the year view. Never scores, never alerts |
 | **Peak window** | "Southbound adults past the points, 5-25 January" | Scores, and can raise a drop-everything alert as it opens |
 
-Beyond thirty days you get the season, because that is the most honest thing
+Beyond sixty days you get the season, because that is the most honest thing
 anyone can say - weather models do not reach that far and animals do not read
-calendars. Inside thirty days it switches to the concrete window and carries the
+calendars. Inside sixty days it switches to the concrete window and carries the
 specific overlooks, real focal lengths, and the behaviour or tide that decides
 whether you come home with the shot.
 
@@ -257,55 +257,9 @@ scores best, a large spread is a bonus, a flat unchanging deck is a penalty. It
 is a decent proxy and it is not the model above. With the integration installed,
 the layered and upstream version is what you get.
 
-## Get notified when the sky is worth chasing
-
-A Lovelace card only tells you something while you are looking at a dashboard,
-which is no use for a sky that peaks for fifteen minutes. Custom cards cannot
-publish state back into Home Assistant, so the notification has to be a normal
-automation reading your weather entity directly. This one mirrors the card's
-core heuristic in a deliberately simpler form - moderate, broken cloud with low
-rain chance - and fires a couple of hours before sunset:
-
-```yaml
-automation:
-  - alias: Sunset could be worth chasing
-    trigger:
-      - platform: sun
-        event: sunset
-        offset: "-02:00:00"
-    condition:
-      - condition: template
-        value_template: >-
-          {% set f = state_attr('weather.home', 'forecast') or [] %}
-          {% set near = f[:3] | map(attribute='cloud_coverage') | select('is_number') | list %}
-          {% set rain = f[:3] | map(attribute='precipitation_probability')
-                                | select('is_number') | list %}
-          {{ near | length > 1
-             and 25 <= (near | sum / near | length) <= 70
-             and (near | max) - (near | min) >= 20
-             and (rain | length == 0 or (rain | max) < 40) }}
-    action:
-      - service: notify.mobile_app_your_phone
-        data:
-          title: Get to the beach
-          message: >-
-            Broken cloud and low rain chance into sunset - this one could go off.
-```
-
-Replace `weather.home` and `notify.mobile_app_your_phone` with your own
-entities. Some integrations expose the hourly forecast through the
-`weather.get_forecasts` action rather than a `forecast` attribute; if the
-template comes back empty, fetch it in the automation with that action first.
-
-This is intentionally a rough approximation - it cannot see the clearing-trend
-or haze signals the card weighs. If you would rather have the card's exact
-scoring available to automations, that needs a companion Home Assistant
-integration publishing real sensor entities, which is a much larger piece of
-work than a dashboard card; say the word and it can be built.
-
 ## Requirements
 
-1. Home Assistant 2024.6 or newer
+1. Home Assistant 2024.11 or newer
 2. HACS
 3. No API keys are required to start. An eBird key unlocks rare-bird alerts and
    a Google Maps key unlocks traffic-aware drive times; both are optional.
@@ -433,7 +387,7 @@ Work through these in order. Step 1 tells you which half of the problem you have
 dashboard page and look for the version banner:
 
 ```
-Photography Events Card v0.2.0
+Photography Events Card v0.14.0
 ```
 
 - **Banner present** → the card is registered. Skip to step 4.
@@ -443,7 +397,7 @@ Photography Events Card v0.2.0
 right) → Resources**. You need an entry of type **JavaScript Module**:
 
 ```
-/hacsfiles/Home-assistant-photography-events/photography-events-card.js
+/photography_events/photography-events-card.js
 ```
 
 If it is missing, add it with **+ Add Resource** using exactly that URL and the
@@ -457,7 +411,7 @@ you. Add it to `configuration.yaml` and restart:
 lovelace:
   mode: yaml
   resources:
-    - url: /hacsfiles/Home-assistant-photography-events/photography-events-card.js
+    - url: /photography_events/photography-events-card.js
       type: module
 ```
 
@@ -476,8 +430,8 @@ the version banner, please open an issue with that message.
 
 ## Card modes
 
-The card has three modes. Two of them read the integration's entities; the third
-computes everything in the browser and needs no integration at all.
+The card has three modes. All use the integration when available; timeline
+also offers a standalone browser calculator when the integration is absent.
 
 ```yaml
 type: custom:photography-events-card
@@ -529,10 +483,10 @@ entirely. Set `hide_routine: false` to get them all back.
 
 ### `timeline` - integration planner or standalone fallback
 
-The original mode, and still the default. It computes sun, moon, planet and
-meteor geometry in the browser from your coordinates, needs no integration, and
-makes no third-party requests. Everything under
-[What this card computes](#what-this-card-computes) describes this mode.
+The original mode, and still the default. It uses the integration planner when
+available. Without it, the standalone fallback computes sun, moon, planet and
+meteor geometry in the browser from your coordinates and makes no third-party
+requests. [What this card computes](#what-this-card-computes) describes that fallback.
 
 ### Why the backend modes hold no logic
 
@@ -540,8 +494,8 @@ A browser tab cannot keep an API key, cannot call eBird or Google past CORS, and
 only runs while a dashboard is open. Anything sourced from a live service has to
 arrive as entity state - so in these two modes the card draws what the
 integration worked out, and does no computing of its own. They are also
-push-driven: they start no timers and redraw only when one of the entities they
-read actually changes.
+push-driven for event updates, with a local minute timer to age saved data and
+show overdue information even when the backend stops sending updates.
 
 ## National parks and monuments
 
@@ -788,18 +742,10 @@ ships. Read it before trusting any window in here.
   top of `field_reports.py`
 - **Drive times are estimates unless you supply a Google Maps key** - see
   [Drive times](#drive-times) for the error bars
-- **Meteor shower peak dates recur annually** and are hardcoded to their
-  well-known average calendar date, which can drift by about a day year to
-  year
-- **The eclipse table is a manually curated, static list** (compiled from
-  NASA/Wikipedia/EclipseWise eclipse predictions) covering upcoming eclipses
-  into 2028. It needs periodic updates for eclipses further out, and you
-  should verify exact timing and, for solar eclipses, whether your specific
-  location falls in the path, against an authoritative source before making
-  travel plans. Lunar eclipse visibility is a real computed check (is the
-  Moon above your horizon); solar eclipse visibility only rules out the
-  night side of Earth - it cannot tell you whether you're inside the actual
-  path of totality/annularity
+- **The sourced NASA eclipse catalog covers 2026–2035.** Known viewing sites
+  are screened against published central paths and approximate drive budgets.
+  Exact solar contacts, partial-only visibility and exhaustive road access
+  are not computed. Lunar windows intersect the umbral phase with local visibility.
 - **Bird migration is a coarse seasonal heuristic** (a general spring/fall
   date range for your hemisphere), not live migration data. For real-time
   nocturnal migration intensity, check Cornell Lab's BirdCast
@@ -829,8 +775,9 @@ ships. Read it before trusting any window in here.
 npm test
 ```
 
-No build step is required. `photography-events-card.js` is the HACS release
-file.
+Installation needs no build step. After editing `www/src/`, regenerate the
+checked-in `photography-events-card.js` with `node scripts/build-card.mjs`;
+`npm run check` verifies the artifact and synchronized versions.
 
 ## Credits
 
@@ -845,7 +792,7 @@ MIT
 
 ## 0.10 planner and event notifications
 
-See [release notes](RELEASE_NOTES.md) and [source validation](SOURCE_VALIDATION.md) for the new feeds and their limits. Select `calendar_outlook` for the expandable planner; explicit `timeline` cards keep the standalone browser view. Follow/Skip applies to a whole occurrence across its viewpoints and survives Home Assistant restarts. Skipping suppresses the featured opportunity and new event notifications. Show skipped restores it. Follow enables notification of a changed best location; it never bypasses evidence requirements.
+See [release notes](RELEASE_NOTES.md) and [source validation](SOURCE_VALIDATION.md) for the new feeds and their limits. Select `calendar_outlook` for the expandable planner; `timeline` uses the integration when available and otherwise falls back to browser calculations. Follow/Skip applies to a whole occurrence across its viewpoints and survives Home Assistant restarts. Skipping suppresses the featured opportunity and new event notifications. Show skipped restores it. Follow enables notification of a changed best location; it never bypasses evidence requirements.
 
 To deliver the new deduplicated opportunity events to your phone, replace the example service with your own existing notify target:
 
@@ -887,3 +834,10 @@ The compact week and year views have an expandable source-health strip. It names
 Card sources are in `custom_components/photography_events/www/src/`. After editing them, run `node scripts/build-card.mjs`; CI rejects an out-of-sync generated card. Installation still uses the single `photography-events-card.js` artifact. `python -m unittest discover -s tests` runs the portable tests without HA; the HA-specific file skips locally when HA is absent and is executed in its own CI job.
 
 The NASA eclipse catalog covers 2026–2035 and contains published central-path coordinates, not inferred region descriptions. Known sites are screened against these paths and approximate drive budgets. Exact solar contacts, partial-only solar visibility and exhaustive road access are not computed. Lunar times intersect the real umbral phase with local Moon visibility. Broad wildlife seasons remain estimates unless qualifying dated evidence supports them.
+
+
+### Reading the cards (0.14.0)
+
+The dashboard starts with five brief event rows and a **Show more** control. Open an event for its overview; expand **Dates & alternatives**, **Locations & access**, **Evidence & source reports** or **Photography gear** as needed. The full supplied date range remains visible even when a particular night ranks highest. Candidate moonbow hours are sky geometry, not an actual moonbow prediction.
+
+The year planner starts later months collapsed with their subject names. Calendar weeks preview five ranked bars and let you reveal the rest. Event type filters and the color legend are expandable. A dated warning appears when the integration is unavailable, Home Assistant disconnects or the calendar update is overdue; saved rows are not evidence of current conditions.

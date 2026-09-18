@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.14.1.** `main` is the working branch; there is no PR flow.
+**Current version: 0.15.0.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 

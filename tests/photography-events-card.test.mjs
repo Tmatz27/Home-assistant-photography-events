@@ -1886,3 +1886,46 @@ test("compact week includes every intersecting event with its own details, not b
   card._root.querySelectorAll("[data-expand]")[1].click();assert.match(card._root.innerHTML,/Details 4/);
   card.disconnectedCallback();
 });
+
+test("the seven-day view colours by likelihood, not category", () => {
+  const { confidenceColor, confidenceBand } = Card.backend;
+  // Distinct bands, so a glance down the list reads as a ranking.
+  const colors = [95, 85, 75, 40].map(confidenceColor);
+  assert.equal(new Set(colors).size, 4, "each band needs its own colour");
+  assert.equal(confidenceColor(90), confidenceColor(99), "90 and 99 are the same band");
+  assert.notEqual(confidenceColor(89), confidenceColor(90), "the boundary is at 90");
+  assert.notEqual(confidenceColor(79), confidenceColor(80), "and at 80");
+
+  // A missing or unusable score must fall to the bottom band, never the top.
+  assert.equal(confidenceColor(undefined), confidenceColor(10));
+  assert.equal(confidenceColor(NaN), confidenceColor(10));
+  assert.equal(confidenceColor("nonsense"), confidenceColor(10));
+  assert.match(confidenceBand(95).label, /90\+/);
+});
+
+test("category colour still belongs on the year calendar", () => {
+  const { categoryColor, confidenceColor } = Card.backend;
+  // Two subjects that would score alike must stay distinguishable there.
+  assert.notEqual(categoryColor("astronomy"), categoryColor("marine"));
+  assert.notEqual(categoryColor("astronomy"), confidenceColor(95),
+    "the two scales are separate on purpose");
+});
+
+test("Timeline is not offered as a second name for the planning calendar", () => {
+  const editor = new Editor();
+  editor.setConfig({ mode: "calendar_outlook" });
+
+  // With the integration installed, Timeline renders the planning calendar, so
+  // offering it as a choice is offering the same card twice.
+  editor.hass = { states: { "sensor.photography_events_planning_outlook": { state: "3", attributes: {} } } };
+  assert.equal(editor._timelineIsDistinct({ mode: "calendar_outlook" }), false);
+
+  // Standalone, it is genuinely a different view and stays on offer.
+  editor.hass = { states: {} };
+  assert.equal(editor._timelineIsDistinct({ mode: "calendar_outlook" }), true);
+
+  // And an existing Timeline config keeps its own option rather than silently
+  // losing the mode it was saved with.
+  editor.hass = { states: { "sensor.photography_events_planning_outlook": { state: "3", attributes: {} } } };
+  assert.equal(editor._timelineIsDistinct({ mode: "timeline" }), true);
+});

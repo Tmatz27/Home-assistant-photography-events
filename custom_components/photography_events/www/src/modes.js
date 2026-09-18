@@ -1,3 +1,10 @@
+// Two ways of saying "stop showing me this", and both must hide the row.
+// "Skip" is not going; "Seen it" is the photograph is taken. A filter that
+// tests only for one silently brings back everything you have already been
+// out and shot. Next year's occurrence is a different key either way, so it
+// returns on its own.
+const SUPPRESSED = new Set(["skip", "seen"]);
+
 const CARD_MODES = {
   _bodyHtml() {
     if (this._config.mode === MODE_HERO) return this._outlookEntityId() ? this._weekHtml() : this._heroHtml();
@@ -297,7 +304,7 @@ const CARD_MODES = {
     const outlook = outlookFromState(state);
     const running = outlook.events
       .filter((event) => event.precision === "peak" &&
-        outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip")
+        !SUPPRESSED.has(outlook.preferences[event.event_id || event.roll || event.key]?.choice))
       .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) || parseEventDate(event.start) }))
       .filter((event) => event.startDate && event.endDate && event.startDate <= now && event.endDate >= now)
       .sort((left, right) => right.score - left.score)
@@ -331,7 +338,7 @@ const CARD_MODES = {
     const outlook = outlookFromState(state);
     const now = new Date();
     const weekEnd = new Date(now.getTime() + 7 * MS_PER_DAY);
-    const visible = outlook.events.filter(e => outlook.preferences[e.event_id || e.roll || e.key]?.choice !== "skip");
+    const visible = outlook.events.filter(e => !SUPPRESSED.has(outlook.preferences[e.event_id || e.roll || e.key]?.choice));
     // Group before cutting to seven days: a later best night must not disappear
     // from a period already underway this week.
     const events = this._groupEvents(filterOutlook(visible, { now, fromDays: 0, throughDays: 365 }))
@@ -340,7 +347,8 @@ const CARD_MODES = {
     return `<div class="week-card"><div class="week-heading">Next seven days <span>${events.length} opportunities</span></div>
       ${this._freshnessHtml(outlook, now)}
       ${this._choiceError ? `<div role="alert">${escapeHtml(this._choiceError)}</div>` : ""}
-      ${events.length ? this._previewRowsHtml(events, outlook, now, "dashboard") : `<p class="empty-week">${outlook.unavailable || this._hass.connected === false || (outlook.generated && now - outlook.generated > 45 * 60000) ? "Calendar unavailable. Waiting for an update." : "No special opportunities reported yet."}</p>`}
+      ${events.length ? this._previewRowsHtml(events, outlook, now, "dashboard", "confidence") : `<p class="empty-week">${outlook.unavailable || this._hass.connected === false || (outlook.generated && now - outlook.generated > 45 * 60000) ? "Calendar unavailable. Waiting for an update." : "No special opportunities reported yet."}</p>`}
+      ${confidenceLegendHtml()}
       ${healthStripHtml(outlook.sources)}
       </div>`;
   },
@@ -491,7 +499,7 @@ const CARD_MODES = {
     const allowed = this._activeFilters;
 
     const visible = outlook.events.filter(event => this._showSkipped ||
-      outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip");
+      !SUPPRESSED.has(outlook.preferences[event.event_id || event.roll || event.key]?.choice));
     const events = filterOutlook(visible, { allowed, now, fromDays: 0, throughDays: 365 });
     const from = new Date(now.getTime() + this._config.outlook_from_days * MS_PER_DAY);
     const through = new Date(now.getTime() + this._config.outlook_through_days * MS_PER_DAY);
@@ -567,17 +575,19 @@ const CARD_MODES = {
     return `${best}<span class="outlook-badge ${tone}">${event.score}% score</span>`;
   },
 
-  _outlookRowHtml(event, outlook, now) {
+  _outlookRowHtml(event, outlook, now, colorBy = "category") {
     const park = event.planning_only ? outlook.parks[event.zone_id] : null;
     const expanded = this._expanded.has(event.key);
     const choice = outlook.preferences[event.event_id || event.roll || event.key]?.choice || "default";
     const locations = event.locations || (park ? [park.name] : [event.where || event.zone]);
     const total = new Set([...locations, ...(event.alternatives || []).map(e => e.where || e.zone)].filter(Boolean)).size;
     const where = total > 1 ? `${total} locations` : locations[0] || "";
-    const status = choice === "skip" ? "Skipped" : choice === "follow" ? "Following" :
+    const status = choice === "skip" ? "Skipped" : choice === "seen" ? "Seen this season" :
+      choice === "follow" ? "Following" :
       VERIFICATION_META[event.verification]?.label || (event.precision === "season" || park ? "Season" : "Calculated / forecast");
     const title = event.roll ? event.title.replace(/ at .+$/, "") : event.title.replace(/ \(season\)$/, "");
-    return `<div class="outlook-row ${expanded ? "open" : ""}" style="--event-color:${categoryColor(event.category)}">
+    const accent = colorBy === "confidence" ? confidenceColor(event.score) : categoryColor(event.category);
+    return `<div class="outlook-row ${expanded ? "open" : ""}" style="--event-color:${accent}">
       <button type="button" class="outlook-head simple-row" data-expand="${escapeHtml(event.key)}" aria-expanded="${expanded}">
         <span class="outlook-body"><span class="outlook-title">${escapeHtml(title)}</span>
           <span class="outlook-meta">${escapeHtml(rangeLabel(event.startDate, event.endDate))}${where ? ` · ${escapeHtml(where)}` : ""}</span></span>
@@ -595,9 +605,9 @@ const CARD_MODES = {
     return `<p class="freshness-warning" role="status"><strong>${issue}.</strong> ${outlook.generated ? `Last calendar update: ${escapeHtml(absoluteLabel(outlook.generated))}.` : "Waiting for a dated update."} ${outlook.events.length ? "Showing saved information; current conditions may have changed." : "An empty view does not mean nothing is happening."}</p>`;
   },
 
-  _previewRowsHtml(events, outlook, now, key) {
+  _previewRowsHtml(events, outlook, now, key, colorBy = "category") {
     const all = this._moreBuckets.has(key);
-    return `${(all ? events : events.slice(0, 5)).map(event => this._outlookRowHtml(event, outlook, now)).join("")}
+    return `${(all ? events : events.slice(0, 5)).map(event => this._outlookRowHtml(event, outlook, now, colorBy)).join("")}
       ${events.length > 5 ? `<button type="button" class="show-more" data-more="${escapeHtml(key)}" aria-expanded="${all}">${all ? "Show fewer" : `Show ${events.length - 5} more opportunities`}</button>` : ""}`;
   },
 

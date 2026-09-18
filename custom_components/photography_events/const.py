@@ -19,6 +19,15 @@ CONF_ENABLE_FIELD_REPORTS: Final = "enable_field_reports"
 CONF_ENABLED_CATEGORIES: Final = "enabled_categories"
 
 DEFAULT_MAX_DRIVE_HOURS: Final = 6.0
+
+# Not every category deserves the same radius. A whale peak or a park is a trip
+# you plan weeks out, and six hours is a reasonable question to ask of it. A
+# sunset is a decision you make at four in the afternoon on that day's forecast,
+# and nobody drives six hours for one - so listing them at that range trains you
+# to scroll past the category entirely, which costs you the evenings that were
+# worth stepping outside for.
+CONF_SUNSET_DRIVE_HOURS: Final = "sunset_drive_hours"
+DEFAULT_SUNSET_DRIVE_HOURS: Final = 1.0
 DEFAULT_ALERT_SCORE: Final = 75
 DEFAULT_SUNSET_SCORE: Final = 85
 

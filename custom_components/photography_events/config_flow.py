@@ -36,9 +36,11 @@ from .const import (
     CONF_NPS_API_KEY,
     CONF_MAX_DRIVE_HOURS,
     CONF_ROUTING_MODE,
+    CONF_SUNSET_DRIVE_HOURS,
     CONF_SUNSET_SCORE,
     DEFAULT_ALERT_SCORE,
     DEFAULT_MAX_DRIVE_HOURS,
+    DEFAULT_SUNSET_DRIVE_HOURS,
     DEFAULT_SUNSET_SCORE,
     DOMAIN,
     ROUTING_AUTO,
@@ -68,6 +70,18 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 selector.NumberSelectorConfig(
                     min=0.5,
                     max=12,
+                    step=0.25,
+                    mode=selector.NumberSelectorMode.BOX,
+                    unit_of_measurement="h",
+                )
+            ),
+            vol.Required(
+                CONF_SUNSET_DRIVE_HOURS,
+                default=float(defaults.get(CONF_SUNSET_DRIVE_HOURS, DEFAULT_SUNSET_DRIVE_HOURS)),
+            ): selector.NumberSelector(
+                selector.NumberSelectorConfig(
+                    min=0.25,
+                    max=6,
                     step=0.25,
                     mode=selector.NumberSelectorMode.BOX,
                     unit_of_measurement="h",
@@ -133,8 +147,9 @@ def _clean(user_input: dict[str, Any]) -> dict[str, Any]:
     for key in (CONF_SUNSET_SCORE, CONF_ALERT_SCORE):
         if key in cleaned:
             cleaned[key] = int(cleaned[key])
-    if CONF_MAX_DRIVE_HOURS in cleaned:
-        cleaned[CONF_MAX_DRIVE_HOURS] = float(cleaned[CONF_MAX_DRIVE_HOURS])
+    for key in (CONF_MAX_DRIVE_HOURS, CONF_SUNSET_DRIVE_HOURS):
+        if key in cleaned:
+            cleaned[key] = float(cleaned[key])
     for key in (CONF_EBIRD_API_KEY, CONF_GOOGLE_API_KEY, CONF_NPS_API_KEY):
         if not (cleaned.get(key) or "").strip():
             cleaned.pop(key, None)

@@ -978,14 +978,33 @@ def planning_slice(opportunities: list[Opportunity], limit: int) -> list[Opportu
     return sorted(selected, key=lambda item: item.start)
 
 
-def within_drive(opportunities: list[Opportunity], max_hours: float) -> list[Opportunity]:
+def within_drive(
+    opportunities: list[Opportunity],
+    max_hours: float,
+    category_limits: dict[str, float] | None = None,
+) -> list[Opportunity]:
     """Drop what is too far to drive to, keeping the trips you plan instead.
 
     The drive limit answers "could I be there tonight", which is the wrong
     question for a national park eight hours away - you go there for a long
     weekend, and gating it out would defeat the point of listing it.
+
+    Some categories want a tighter answer than the global one. A sunset is
+    decided on the afternoon's forecast and is worth a short drive at most;
+    offering one six hours away is how the whole category becomes noise. A
+    per-category cap only ever tightens - it can never let something through
+    that the global limit excluded.
     """
-    return [item for item in opportunities if item.planning_only or item.drive_hours <= max_hours]
+    limits = category_limits or {}
+    kept = []
+    for item in opportunities:
+        if item.planning_only:
+            kept.append(item)
+            continue
+        cap = min(max_hours, limits.get(item.category, max_hours))
+        if item.drive_hours <= cap:
+            kept.append(item)
+    return kept
 
 
 def action_window(opportunities: list[Opportunity], now: datetime, hours: int = 48) -> list[Opportunity]:

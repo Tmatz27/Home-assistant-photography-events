@@ -110,7 +110,8 @@ class PhotographyEventsCardEditor extends HTMLElement {
         <div class="title">Display</div>
         <div class="row"><span class="label">Mode</span>
           <select data-select="mode">
-            <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (uses integration when installed)</option>
+            ${this._timelineIsDistinct(cfg) ? `
+            <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (browser calculator)</option>` : ""}
             <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Next seven days (compact)</option>
             <option value="${MODE_OUTLOOK}" ${cfg.mode === MODE_OUTLOOK ? "selected" : ""}>Planning calendar</option>
           </select>
@@ -127,6 +128,21 @@ class PhotographyEventsCardEditor extends HTMLElement {
     `;
     this._bindEditor();
     this._rendered = true;
+  }
+
+  /**
+   * Whether Timeline is actually a different view from Planning calendar.
+   *
+   * It is not, once the integration is installed: an installed planning sensor
+   * routes Timeline to the same renderer, so the picker was offering two names
+   * for one card. That routing is deliberate - it keeps old dashboards working
+   * rather than breaking them - but it should not be presented as a choice.
+   * Standalone installations still get the real browser calculator, and a saved
+   * Timeline config keeps working either way.
+   */
+  _timelineIsDistinct(cfg) {
+    if (cfg.mode === MODE_TIMELINE) return true;
+    return !findEntity(this._hass, "sensor.", "planning_outlook");
   }
 
   _timelineSectionsHtml(cfg) {

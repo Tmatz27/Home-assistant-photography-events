@@ -5,6 +5,9 @@ Object.assign(PhotographyEventsCard.prototype, CARD_MODES);
 // rest of this repo pokes at underscore-prefixed instance methods.
 PhotographyEventsCard.backend = {
   driveLabel,
+  categoryColor,
+  confidenceColor,
+  confidenceBand,
   driveProvenance,
   parseEventDate,
   heroFromState,

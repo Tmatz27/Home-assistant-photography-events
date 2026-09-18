@@ -89,6 +89,8 @@ from .const import (
     MIN_INTERVAL_ROUTING,
     MIN_INTERVAL_TIDES,
     MIN_INTERVAL_AIR_QUALITY,
+    CONF_SUNSET_DRIVE_HOURS,
+    DEFAULT_SUNSET_DRIVE_HOURS,
     MIN_INTERVAL_WEATHER,
     OPEN_METEO_AIR_QUALITY_URL,
     OPEN_METEO_URL,
@@ -202,7 +204,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             self.event_state = candidate
             data = dict(self.data or {})
             data["preferences"] = dict(self.event_state.choices)
-            action = [item for item in data.get("action_events", []) if self.event_state.choice(event_id(item)) != "skip"]
+            action = [item for item in data.get("action_events", []) if not self.event_state.suppressed(event_id(item))]
             data["top_action"] = next((item for item in action if event_builder.alert_candidate(item, self.alert_score)), None)
             self.async_set_updated_data(data)
 
@@ -223,6 +225,15 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
     @property
     def max_drive_hours(self) -> float:
         return float(self._options.get(CONF_MAX_DRIVE_HOURS, DEFAULT_MAX_DRIVE_HOURS))
+
+    @property
+    def category_drive_limits(self) -> dict:
+        """Tighter radii for the categories a long drive makes no sense for."""
+        return {
+            CATEGORY_SUNSET: float(
+                self._options.get(CONF_SUNSET_DRIVE_HOURS, DEFAULT_SUNSET_DRIVE_HOURS)
+            )
+        }
 
     @property
     def alert_score(self) -> int:
@@ -324,12 +335,14 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         opportunities = await self._build(now, zones, forecasts, air_quality, categories)
         opportunities = await self._apply_routing(session, now, opportunities)
 
-        opportunities = event_builder.within_drive(opportunities, self.max_drive_hours)
+        opportunities = event_builder.within_drive(
+            opportunities, self.max_drive_hours, self.category_drive_limits
+        )
         health = source_health.snapshot(self._sources, self._enabled_sources(), now)
         source_health.annotate(opportunities, health)
         self._update_repairs(health)
         action = event_builder.action_window(opportunities, now)
-        top = next((item for item in action if self.event_state.choice(event_id(item)) != "skip"
+        top = next((item for item in action if not self.event_state.suppressed(event_id(item))
                     and event_builder.alert_candidate(item, self.alert_score)), None)
         async with self._choice_lock:
             candidate = EventState(deepcopy(self.event_state.dump()))

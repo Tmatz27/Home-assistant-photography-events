@@ -18,7 +18,7 @@
  * SPDX-License-Identifier: MIT
  */
 
-const CARD_VERSION = "0.14.1";
+const CARD_VERSION = "0.15.0";
 
 /* ---------------------------------------------------------------------- *
  * Astronomy core
@@ -1717,6 +1717,26 @@ function nightTradeoffs(night, best) {
 
 function categoryColor(category) { return CATEGORY_META[category]?.color || "#b7bdc5"; }
 
+// On the seven-day view the question is "how likely is this to be worth going
+// out for", and the answer is the score. Colouring by category there answers a
+// question nobody is asking on a list of five things happening this week - you
+// can already read the category off the row. Category colour still belongs on
+// the year calendar, where the whole point is telling subjects apart.
+const CONFIDENCE_BANDS = [
+  { floor: 90, color: "#4caf72", label: "90+ · very likely" },
+  { floor: 80, color: "#e8b15e", label: "80-89 · likely" },
+  { floor: 70, color: "#e08b4c", label: "70-79 · possible" },
+  { floor: 0, color: "#8b93a1", label: "under 70 · keep an eye on it" },
+];
+
+function confidenceBand(score) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return CONFIDENCE_BANDS[CONFIDENCE_BANDS.length - 1];
+  return CONFIDENCE_BANDS.find(band => value >= band.floor) || CONFIDENCE_BANDS[CONFIDENCE_BANDS.length - 1];
+}
+
+function confidenceColor(score) { return confidenceBand(score).color; }
+
 function reportLinkHtml(event) {
   const url = safeExternalUrl(event.source_url);
   if (!url) return "";
@@ -1894,6 +1914,15 @@ function rangeLabel(start, end) {
   return `${left} - ${right}`;
 }
 
+
+/** What the seven-day colours mean. A scale nobody can read is decoration. */
+function confidenceLegendHtml() {
+  return `<details class="pe-legend-wrap"><summary>What the colours mean</summary>
+    <div class="pe-legend">${CONFIDENCE_BANDS.map(band =>
+      `<span class="pe-legend-item"><span class="category-dot" style="background:${band.color}"></span>${escapeHtml(band.label)}</span>`
+    ).join("")}</div></details>`;
+}
+
 const DEFAULT_CONFIG = Object.freeze({
   title: "Photography Events",
   // "timeline" keeps the original browser-computed view. The other two read
@@ -2006,7 +2035,8 @@ class PhotographyEventsCardEditor extends HTMLElement {
         <div class="title">Display</div>
         <div class="row"><span class="label">Mode</span>
           <select data-select="mode">
-            <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (uses integration when installed)</option>
+            ${this._timelineIsDistinct(cfg) ? `
+            <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (browser calculator)</option>` : ""}
             <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Next seven days (compact)</option>
             <option value="${MODE_OUTLOOK}" ${cfg.mode === MODE_OUTLOOK ? "selected" : ""}>Planning calendar</option>
           </select>
@@ -2023,6 +2053,21 @@ class PhotographyEventsCardEditor extends HTMLElement {
     `;
     this._bindEditor();
     this._rendered = true;
+  }
+
+  /**
+   * Whether Timeline is actually a different view from Planning calendar.
+   *
+   * It is not, once the integration is installed: an installed planning sensor
+   * routes Timeline to the same renderer, so the picker was offering two names
+   * for one card. That routing is deliberate - it keeps old dashboards working
+   * rather than breaking them - but it should not be presented as a choice.
+   * Standalone installations still get the real browser calculator, and a saved
+   * Timeline config keeps working either way.
+   */
+  _timelineIsDistinct(cfg) {
+    if (cfg.mode === MODE_TIMELINE) return true;
+    return !findEntity(this._hass, "sensor.", "planning_outlook");
   }
 
   _timelineSectionsHtml(cfg) {
@@ -2773,6 +2818,13 @@ const CARD_STYLES = `
 
     `;
 
+// Two ways of saying "stop showing me this", and both must hide the row.
+// "Skip" is not going; "Seen it" is the photograph is taken. A filter that
+// tests only for one silently brings back everything you have already been
+// out and shot. Next year's occurrence is a different key either way, so it
+// returns on its own.
+const SUPPRESSED = new Set(["skip", "seen"]);
+
 const CARD_MODES = {
   _bodyHtml() {
     if (this._config.mode === MODE_HERO) return this._outlookEntityId() ? this._weekHtml() : this._heroHtml();
@@ -3072,7 +3124,7 @@ const CARD_MODES = {
     const outlook = outlookFromState(state);
     const running = outlook.events
       .filter((event) => event.precision === "peak" &&
-        outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip")
+        !SUPPRESSED.has(outlook.preferences[event.event_id || event.roll || event.key]?.choice))
       .map((event) => ({ ...event, startDate: parseEventDate(event.start), endDate: parseEventDate(event.end) || parseEventDate(event.start) }))
       .filter((event) => event.startDate && event.endDate && event.startDate <= now && event.endDate >= now)
       .sort((left, right) => right.score - left.score)
@@ -3106,7 +3158,7 @@ const CARD_MODES = {
     const outlook = outlookFromState(state);
     const now = new Date();
     const weekEnd = new Date(now.getTime() + 7 * MS_PER_DAY);
-    const visible = outlook.events.filter(e => outlook.preferences[e.event_id || e.roll || e.key]?.choice !== "skip");
+    const visible = outlook.events.filter(e => !SUPPRESSED.has(outlook.preferences[e.event_id || e.roll || e.key]?.choice));
     // Group before cutting to seven days: a later best night must not disappear
     // from a period already underway this week.
     const events = this._groupEvents(filterOutlook(visible, { now, fromDays: 0, throughDays: 365 }))
@@ -3115,7 +3167,8 @@ const CARD_MODES = {
     return `<div class="week-card"><div class="week-heading">Next seven days <span>${events.length} opportunities</span></div>
       ${this._freshnessHtml(outlook, now)}
       ${this._choiceError ? `<div role="alert">${escapeHtml(this._choiceError)}</div>` : ""}
-      ${events.length ? this._previewRowsHtml(events, outlook, now, "dashboard") : `<p class="empty-week">${outlook.unavailable || this._hass.connected === false || (outlook.generated && now - outlook.generated > 45 * 60000) ? "Calendar unavailable. Waiting for an update." : "No special opportunities reported yet."}</p>`}
+      ${events.length ? this._previewRowsHtml(events, outlook, now, "dashboard", "confidence") : `<p class="empty-week">${outlook.unavailable || this._hass.connected === false || (outlook.generated && now - outlook.generated > 45 * 60000) ? "Calendar unavailable. Waiting for an update." : "No special opportunities reported yet."}</p>`}
+      ${confidenceLegendHtml()}
       ${healthStripHtml(outlook.sources)}
       </div>`;
   },
@@ -3266,7 +3319,7 @@ const CARD_MODES = {
     const allowed = this._activeFilters;
 
     const visible = outlook.events.filter(event => this._showSkipped ||
-      outlook.preferences[event.event_id || event.roll || event.key]?.choice !== "skip");
+      !SUPPRESSED.has(outlook.preferences[event.event_id || event.roll || event.key]?.choice));
     const events = filterOutlook(visible, { allowed, now, fromDays: 0, throughDays: 365 });
     const from = new Date(now.getTime() + this._config.outlook_from_days * MS_PER_DAY);
     const through = new Date(now.getTime() + this._config.outlook_through_days * MS_PER_DAY);
@@ -3342,17 +3395,19 @@ const CARD_MODES = {
     return `${best}<span class="outlook-badge ${tone}">${event.score}% score</span>`;
   },
 
-  _outlookRowHtml(event, outlook, now) {
+  _outlookRowHtml(event, outlook, now, colorBy = "category") {
     const park = event.planning_only ? outlook.parks[event.zone_id] : null;
     const expanded = this._expanded.has(event.key);
     const choice = outlook.preferences[event.event_id || event.roll || event.key]?.choice || "default";
     const locations = event.locations || (park ? [park.name] : [event.where || event.zone]);
     const total = new Set([...locations, ...(event.alternatives || []).map(e => e.where || e.zone)].filter(Boolean)).size;
     const where = total > 1 ? `${total} locations` : locations[0] || "";
-    const status = choice === "skip" ? "Skipped" : choice === "follow" ? "Following" :
+    const status = choice === "skip" ? "Skipped" : choice === "seen" ? "Seen this season" :
+      choice === "follow" ? "Following" :
       VERIFICATION_META[event.verification]?.label || (event.precision === "season" || park ? "Season" : "Calculated / forecast");
     const title = event.roll ? event.title.replace(/ at .+$/, "") : event.title.replace(/ \(season\)$/, "");
-    return `<div class="outlook-row ${expanded ? "open" : ""}" style="--event-color:${categoryColor(event.category)}">
+    const accent = colorBy === "confidence" ? confidenceColor(event.score) : categoryColor(event.category);
+    return `<div class="outlook-row ${expanded ? "open" : ""}" style="--event-color:${accent}">
       <button type="button" class="outlook-head simple-row" data-expand="${escapeHtml(event.key)}" aria-expanded="${expanded}">
         <span class="outlook-body"><span class="outlook-title">${escapeHtml(title)}</span>
           <span class="outlook-meta">${escapeHtml(rangeLabel(event.startDate, event.endDate))}${where ? ` · ${escapeHtml(where)}` : ""}</span></span>
@@ -3370,9 +3425,9 @@ const CARD_MODES = {
     return `<p class="freshness-warning" role="status"><strong>${issue}.</strong> ${outlook.generated ? `Last calendar update: ${escapeHtml(absoluteLabel(outlook.generated))}.` : "Waiting for a dated update."} ${outlook.events.length ? "Showing saved information; current conditions may have changed." : "An empty view does not mean nothing is happening."}</p>`;
   },
 
-  _previewRowsHtml(events, outlook, now, key) {
+  _previewRowsHtml(events, outlook, now, key, colorBy = "category") {
     const all = this._moreBuckets.has(key);
-    return `${(all ? events : events.slice(0, 5)).map(event => this._outlookRowHtml(event, outlook, now)).join("")}
+    return `${(all ? events : events.slice(0, 5)).map(event => this._outlookRowHtml(event, outlook, now, colorBy)).join("")}
       ${events.length > 5 ? `<button type="button" class="show-more" data-more="${escapeHtml(key)}" aria-expanded="${all}">${all ? "Show fewer" : `Show ${events.length - 5} more opportunities`}</button>` : ""}`;
   },
 
@@ -3813,7 +3868,11 @@ class PhotographyEventsCard extends HTMLElement {
         aria-pressed="${choice === "follow"}">${choice === "follow" ? "Following · Unfollow" : "Follow"}</button>
       <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "skip" ? "default" : "skip"}">
         ${choice === "skip" ? "Restore event" : "Not going · Skip"}</button>
-    </div>`;
+      <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "seen" ? "default" : "seen"}"
+        title="Hides this occurrence. Next year's is a separate event and will be offered again.">
+        ${choice === "seen" ? "Seen it · Undo" : "Seen it · Got the shot"}</button>
+    </div>
+    ${choice === "seen" ? `<p class="event-note">Put away for this season. Next year's window is a separate event and comes back on its own.</p>` : ""}`;
   }
 
   _setHidden(hidden) {
@@ -3859,6 +3918,9 @@ Object.assign(PhotographyEventsCard.prototype, CARD_MODES);
 // rest of this repo pokes at underscore-prefixed instance methods.
 PhotographyEventsCard.backend = {
   driveLabel,
+  categoryColor,
+  confidenceColor,
+  confidenceBand,
   driveProvenance,
   parseEventDate,
   heroFromState,

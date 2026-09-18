@@ -327,6 +327,26 @@ function nightTradeoffs(night, best) {
 
 function categoryColor(category) { return CATEGORY_META[category]?.color || "#b7bdc5"; }
 
+// On the seven-day view the question is "how likely is this to be worth going
+// out for", and the answer is the score. Colouring by category there answers a
+// question nobody is asking on a list of five things happening this week - you
+// can already read the category off the row. Category colour still belongs on
+// the year calendar, where the whole point is telling subjects apart.
+const CONFIDENCE_BANDS = [
+  { floor: 90, color: "#4caf72", label: "90+ · very likely" },
+  { floor: 80, color: "#e8b15e", label: "80-89 · likely" },
+  { floor: 70, color: "#e08b4c", label: "70-79 · possible" },
+  { floor: 0, color: "#8b93a1", label: "under 70 · keep an eye on it" },
+];
+
+function confidenceBand(score) {
+  const value = Number(score);
+  if (!Number.isFinite(value)) return CONFIDENCE_BANDS[CONFIDENCE_BANDS.length - 1];
+  return CONFIDENCE_BANDS.find(band => value >= band.floor) || CONFIDENCE_BANDS[CONFIDENCE_BANDS.length - 1];
+}
+
+function confidenceColor(score) { return confidenceBand(score).color; }
+
 function reportLinkHtml(event) {
   const url = safeExternalUrl(event.source_url);
   if (!url) return "";
@@ -502,4 +522,13 @@ function rangeLabel(start, end) {
   const left = start.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   const right = end.toLocaleDateString(undefined, { month: "short", day: "numeric" });
   return `${left} - ${right}`;
+}
+
+
+/** What the seven-day colours mean. A scale nobody can read is decoration. */
+function confidenceLegendHtml() {
+  return `<details class="pe-legend-wrap"><summary>What the colours mean</summary>
+    <div class="pe-legend">${CONFIDENCE_BANDS.map(band =>
+      `<span class="pe-legend-item"><span class="category-dot" style="background:${band.color}"></span>${escapeHtml(band.label)}</span>`
+    ).join("")}</div></details>`;
 }

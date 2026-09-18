@@ -88,7 +88,7 @@ def _async_register_services(hass: HomeAssistant) -> None:
 
     hass.services.async_register(DOMAIN, "set_event_choice", _async_choice, schema=vol.Schema({
         vol.Required("event_id"): cv.string,
-        vol.Required("choice"): vol.In(["default", "follow", "skip"]),
+        vol.Required("choice"): vol.In(["default", "follow", "skip", "seen"]),
     }))
     hass.services.async_register(
         DOMAIN, SERVICE_INGEST_REPORT, _async_ingest, schema=INGEST_REPORT_SCHEMA

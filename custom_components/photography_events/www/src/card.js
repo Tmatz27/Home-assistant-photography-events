@@ -349,7 +349,11 @@ class PhotographyEventsCard extends HTMLElement {
         aria-pressed="${choice === "follow"}">${choice === "follow" ? "Following · Unfollow" : "Follow"}</button>
       <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "skip" ? "default" : "skip"}">
         ${choice === "skip" ? "Restore event" : "Not going · Skip"}</button>
-    </div>`;
+      <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "seen" ? "default" : "seen"}"
+        title="Hides this occurrence. Next year's is a separate event and will be offered again.">
+        ${choice === "seen" ? "Seen it · Undo" : "Seen it · Got the shot"}</button>
+    </div>
+    ${choice === "seen" ? `<p class="event-note">Put away for this season. Next year's window is a separate event and comes back on its own.</p>` : ""}`;
   }
 
   _setHidden(hidden) {

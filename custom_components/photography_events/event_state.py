@@ -33,8 +33,25 @@ class EventState:
     def choice(self, key):
         return self.choices.get(key, {}).get("choice", "default")
 
+    def suppressed(self, key) -> bool:
+        """Whether this occurrence should stay off the list for now.
+
+        Asked as one question so the two ways of saying it can never drift
+        apart - a check that tests only for "skip" silently re-alerts
+        everything somebody has already been out and photographed.
+        """
+        return self.choice(key) in self.SUPPRESSING
+
+    # Two ways of saying "stop showing me this", and they are not the same
+    # sentence. "Skip" is *not going* - a window that does not suit. "Seen" is
+    # *got it* - the photograph is taken and this season is finished. Both hide
+    # the row for the rest of the occurrence; only the wording differs, and the
+    # wording is the whole point, because next year's occurrence is a different
+    # key and comes back either way.
+    SUPPRESSING = frozenset({"skip", "seen"})
+
     def set_choice(self, key, choice, expires):
-        if choice not in {"default", "follow", "skip"}:
+        if choice not in {"default", "follow", "skip", "seen"}:
             raise ValueError("Unknown event choice")
         if choice == "default":
             self.choices.pop(key, None)
@@ -63,7 +80,7 @@ class EventState:
                 best[key] = item
         notifications = []
         for key, item in best.items():
-            if self.choice(key) == "skip" or not qualifies(item):
+            if self.suppressed(key) or not qualifies(item):
                 continue
             if item.end and item.end <= now:
                 continue

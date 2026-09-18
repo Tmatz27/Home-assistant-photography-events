@@ -6,7 +6,7 @@ from datetime import datetime, timedelta, timezone
 import test_integration  # Load the pure package without Home Assistant.
 from photography_events.event_state import EventState
 from photography_events.events import Opportunity, alert_candidate, action_window
-from photography_events import spectacles, streamflow, waves, grunion
+from photography_events import spectacles, streamflow, waves, grunion, events
 import math
 
 NOW = datetime(2026, 9, 6, 7, tzinfo=timezone.utc)
@@ -483,3 +483,88 @@ class TestEclipseReachability(unittest.TestCase):
         )
         self.assertTrue([item for item in built if "lunar" in item.title.lower()],
                         "umbral lunar eclipses are visible from home and must still appear")
+
+
+class TestSeenThisSeason(unittest.TestCase):
+    """"Not going" and "got the shot" are different sentences.
+
+    Both hide the row for the rest of the occurrence. The value is in the
+    wording and in the promise that next year's window comes back on its own -
+    which it does, because the occurrence key carries its year.
+    """
+
+    def test_seen_suppresses_like_skip_but_is_its_own_state(self):
+        state = EventState()
+        expires = NOW + timedelta(days=40)
+        state.set_choice("gray_whale_southbound-2027-01-05", "seen", expires)
+        state.set_choice("tule_elk_rut-2027-09-15", "skip", expires)
+
+        self.assertTrue(state.suppressed("gray_whale_southbound-2027-01-05"))
+        self.assertTrue(state.suppressed("tule_elk_rut-2027-09-15"))
+        self.assertEqual(state.choice("gray_whale_southbound-2027-01-05"), "seen")
+        self.assertNotEqual(state.choice("gray_whale_southbound-2027-01-05"), "skip")
+
+    def test_next_years_window_is_a_different_event_and_returns(self):
+        """The whole point. Seen it this season, offered again next season."""
+        state = EventState()
+        state.set_choice("gray_whale_southbound-2027-01-05", "seen", NOW + timedelta(days=40))
+        self.assertTrue(state.suppressed("gray_whale_southbound-2027-01-05"))
+        self.assertFalse(state.suppressed("gray_whale_southbound-2028-01-05"))
+
+    def test_a_seen_choice_expires_with_its_occurrence(self):
+        state = EventState()
+        state.set_choice("pismo_monarchs-2026-11-01", "seen", NOW + timedelta(days=10))
+        state.prune(NOW + timedelta(days=40))
+        self.assertFalse(state.suppressed("pismo_monarchs-2026-11-01"))
+
+    def test_an_unknown_choice_is_still_refused(self):
+        with self.assertRaises(ValueError):
+            EventState().set_choice("x", "maybe", NOW)
+
+    def test_seen_events_raise_no_further_notifications(self):
+        state = EventState()
+        item = event(key="k", roll="occ", score=95)
+        state.set_choice("occ", "seen", NOW + timedelta(days=40))
+        self.assertEqual(state.changes([item], NOW, lambda _i: True), [])
+
+
+class TestPerCategoryDriveLimits(unittest.TestCase):
+    """A sunset is a decision made at four in the afternoon. A whale peak is a trip.
+
+    Offering a sunset six hours away trains you to scroll past the whole
+    category, which costs the evenings that were worth stepping outside for.
+    """
+
+    def _row(self, category, drive_hours, **extra):
+        return Opportunity(
+            key=f"{category}-{drive_hours}", title=category.title(), category=category,
+            zone_id="z", zone_name="Somewhere", start=NOW, end=NOW + timedelta(hours=2),
+            score=90, detail="", drive_hours=drive_hours, **extra,
+        )
+
+    def test_a_sunset_six_hours_away_is_dropped_while_a_whale_peak_survives(self):
+        rows = [
+            self._row(test_integration.const.CATEGORY_SUNSET, 0.5),
+            self._row(test_integration.const.CATEGORY_SUNSET, 6.0),
+            self._row(test_integration.const.CATEGORY_MARINE, 5.5),
+        ]
+        kept = events.within_drive(rows, 6.0, {test_integration.const.CATEGORY_SUNSET: 1.0})
+        categories = [(item.category, item.drive_hours) for item in kept]
+        self.assertIn((test_integration.const.CATEGORY_SUNSET, 0.5), categories)
+        self.assertNotIn((test_integration.const.CATEGORY_SUNSET, 6.0), categories)
+        self.assertIn((test_integration.const.CATEGORY_MARINE, 5.5), categories)
+
+    def test_a_category_cap_can_only_tighten_never_widen(self):
+        """A generous per-category number must not smuggle past the global one."""
+        rows = [self._row(test_integration.const.CATEGORY_SUNSET, 4.0)]
+        self.assertEqual(events.within_drive(rows, 2.0, {test_integration.const.CATEGORY_SUNSET: 12.0}), [])
+
+    def test_planning_trips_ignore_both_limits(self):
+        """A park eight hours away is a long weekend, not tonight."""
+        far = self._row(test_integration.const.CATEGORY_PARKS, 9.0, planning_only=True)
+        self.assertEqual(events.within_drive([far], 6.0, {}), [far])
+
+    def test_no_limits_given_behaves_exactly_as_before(self):
+        rows = [self._row(test_integration.const.CATEGORY_SUNSET, 5.0)]
+        self.assertEqual(events.within_drive(rows, 6.0), rows)
+        self.assertEqual(events.within_drive(rows, 6.0, {}), rows)

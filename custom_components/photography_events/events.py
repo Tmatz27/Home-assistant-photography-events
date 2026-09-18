@@ -191,9 +191,13 @@ class Opportunity:
             # card to render "ends 23:59:59" on a three-month season.
             if self.category != CATEGORY_PARKS:
                 row["detail"] = _shorten(self.detail, 400)
-            row["all_day"] = True
-            row["start"] = self.start.date().isoformat()
-            row["end"] = self.end.date().isoformat() if self.end else None
+            # Planning-only describes evidence, not time precision. A computed
+            # moonbow candidate still has a night interval; stripping it to a
+            # date hid its hours and could shift the displayed local night.
+            if not self.extra.get("timing_basis") and self.category != "waves":
+                row["all_day"] = True
+                row["start"] = self.start.date().isoformat()
+                row["end"] = self.end.date().isoformat() if self.end else None
             # Everything else about a park window is in the parks reference map.
             row["planning_only"] = True
             if self.extra.get("tier"):
@@ -211,6 +215,8 @@ class Opportunity:
         if self.extra.get("verify_urls"):
             row["verify"] = self.extra["verify_urls"]
         for key in (
+            "timing_basis", "streamflow_cfs", "streamflow_trend", "streamflow_url",
+            "streamflow_observed_at", "condition_states",
             "precision",
             "season_range",
             "duration_minutes",

@@ -11,6 +11,7 @@ from .phenomena import EVIDENCE_STATIC
 from .const import CATEGORY_ASTRO
 
 IMPACTS = {
+    "streamflow": "Recent Merced basin readings are missing; waterfall flow remains unconfirmed.",
     "weather": "Cloud comparisons and sunset light-path assessments may be incomplete.",
     "air_quality": "Sunset clarity falls back to humidity and visibility.",
     "ebird": "Recent notable bird reports may be missing.",
@@ -49,6 +50,8 @@ def snapshot(sources, enabled, now):
 def dependencies(item):
     """Only feeds that can actually help this opportunity; no imaginary wiring."""
     category = item.category
+    if item.key.startswith("moonbow-"):
+        return {"weather", "streamflow"}
     if item.extra.get("evidence") == EVIDENCE_STATIC:
         return set()
     if category == CATEGORY_ASTRO:

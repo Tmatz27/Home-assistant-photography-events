@@ -34,10 +34,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import math
 
-# The legacy instantaneous-values service. Free, no key, and the one every
-# Yosemite flow page quotes.
-USGS_IV_URL = "https://waterservices.usgs.gov/nwis/iv/"
+# WaterServices retires in Q1 2027. The versioned OGC service returns one
+# feature per reading, not one grouped series. Never mix stations or units.
+USGS_IV_URL = "https://api.waterdata.usgs.gov/ogcapi/v1/collections/continuous/items"
 
 # 00060 is discharge in cubic feet per second.
 DISCHARGE_PARAMETER = "00060"
@@ -103,24 +104,26 @@ class Streamflow:
         """One sentence that never claims to have measured a waterfall."""
         return (
             f"{self.name} is running {round(self.cfs):,} cfs and {self.trend} "
-            f"({self.observed_at:%-d %b %H:%M}). That gauges {self.drains}, "
-            f"not the fall itself."
+            f"(observed {self.observed_at.astimezone(timezone.utc):%d %b %Y %H:%M} UTC). "
+            f"That gauges {self.drains}, not the fall itself or future flow."
         )
 
 
-def build_streamflow_request(site: str, period_hours: int = 72) -> tuple[str, dict]:
+def build_streamflow_request(site: str, period_hours: int = 72, now=None) -> tuple[str, dict]:
     """URL and parameters for one gauge's recent instantaneous discharge.
 
     A window rather than a single value, so the reading carries its own trend -
     600 cfs on the way up in May and 600 cfs on the way down in July mean
     opposite things about the weeks ahead.
     """
+    now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
+    first = now - timedelta(hours=max(1, min(72, int(period_hours))))
     return USGS_IV_URL, {
-        "format": "json",
-        "sites": site,
-        "parameterCd": DISCHARGE_PARAMETER,
-        "siteStatus": "active",
-        "period": f"PT{int(period_hours)}H",
+        "f": "json",
+        "monitoring_location_id": f"USGS-{site}",
+        "parameter_code": DISCHARGE_PARAMETER,
+        "datetime": f"{first.isoformat()}/{now.isoformat()}",
+        "limit": 1000,
     }
 
 
@@ -134,25 +137,34 @@ def parse_streamflow(payload, gauge: dict) -> Streamflow | None:
     """
     if not isinstance(payload, dict):
         return None
-    series = (payload.get("value") or {}).get("timeSeries")
-    if not isinstance(series, list) or not series:
+    features = payload.get("features")
+    if payload.get("type") != "FeatureCollection" or not isinstance(features, list):
+        return None
+    # A partial page is not a complete trend. Our bounded 72-hour, one-gauge
+    # request fits this limit; report an outage if the service changes that.
+    links = payload.get("links", [])
+    if not isinstance(links, list) or any(isinstance(link, dict) and link.get("rel") == "next" for link in links):
         return None
 
     readings: list[tuple[datetime, float]] = []
-    for entry in series:
-        if not isinstance(entry, dict):
+    for feature in features:
+        if not isinstance(feature, dict):
             continue
-        for block in entry.get("values") or []:
-            if not isinstance(block, dict):
-                continue
-            for item in block.get("value") or []:
-                if not isinstance(item, dict):
-                    continue
-                moment = _parse_time(item.get("dateTime"))
-                value = _as_float(item.get("value"))
-                if moment is None or value is None or value < 0:
-                    continue
-                readings.append((moment, value))
+        item = feature.get("properties")
+        if not isinstance(item, dict):
+            continue
+        if (item.get("monitoring_location_id") != f"USGS-{gauge['site']}"
+                or item.get("parameter_code") != DISCHARGE_PARAMETER
+                or item.get("unit_of_measure") != "ft^3/s"
+                or item.get("statistic_id") != "00011"
+                or item.get("approval_status") not in ("Approved", "Provisional")
+                or item.get("qualifier") not in (None, [])):
+            continue
+        moment = _parse_time(item.get("time"))
+        value = _as_float(item.get("value"))
+        if moment is None or value is None or value < 0:
+            continue
+        readings.append((moment, value))
 
     if not readings:
         return None
@@ -180,11 +192,12 @@ def _parse_time(value) -> datetime | None:
         moment = datetime.fromisoformat(value.strip())
     except ValueError:
         return None
-    return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
+    return None if moment.tzinfo is None else moment.astimezone(timezone.utc)
 
 
 def _as_float(value) -> float | None:
     try:
-        return float(value)
+        number = float(value)
+        return number if math.isfinite(number) and not isinstance(value, bool) else None
     except (TypeError, ValueError):
         return None

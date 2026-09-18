@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 import json
 from copy import deepcopy
 from pathlib import Path
@@ -273,7 +274,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
         # Group 1: weather. Everything that can raise a drop-everything alert in
         # the next 48 hours depends on it, so it goes first and alone.
-        if categories & {CATEGORY_SUNSET, CATEGORY_ASTRO}:
+        if categories & {CATEGORY_SUNSET, CATEGORY_ASTRO, CATEGORY_RARE}:
             await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, zones, now))
         forecasts = self._sources["weather"].value or {}
         if CATEGORY_SUNSET in categories:
@@ -520,7 +521,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
     def _enabled_sources(self):
         cats = self.enabled_categories
         enabled = set()
-        if cats & {CATEGORY_ASTRO, CATEGORY_SUNSET}:
+        if cats & {CATEGORY_ASTRO, CATEGORY_SUNSET, CATEGORY_RARE}:
             enabled.add("weather")
         if CATEGORY_ASTRO in cats:
             enabled.add("aurora")
@@ -533,7 +534,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if CATEGORY_MARINE in cats:
             enabled.add("condor_reports")
         if CATEGORY_RARE in cats:
-            enabled.update(("grunion", "tides"))
+            enabled.update(("grunion", "tides", "streamflow"))
         if "waves" in cats:
             enabled.update(("ndbc", "cdip", "surf_alerts"))
         if CATEGORY_PARKS in cats and self.nps_key:
@@ -671,10 +672,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         """
         found: dict = {}
         for key, gauge in streamflow_module.GAUGES.items():
-            url, params = streamflow_module.build_streamflow_request(gauge["site"])
+            url, params = streamflow_module.build_streamflow_request(gauge["site"], now=dt_util.utcnow())
             payload = await self._get_json(session, url, params=params, label=f"USGS {gauge['site']}")
             reading = streamflow_module.parse_streamflow(payload, gauge) if payload else None
-            if reading is not None:
+            if reading is not None and reading.fresh(dt_util.utcnow()):
                 found[key] = reading
         if not found:
             raise RuntimeError("no gauge returned a reading")
@@ -970,7 +971,8 @@ def _make_cloud_lookup(forecast: dict | None):
 
     parsed: list[tuple[float, float]] = []
     for stamp, value in zip(times, clouds):
-        if not isinstance(value, (int, float)):
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or not 0 <= value <= 100):
             continue
         try:
             moment = datetime.fromisoformat(stamp)

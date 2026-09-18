@@ -14,6 +14,7 @@ from xml.etree import ElementTree
 from . import astronomy
 from .const import ZONES_BY_ID
 from .events import Opportunity
+from .weather_scoring import CLOUD_SCORING_LEAD_DAYS
 from .field_reports import FieldReport, strip_html
 from .wildlife import estimate_drive_hours
 
@@ -274,12 +275,11 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
     on which the bow is underfoot the entire time, and it excluded perfectly good
     nights in March and July because of the month they fell in.
 
-    Two of the three unknowns the old entry listed are now answered. The
-    geometry is computed. The water is measured - by a gauge on the Merced,
-    which is the basin these falls drain and not the falls themselves, and the
-    text says so in as many words. The third, the azimuth the Moon must occupy
-    to light one specific fall from one specific overlook, is still not modelled
-    and is still named.
+    Generic sky geometry is computed; the particular viewpoint and terrain
+    light path are not. Merced discharge is a dated regional proxy, not flow
+    in the separate Yosemite Creek drainage. Neither source confirms spray.
+    Published Lower Falls viewing windows are much shorter than these sky
+    intervals, so the card must name them as candidates, not predictions.
     """
     found = []
     horizon = now + timedelta(days=MOONBOW_HORIZON_DAYS)
@@ -294,20 +294,23 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
             continue
         minutes = round((end - start).total_seconds() / 60)
         cloud = cloud_lookup(start) if cloud_lookup else None
+        if not isinstance(cloud, (int, float)) or not math.isfinite(cloud) or not 0 <= cloud <= 100:
+            cloud = None
+        cloud_is_forecast = (start - now).total_seconds() <= CLOUD_SCORING_LEAD_DAYS * 86400
+        cloud_kind = "forecast" if cloud_is_forecast else "outlook (lower confidence)"
 
         detail = (
-            f"Geometry permits a moonbow for {minutes} min: the Moon is "
+            f"Candidate sky interval of {minutes} min, not a predicted moonbow duration: the Moon is "
             f"{round(illumination * 100)}% lit and stays between "
             f"{round(MOONBOW_MIN_MOON_ALTITUDE)} and {round(MOONBOW_MAX_MOON_ALTITUDE)} degrees, "
             "which is the band that puts the bow above the ground rather than underfoot, "
             "in full darkness."
         )
         awaiting = (
-            "Whether the valley walls shadow the fall at these hours - the sixth of Olson's "
-            "six conditions, and the only one left unmodelled. It depends on the Moon's "
-            "azimuth against a specific skyline from a specific overlook, which is terrain "
-            "data this does not have. So these are nights the sky permits a moonbow, not "
-            "nights one is predicted."
+            "A dated viewpoint prediction, actual waterfall spray and an unobstructed "
+            "moonlight path are still needed. Generic sky geometry does not model the "
+            "valley skyline or confirm a moonbow. Current basin flow is not a waterfall "
+            "measurement or a forecast for future nights."
         )
         score = 58
         reasons = [
@@ -318,14 +321,12 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
         if streamflow is not None:
             detail += " " + streamflow.summary()
             reasons.append(f"{streamflow.name.split(' at ')[0]} {round(streamflow.cfs):,} cfs, {streamflow.trend}")
-        else:
-            awaiting = "Current basin flow, plus " + awaiting[4:]
 
         if cloud is not None:
             # Olson's first condition, and the only one of the six that a
             # forecast can answer. Beyond the forecast's reach it is simply
             # absent rather than assumed clear.
-            reasons.append(f"{round(cloud)}% cloud forecast")
+            reasons.append(f"{round(cloud)}% cloud {cloud_kind}")
             if cloud <= 25:
                 score += 8
             elif cloud >= 60:
@@ -340,14 +341,20 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
             latitude=MOONBOW_LATITUDE, longitude=MOONBOW_LONGITUDE, drive_source="estimate",
             source_url=MOONBOW_SOURCES[0],
             extra={
-                # The *timing* is computed and exact. The *phenomenon* is not
+                # The *timing* is sampled sky geometry. The *phenomenon* is not
                 # confirmed, and in this codebase "computed" means exact and
                 # free to alert - which a moonbow is not, because the viewpoint
                 # azimuth is unmodelled and the water is only proxied. Two
                 # different facts, two different fields, and collapsing them
                 # into one is how a search lead starts reading as a promise.
                 "verification": "unverified",
-                "timing_basis": "computed geometry",
+                "timing_basis": "Generic sky geometry; not a viewpoint-specific prediction",
+                "season_range": "Waterfall spray is usually strongest in spring; sky candidates alone do not establish a flowing fall.",
+                "locations_detail": [
+                    {"name": "Lower Yosemite Fall footbridge", "note": "Use this viewpoint's dated timetable. Its ideal moment puts the bow in denser mist; the generic sky interval is much broader.", "url": "https://www.yosemitemoonbow.com/"},
+                    {"name": "Sentinel Bridge parking area — Upper Fall", "note": "A separate viewpoint and timetable, not the Upper Falls Trail. Do not transfer Lower Fall times to this location.", "url": "https://www.yosemitemoonbow.com/"},
+                    {"name": "Glacier Point — Upper Fall", "note": "A brief viewpoint-specific opportunity, dependent on Glacier Point Road access. Check current road status and a dated prediction.", "url": "https://www.nps.gov/yose/planyourvisit/conditions.htm"},
+                ],
                 "special": True,
                 "duration_minutes": minutes,
                 "moon_illumination": round(illumination, 3),
@@ -355,9 +362,20 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
                 "streamflow_cfs": round(streamflow.cfs) if streamflow else None,
                 "streamflow_trend": streamflow.trend if streamflow else None,
                 "streamflow_url": streamflow.url if streamflow else None,
+                "streamflow_observed_at": streamflow.observed_at.isoformat() if streamflow else None,
+                "cloud_is_forecast": cloud_is_forecast if cloud is not None else None,
+                "cloud_confidence": cloud_kind if cloud is not None else None,
                 "cloud_cover": round(cloud, 1) if cloud is not None else None,
                 "verify_urls": list(MOONBOW_SOURCES),
-                "conditions_met": "5 of Olson's 6" if cloud is not None and streamflow is not None else "4 of Olson's 6",
+                "condition_states": {
+                    "Sky geometry": "Calculated: bright, low Moon during darkness",
+                    "Cloud": (f"{round(cloud)}% {cloud_kind}: " +
+                              ("favourable" if cloud <= 25 else "unfavourable" if cloud >= 60 else "mixed"))
+                             if cloud is not None else "Unknown",
+                    "Basin flow": "Current measured proxy; not waterfall spray" if streamflow else "Missing",
+                    "Waterfall spray": "Unconfirmed",
+                    "Viewpoint and terrain shadow": "Unmodelled; check published predictions",
+                },
                 "recommended_gear": "Fast wide lens, sturdy tripod, remote release and protection from spray",
             },
         ))

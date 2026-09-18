@@ -11,3 +11,6 @@ assert.ok(fs.readFileSync("CHANGELOG.md", "utf8").replace(/\r/g, "").includes(`#
 console.log(`Version ${version} agrees across VERSION, package, card, and changelog`);
 
 assert.equal(JSON.parse(fs.readFileSync("custom_components/photography_events/manifest.json", "utf8")).version, version);
+
+assert.ok(fs.readFileSync("RELEASE_NOTES.md", "utf8").startsWith(`# Photography Events ${version}\n`), "Release notes must match the release version");
+assert.ok(fs.readFileSync("AGENTS.md", "utf8").includes(`**Current version: ${version}.**`), "Update the handoff version");

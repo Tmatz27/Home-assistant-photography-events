@@ -4,6 +4,29 @@
 
 
 
+
+## 0.14.1
+
+The USGS migration in 0.14.0 pinned a version path that could not be checked
+from here. Both are now tried.
+
+- **`v0` and `v1` are both attempted**, in order. USGS documents `v0` as live
+  and has published no retirement date for it; `v1` is the obvious successor
+  and may already be serving. Pinning one and guessing wrong loses the gauge
+  silently, because a 404 reads exactly like an outage. The cost of trying two
+  is one extra request on the first cycle after a version disappears.
+- **A schema change no longer looks like an outage.** If USGS answers and every
+  feature fails the station, unit, statistic or approval filters, the source
+  now says so explicitly rather than reporting "no reading". One of those is
+  waited out and the other is a code fix, and they were indistinguishable.
+
+Confirmed while checking, and left alone: the strict field filtering added in
+0.14.0 is correct. The continuous collection does carry `statistic_id`
+alongside `monitoring_location_id`, `parameter_code`, `time`, `value`,
+`unit_of_measure`, `approval_status` and `qualifier`. So is the pagination
+guard - a partial page would silently truncate the window and corrupt the
+trend, which the legacy service could not do.
+
 ## 0.14.0
 
 - Readability: short event previews, progressive details, grouped moonbow nights, collapsed later months and bounded calendar bars.

@@ -671,14 +671,38 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         rather than the window.
         """
         found: dict = {}
+        served: list[str] = []
+        rejected = False
         for key, gauge in streamflow_module.GAUGES.items():
-            url, params = streamflow_module.build_streamflow_request(gauge["site"], now=dt_util.utcnow())
-            payload = await self._get_json(session, url, params=params, label=f"USGS {gauge['site']}")
-            reading = streamflow_module.parse_streamflow(payload, gauge) if payload else None
-            if reading is not None and reading.fresh(dt_util.utcnow()):
-                found[key] = reading
+            for version in streamflow_module.USGS_OGC_VERSIONS:
+                url, params = streamflow_module.build_streamflow_request(
+                    gauge["site"], now=dt_util.utcnow(), version=version
+                )
+                payload = await self._get_json(session, url, params=params, label=f"USGS {gauge['site']} {version}")
+                if not payload:
+                    continue
+                served.append(version)
+                reading = streamflow_module.parse_streamflow(payload, gauge)
+                if reading is None:
+                    # The service answered and every feature failed the
+                    # station, unit, statistic or approval filters. That is a
+                    # schema change, not an outage, and the two need telling
+                    # apart: one is waited out, the other is a code fix.
+                    rejected = True
+                    continue
+                if reading.fresh(dt_util.utcnow()):
+                    found[key] = reading
+                break
         if not found:
-            raise RuntimeError("no gauge returned a reading")
+            if rejected:
+                raise RuntimeError(
+                    "USGS answered but every reading failed validation - "
+                    "likely an OGC schema change rather than an outage"
+                )
+            raise RuntimeError(
+                "no gauge returned a reading"
+                + ("" if served else f" (no response from any of {streamflow_module.USGS_OGC_VERSIONS})")
+            )
         return found
 
     def _fresh_streamflow(self, now: datetime):

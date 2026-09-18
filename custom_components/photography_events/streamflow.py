@@ -38,7 +38,19 @@ import math
 
 # WaterServices retires in Q1 2027. The versioned OGC service returns one
 # feature per reading, not one grouped series. Never mix stations or units.
-USGS_IV_URL = "https://api.waterdata.usgs.gov/ogcapi/v1/collections/continuous/items"
+#
+# Both versions are tried, in order, because this is being written inside the
+# migration window and neither end of it is verifiable from a sandbox with no
+# route to the host. USGS documents ``v0`` as live today and has published no
+# retirement date for it; ``v1`` is the obvious successor path and may already
+# be serving. Pinning one and guessing wrong costs the source silently - a 404
+# reads exactly like an outage - and the cost of trying two is one extra
+# request on the first cycle after a version disappears.
+USGS_OGC_VERSIONS = ("v0", "v1")
+USGS_CONTINUOUS_PATH = "https://api.waterdata.usgs.gov/ogcapi/{version}/collections/continuous/items"
+
+# Kept for callers that want the default; the coordinator iterates the versions.
+USGS_IV_URL = USGS_CONTINUOUS_PATH.format(version=USGS_OGC_VERSIONS[0])
 
 # 00060 is discharge in cubic feet per second.
 DISCHARGE_PARAMETER = "00060"
@@ -109,7 +121,7 @@ class Streamflow:
         )
 
 
-def build_streamflow_request(site: str, period_hours: int = 72, now=None) -> tuple[str, dict]:
+def build_streamflow_request(site: str, period_hours: int = 72, now=None, version: str = USGS_OGC_VERSIONS[0]) -> tuple[str, dict]:
     """URL and parameters for one gauge's recent instantaneous discharge.
 
     A window rather than a single value, so the reading carries its own trend -
@@ -118,7 +130,7 @@ def build_streamflow_request(site: str, period_hours: int = 72, now=None) -> tup
     """
     now = (now or datetime.now(timezone.utc)).astimezone(timezone.utc)
     first = now - timedelta(hours=max(1, min(72, int(period_hours))))
-    return USGS_IV_URL, {
+    return USGS_CONTINUOUS_PATH.format(version=version), {
         "f": "json",
         "monitoring_location_id": f"USGS-{site}",
         "parameter_code": DISCHARGE_PARAMETER,

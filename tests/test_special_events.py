@@ -294,10 +294,31 @@ class TestStreamflow(unittest.TestCase):
 
     def test_the_request_asks_for_discharge_without_a_key(self):
         url, params = streamflow.build_streamflow_request("11264500")
-        self.assertIn("api.waterdata.usgs.gov/ogcapi/v1/", url)
+        self.assertIn("api.waterdata.usgs.gov/ogcapi/", url)
+        self.assertTrue(url.endswith("/collections/continuous/items"))
         self.assertEqual(params["parameter_code"], "00060")
         self.assertEqual(params["monitoring_location_id"], "USGS-11264500")
         self.assertNotIn("api_key", params)
+
+    def test_every_candidate_api_version_builds_a_usable_request(self):
+        """The version is not pinned, on purpose.
+
+        This is being written inside USGS's migration window, with no route to
+        the host from here to settle which path is serving. USGS documents v0
+        as live and has published no retirement for it; v1 is the obvious
+        successor. Guessing one and being wrong loses the source silently,
+        because a 404 reads exactly like an outage, so both are tried.
+        """
+        self.assertIn("v0", streamflow.USGS_OGC_VERSIONS)
+        for version in streamflow.USGS_OGC_VERSIONS:
+            url, params = streamflow.build_streamflow_request("11264500", version=version)
+            self.assertIn(f"/ogcapi/{version}/", url)
+            self.assertEqual(params["monitoring_location_id"], "USGS-11264500")
+
+        # The URLs must actually differ, or the fallback is decorative.
+        built = {streamflow.build_streamflow_request("11264500", version=v)[0]
+                 for v in streamflow.USGS_OGC_VERSIONS}
+        self.assertEqual(len(built), len(streamflow.USGS_OGC_VERSIONS))
 
 
 class TestMoonbowGeometry(unittest.TestCase):

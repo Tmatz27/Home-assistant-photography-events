@@ -126,7 +126,7 @@ function baseSandbox() {
     },
     window: { customCards: [] },
     console: { info() {}, error() {} },
-    setInterval,
+    setInterval: (...args) => { const timer = setInterval(...args); timer.unref(); return timer; },
     clearInterval,
     setTimeout,
     Promise,
@@ -197,7 +197,7 @@ function runSource({ defineThrows = false } = {}) {
     document: { createElement: (name) => new FakeNode(name) },
     window: {},
     console: { info() {}, error: (...args) => errors.push(args) },
-    setInterval,
+    setInterval: (...args) => { const timer = setInterval(...args); timer.unref(); return timer; },
     clearInterval,
     setTimeout,
     Promise,
@@ -266,7 +266,7 @@ test("an existing customCards array is preserved, not clobbered", () => {
     document: { createElement: (name) => new FakeNode(name) },
     window: { customCards: [{ type: "some-other-card" }] },
     console: { info() {}, error() {} },
-    setInterval,
+    setInterval: (...args) => { const timer = setInterval(...args); timer.unref(); return timer; },
     clearInterval,
     setTimeout,
     Promise,
@@ -914,6 +914,78 @@ test("drive times are labelled the way a person would say them", () => {
   assert.equal(backend.driveLabel(105), "1 h 45");
 });
 
+test("readability uses five-row previews and preserves access to every event", () => {
+  const card = new Card();
+  card.setConfig({mode:"action_hero", outlook_entity:"sensor.outlook"});
+  const now = new Date(), end = new Date(now.getTime()+86400000);
+  const entries = Array.from({length:12}, (_,i)=>({key:`preview-${i}`, title:`Subject ${i}`, category:"mammals", start:now.toISOString(), end:end.toISOString(), score:60-i, verification:"watching", detail:"A description that belongs inside the event."}));
+  card.hass = {connected:true,states:{"sensor.outlook":outlookState(entries,{generated:now.toISOString()})}};
+  card.connectedCallback();
+  assert.equal(card._root.querySelectorAll('[data-expand]').length,5);
+  assert.doesNotMatch(card._root.innerHTML,/A description that belongs/);
+  card._root.querySelectorAll('[data-more]')[0].click();
+  assert.equal(card._root.querySelectorAll('[data-expand]').length,12);
+  card._root.querySelectorAll('[data-expand]')[0].click();
+  const sections = card._root.querySelectorAll('[data-section]').map(el => el.dataset.section);
+  assert.ok(sections.includes('preview-0-dates'));
+  assert.ok(sections.includes('preview-0-evidence'));
+  assert.doesNotMatch(card._root.innerHTML, /data-section="preview-0-evidence"[^>]*open/);
+  card.disconnectedCallback();
+});
+
+test("cached calendar ages and connection changes are visible without entity changes", () => {
+  const card = new Card();
+  card.setConfig({mode:'calendar_outlook',outlook_entity:'sensor.outlook'});
+  const state = outlookState([],{generated:new Date(Date.now()-2*3600000).toISOString()});
+  card.hass={connected:true,states:{'sensor.outlook':state}};card.connectedCallback();
+  assert.match(card._root.innerHTML,/Calendar update overdue/);
+  assert.ok(card._eventInterval);
+  card.hass={connected:false,states:{'sensor.outlook':state}};
+  assert.match(card._root.innerHTML,/Home Assistant disconnected/);
+  assert.doesNotMatch(card._root.innerHTML,/<strong>Nothing in this window/);
+  card.hass={connected:true,states:{'sensor.outlook':{...state,state:'unavailable'}}};
+  assert.match(card._root.innerHTML,/Planning sensor unavailable/);
+  card.disconnectedCallback();assert.equal(card._eventInterval,null);
+  card.connectedCallback();assert.ok(card._eventInterval);card.disconnectedCallback();
+});
+
+test("moonbows group by occurrence while keeping different months and other subjects separate", () => {
+  const now = new Date('2026-09-01T12:00:00Z');
+  const raw = [25,26,27,55].map((d,i)=>({key:`moonbow-${i}`,title:'Yosemite moonbow window',category:'rare_phenomena',start:new Date(+now+d*86400000).toISOString(),end:new Date(+now+d*86400000+3600000).toISOString(),score:i===1?60:55,duration_minutes:60,verification:'unverified'}));
+  raw.push({...raw[0],key:'milkyway-a',category:'astronomy'});
+  const result = backend.consolidateNights(backend.filterOutlook(raw,{now,fromDays:0,throughDays:100}));
+  assert.equal(result.length,3);
+  const lunar = result.find(e=>e.nights.length===3);
+  assert.equal(lunar.title,'Yosemite moonbow');
+  assert.equal(lunar.bestNight.key,'moonbow-1');
+  assert.equal(lunar.choiceIds.length,3);
+  assert.equal(lunar.verification,'unverified');
+  raw[0].score = 99;
+  const changed = backend.consolidateNights(backend.filterOutlook(raw,{now,fromDays:0,throughDays:100})).find(e=>e.nights.length===3);
+  assert.equal(changed.key,lunar.key,'Changing the recommended night must not collapse an open event');
+});
+
+test("a crowded calendar previews ranked events and offers every remaining bar", () => {
+  const card = new Card(), now = new Date(2026,8,17);
+  const events = Array.from({length:12}, (_,i)=>({key:`cal-${i}`,title:`Subject ${i}`,category:'mammals',startDate:new Date(2026,8,15),endDate:new Date(2026,8,20),score:i}));
+  const html=card._calendarHtml(events,now);
+  assert.match(html, /\+ 7 more this week/);
+  assert.match(html,/data-open="cal-11"/);
+  assert.doesNotMatch(html,/data-open="cal-0"/);
+  const key=html.match(/data-more="([^"]+)"/)[1];
+  card._moreBuckets.add(key);
+  assert.match(card._calendarHtml(events,now),/data-open="cal-0"/);
+});
+
+test("moonbow condition states and dated basin proxy reach the detail without a success count", () => {
+  const card = new Card(), now = new Date();
+  const row = {key:'moonbow-test',title:'Yosemite moonbow',category:'rare_phenomena',start:now.toISOString(),end:new Date(+now+3600000).toISOString(),startDate:now,endDate:new Date(+now+3600000),score:43,verification:'unverified',planning_only:true,cloud_cover:100,cloud_is_forecast:false,streamflow_cfs:0,streamflow_observed_at:now.toISOString(),streamflow_url:'https://waterdata.usgs.gov/monitoring-location/USGS-11264500/',condition_states:{'Waterfall spray':'Unconfirmed','Cloud':'100% outlook: unfavourable'}};
+  const html = card._outlookDetailHtml(row, {preferences:{},gear:{},horizonDays:60},null,now);
+  assert.match(html,/unfavourable/); assert.match(html,/Unconfirmed/);
+  assert.match(html,/Cloud outlook/);assert.match(html,/0 cfs/);
+  assert.match(html,/waterdata.usgs.gov/);assert.doesNotMatch(html,/conditions met|5 of/);
+});
+
 test("a routed drive time is distinguishable from a guess", () => {
   const routed = backend.driveProvenance("Routes API", true);
   const legacy = backend.driveProvenance("Distance Matrix API", false);
@@ -1104,7 +1176,7 @@ test("the backend modes never call the weather websocket", async () => {
     card.connectedCallback();
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.deepEqual(calls, [], `${mode} should read entity state, never poll a forecast`);
-    assert.equal(card._eventInterval, null, `${mode} is push-driven and should start no timers`);
+    assert.notEqual(card._eventInterval, null, `${mode} must age cached data on its own clock`);
     card.disconnectedCallback();
   }
 });
@@ -1306,7 +1378,7 @@ test("clicking a row expands the full brief", () => {
   assert.match(html, /200-600mm/, "gear");
   assert.match(html, /Dawn, 06:00-08:30/, "time of day");
   assert.match(html, /August to October/, "extended season alongside the peak");
-  assert.match(html, /Why this score/, "plain-language reasoning");
+  assert.match(html, /Evidence & source reports/, "reasoning remains available behind the evidence section");
 
   row.click();
   assert.doesNotMatch(card._root.innerHTML, /Soda Lake Road/, "and collapses again");
@@ -1506,7 +1578,7 @@ test("the brief says whether anything has actually confirmed the dates", () => {
   card._root.querySelectorAll("[data-expand]")[0].click();
 
   const html = card._root.innerHTML;
-  assert.match(html, /Confirmed\?/, "the question is asked on the row itself");
+  assert.match(html, /Still needed/, "the detail names what evidence is still missing");
   assert.match(html, /Watching/);
   assert.match(html, /None yet/, "and it names what is missing, not just a state");
   card.disconnectedCallback();
@@ -1584,7 +1656,7 @@ test("one row per thing, not one per place", () => {
   assert.match(html, /big_sur/, "the best-scoring zone won the row");
 
   rows[0].click();
-  assert.match(card._root.innerHTML, /Locations & reports/, "the other places are one level down, not gone");
+  assert.match(card._root.innerHTML, /Locations & access/, "the other places are one level down, not gone");
   card.disconnectedCallback();
 });
 
@@ -1789,7 +1861,7 @@ test("a legacy timeline uses the integration data and does not request Pirate We
   card.connectedCallback();
   assert.match(card._root.innerHTML,/Calendar/);
   assert.doesNotMatch(card._root.innerHTML,/Add a weather entity/);
-  assert.equal(card._eventInterval,null);assert.equal(weatherCalls,0);
+  assert.notEqual(card._eventInterval,null);assert.equal(weatherCalls,0);
   card.disconnectedCallback();
 });
 

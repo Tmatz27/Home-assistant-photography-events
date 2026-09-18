@@ -98,6 +98,53 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
         self.coordinator._fetch_forecasts.assert_awaited_once()
         self.coordinator._fetch_aurora.assert_awaited_once()
 
+    async def test_rare_only_refreshes_cloud_and_exposes_failed_streamflow_through_sensor(self):
+        self.entry.options = {"enabled_categories": ["rare_phenomena"]}
+        item = self.opportunity("moonbow-test")
+        item.category = "rare_phenomena"
+        item.planning_only = True
+        item.extra = {"verification": "unverified", "condition_states": {"Waterfall spray": "Unconfirmed"},
+                      "streamflow_cfs": 0, "streamflow_observed_at": NOW.isoformat()}
+        self.fake_cycle([item])
+        self.coordinator._fetch_inaturalist = AsyncMock(return_value=[])
+        self.coordinator._fetch_grunion = AsyncMock(return_value=[])
+        self.coordinator._fetch_tides = AsyncMock(return_value={})
+        self.coordinator._fetch_streamflow = AsyncMock(side_effect=RuntimeError("gauge offline"))
+        for attempt in range(3):
+            # Normal backoff is already covered separately; move the clock
+            # instead of allowing test delays to mask the repair threshold.
+            with patch(f"{module.__name__}.dt_util.utcnow", return_value=NOW + timedelta(hours=attempt)):
+                data = await self.coordinator._async_update_data()
+        self.coordinator._fetch_forecasts.assert_awaited()
+        self.assertTrue(data['sources']['streamflow']['enabled'])
+        self.assertEqual(data['sources']['streamflow']['state'], 'failed')
+        self.assertEqual(data['opportunities'][0].compact()['degraded_sources'], ['streamflow'])
+        module.ir.async_create_issue.assert_called()
+        self.coordinator.async_set_updated_data(data)
+        sensor = PlanningOutlookSensor(self.coordinator, self.entry)
+        rows = sensor.extra_state_attributes['events']
+        self.assertEqual(rows[0]['condition_states']['Waterfall spray'], 'Unconfirmed')
+        self.assertEqual(rows[0]['streamflow_cfs'], 0)
+        self.coordinator._sources['streamflow'].succeed(NOW + timedelta(hours=4), {})
+        with patch(f"{module.__name__}.dt_util.utcnow", return_value=NOW + timedelta(hours=4)):
+            recovered = await self.coordinator._async_update_data()
+        self.assertNotIn('degraded_sources', recovered['opportunities'][0].compact())
+
+    async def test_malformed_gauge_does_not_escape_refresh_isolation(self):
+        payload = {"type": "FeatureCollection", "features": [{"properties": {
+            "monitoring_location_id": "USGS-11264500", "parameter_code": "00060",
+            "statistic_id": "00011", "unit_of_measure": "ft^3/s", "approval_status": "Provisional",
+            "qualifier": None, "time": NOW.isoformat(), "value": "NaN"}}]}
+        source = self.coordinator._sources['streamflow']
+        await self.coordinator._refresh(source, NOW, lambda: self.coordinator._fetch_streamflow(Session(Response(payload))))
+        self.assertEqual(source.failures, 1)
+        self.assertIsNone(self.coordinator._fresh_streamflow(NOW))
+
+    async def test_cloud_lookup_rejects_malformed_percentages(self):
+        for value in (float('nan'), float('inf'), -1, 101, True, None):
+            with self.subTest(value=value):
+                self.assertIsNone(module._make_cloud_lookup({'hourly': {'time': [NOW.isoformat()], 'cloud_cover': [value]}}))
+
     async def test_cached_failure_retries_on_backoff_and_retains_payload(self):
         source = self.coordinator._sources["field_reports"]
         source.succeed(NOW, ["cached"])

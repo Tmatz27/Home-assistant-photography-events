@@ -217,10 +217,13 @@ class TestCardEvidenceRegression(unittest.TestCase):
 
 
 def _usgs(readings):
-    """An instantaneous-values payload in the shape USGS actually returns."""
-    return {"value": {"timeSeries": [{"values": [{"value": [
-        {"dateTime": moment, "value": str(value)} for moment, value in readings
-    ]}]}]}}
+    """OGC v1 shape verified against USGS 11264500 on 2026-09-17."""
+    return {"type": "FeatureCollection", "features": [{"type": "Feature", "properties": {
+        "time": moment, "value": str(value), "monitoring_location_id": "USGS-11264500",
+        "parameter_code": "00060", "statistic_id": "00011", "unit_of_measure": "ft^3/s",
+        "approval_status": "Provisional", "qualifier": None,
+    }} for moment, value in readings], "links": []}
+
 
 
 class TestStreamflow(unittest.TestCase):
@@ -291,9 +294,9 @@ class TestStreamflow(unittest.TestCase):
 
     def test_the_request_asks_for_discharge_without_a_key(self):
         url, params = streamflow.build_streamflow_request("11264500")
-        self.assertIn("waterservices.usgs.gov", url)
-        self.assertEqual(params["parameterCd"], "00060")
-        self.assertEqual(params["sites"], "11264500")
+        self.assertIn("api.waterdata.usgs.gov/ogcapi/v1/", url)
+        self.assertEqual(params["parameter_code"], "00060")
+        self.assertEqual(params["monitoring_location_id"], "USGS-11264500")
         self.assertNotIn("api_key", params)
 
 
@@ -363,12 +366,12 @@ class TestMoonbowOpportunities(unittest.TestCase):
         self.assertTrue(built)
         for item in built:
             self.assertEqual(item.extra["verification"], "unverified")
-            self.assertEqual(item.extra["timing_basis"], "computed geometry")
+            self.assertIn("not a viewpoint-specific prediction", item.extra["timing_basis"])
             self.assertTrue(item.planning_only)
-            self.assertIn("azimuth", item.extra["awaiting"])
+            self.assertIn("valley skyline", item.extra["awaiting"])
 
     def test_clear_skies_is_olsons_first_condition_and_now_forecast(self):
-        """Five of the six published conditions are answered; the sixth is named."""
+        """Cloud changes rank but never confirms spray or the terrain light path."""
         reading = streamflow.parse_streamflow(
             _usgs([("2026-09-06T06:00:00+00:00", 1150)]), streamflow.GAUGES["yosemite_valley"])
         clear = spectacles.moonbow_opportunities(
@@ -378,13 +381,13 @@ class TestMoonbowOpportunities(unittest.TestCase):
         blind = spectacles.moonbow_opportunities(NOW, test_integration.const.DEFAULT_HOME, reading)
 
         self.assertGreater(clear[0].score, murky[0].score, "cloud has to move the score")
-        self.assertEqual(clear[0].extra["conditions_met"], "5 of Olson's 6")
+        self.assertIn("favourable", clear[0].extra["condition_states"]["Cloud"])
         self.assertIsNone(blind[0].extra["cloud_cover"], "beyond the forecast, absent not assumed clear")
-        self.assertEqual(blind[0].extra["conditions_met"], "4 of Olson's 6")
+        self.assertEqual(blind[0].extra["condition_states"]["Cloud"], "Unknown")
 
         # The one that is not modelled is named, on every row, as terrain.
         for item in clear + murky + blind:
-            self.assertIn("valley walls", item.extra["awaiting"])
+            self.assertIn("valley skyline", item.extra["awaiting"])
             self.assertIn("yosemitemoonbow.com", " ".join(item.extra["verify_urls"]))
 
     def test_flow_is_reported_when_measured_and_named_when_missing(self):

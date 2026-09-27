@@ -2061,3 +2061,61 @@ test("Timeline is not offered as a second name for the planning calendar", () =>
   editor.hass = { states: { "sensor.photography_events_planning_outlook": { state: "3", attributes: {} } } };
   assert.equal(editor._timelineIsDistinct({ mode: "timeline" }), true);
 });
+
+test("rows held for an unchecked safety feed are shown as held, not as a quiet week", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  const held = [{ title: "Elephant seal breeding & pupping", where: "Piedras Blancas",
+    summary: "Safety not checked: NWS alerts are unavailable. Check warnings before leaving." }];
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([], {
+    held, headline: "Nothing cleared to recommend: safety could not be checked for the rows held below." }) } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /Held: safety not checked/);
+  assert.match(html, /Elephant seal breeding/);
+  assert.doesNotMatch(html, /Nothing worth changing plans/);
+  assert.doesNotMatch(html, /Nothing is building either/);
+  card.disconnectedCallback();
+});
+
+test("required safety kit and unowned suggestions are labelled apart from the bag", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  const row = cantMissRow(0, { title: "Total solar eclipse", category: "astronomy", safety_state: "caution",
+    gear_plan: { take: "Sony FE 200-600mm f/5.6-6.3 G OSS", optional: ["Sony FE 2x Teleconverter for a larger disc"],
+      required: ["Certified solar filter (ISO 12312-2 solar film or glass) mounted over the FRONT of the lens - sized for the 200-600"],
+      safety: "ND filters (any strength), polarisers ... are NOT safe.",
+      add: [{ item: "Sony FE 14mm f/1.8 GM or FE 20mm f/1.8 G", why: "About 1⅓ stops faster." }] } });
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([row]) } };
+  card.connectedCallback();
+  assert.match(card._root.innerHTML, /Required: Certified solar filter/);
+  assert.match(card._root.innerHTML, /Caution · /);
+  card._expanded.add(row.key); card._render();
+  const html = card._root.innerHTML;
+  assert.match(html, /<dt>Worth adding or renting \(not in your bag\)<\/dt><dd>Sony FE 14mm/);
+  assert.match(html, /<dt>Take<\/dt><dd>200-600 G<\/dd>/);
+  assert.ok(html.indexOf("<dt>Required</dt>") < html.indexOf("<dt>Take</dt>"), "safety kit comes first");
+  card.disconnectedCallback();
+});
+
+test("the planner detail shows the full Moon geometry and the gear plan", () => {
+  const card = new Card();
+  card.setConfig({ mode: "calendar_outlook", outlook_entity: "sensor.outlook", show_gear: true });
+  const now = new Date("2026-12-20T12:00:00Z");
+  const row = { key: "fullmoon-2026-12-24", title: "Largest full Moon of 2026", category: "astronomy",
+    start: "2026-12-24T00:30:00+00:00", end: "2026-12-24T02:00:00+00:00", score: 70,
+    startDate: new Date("2026-12-24T00:30:00+00:00"), endDate: new Date("2026-12-24T02:00:00+00:00"),
+    moonrise: "2026-12-24T00:50:00+00:00", moonrise_azimuth: 61.2, moonrise_compass: "ENE",
+    moonset: "2026-12-24T16:10:00+00:00", moonset_azimuth: 298.4, moonset_compass: "WNW",
+    sunset: "2026-12-24T00:58:00+00:00", civil_dusk: "2026-12-24T01:25:00+00:00",
+    moon_climb: [{ altitude: 5, time: "2026-12-24T01:30:00+00:00", compass: "ENE" }],
+    distance_km: 356740, diameter_arcmin: 33.5, distance_rank: 1, full_moons_in_year: 13, supermoon_nolle: true,
+    gear_plan: { take: "Sony FE 200-600mm f/5.6-6.3 G OSS", add: [{ item: "X", why: "Y" }] } };
+  const html = card._outlookDetailHtml(row, { preferences: {}, gear: {}, horizonDays: 60 }, null, now);
+  assert.match(html, /<dt>Moonset<\/dt>/);
+  assert.match(html, /298.4° WNW/);
+  assert.match(html, /<dt>Twilight<\/dt>/);
+  assert.match(html, /#1 closest of 13 full Moons · supermoon/);
+  assert.match(html, /<dt>Take<\/dt><dd>200-600 G<\/dd>/);
+  assert.match(html, /Worth adding or renting/);
+});

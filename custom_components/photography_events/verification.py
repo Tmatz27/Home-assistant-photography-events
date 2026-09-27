@@ -181,14 +181,35 @@ def high_tides_on(tides: list[TideEvent], night: date) -> list[TideEvent]:
     ]
 
 
-def grunion_run_window(tides: list[TideEvent], night: date) -> tuple[datetime, datetime] | None:
+def tides_for_place(tides: list[TideEvent], latitude: float, longitude: float) -> list[TideEvent]:
+    """Only the predictions from the station nearest a place.
+
+    Four stations are fetched into one list. Taking the highest night tide
+    across all of them picked whichever station happened to be highest -
+    Los Angeles for a Santa Barbara beach - and put the fish on the sand at
+    another coast's hour.
+    """
+    from .wildlife import haversine_km
+
+    located = [tide for tide in tides if tide.latitude is not None and tide.longitude is not None]
+    if not located:
+        # One unlabelled station: nothing to choose between.
+        return list(tides) if len({tide.station for tide in tides}) <= 1 else []
+    nearest = min(located, key=lambda tide: haversine_km(latitude, longitude, tide.latitude, tide.longitude))
+    return [tide for tide in tides if tide.station == nearest.station]
+
+
+def grunion_run_window(tides: list[TideEvent], night: date,
+                       beach: tuple[float, float] | None = None) -> tuple[datetime, datetime] | None:
     """When to be standing on the sand, from the tide rather than a guess.
 
     Runs follow the *night-time* high tide, so a daytime high is no use however
     large it is - the fish come ashore in darkness. Returns None when the
     predictions do not cover the night, which is the honest answer rather than
-    a plausible invented hour.
+    a plausible invented hour. With ``beach``, only the nearest station counts.
     """
+    if beach is not None:
+        tides = tides_for_place(tides, *beach)
     candidates = [tide for tide in high_tides_on(tides, night) if tide.moment.hour >= 19 or tide.moment.hour < 4]
     if not candidates:
         return None

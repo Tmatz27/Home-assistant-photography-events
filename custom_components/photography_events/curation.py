@@ -32,6 +32,7 @@ from .const import (
     CATEGORY_ASTRO, CATEGORY_BIRDS, CATEGORY_BLOOMS, CATEGORY_FOLIAGE, CATEGORY_MAMMALS,
     CATEGORY_MARINE, CATEGORY_PARKS, CATEGORY_RARE, CATEGORY_SUNSET, CATEGORY_WAVES,
 )
+from . import gear
 from .gear import (
     LAND_BLM, LAND_CITY, LAND_MARINE, LAND_MILITARY, LAND_NPS, LAND_REFUGE,
     LAND_STATE_PARK, LAND_UNKNOWN, LAND_USFS,
@@ -386,7 +387,7 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
     _d(key="eclipse_solar", name="Solar eclipse", category=CATEGORY_ASTRO,
        significance=95, policy=POLICY_COMPUTED, product_class=CLASS_PLANNER,
        policy_reason="Central-path sites need their own contact calculation and road check; planner until then.",
-       gear_profile="eclipse_lunar", safety="Use a certified solar filter for every partial phase."),
+       gear_profile="eclipse_solar", safety=gear.SOLAR_SAFETY),
     _d(key="aurora_local", name="Local aurora", category=CATEGORY_ASTRO,
        significance=95, policy=POLICY_CONDITIONS, product_class=CLASS_CANT_MISS,
        policy_reason="OVATION nowcast at the local cell with darkness; short notice by nature.",

@@ -250,7 +250,12 @@ _MONTHS = {name: index for index, names in enumerate((
     ("oct", "october"), ("nov", "november"), ("dec", "december")), start=1) for name in names}
 _NAMED_DATE = re.compile(r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) +
                          r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d\d))?\b", re.IGNORECASE)
-_NUMERIC_DATE = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(20\d\d|\d\d))?\b")
+# "9/25" is a date; "1/2 mile offshore" and "1 1/2 hours" are fractions, and
+# in early January a fraction read as a date would renew a report that says
+# nothing about when it was written.
+_NUMERIC_DATE = re.compile(r"(?<![\d/.])(?<!\d )\b(\d{1,2})/(\d{1,2})(?:/(20\d\d|\d\d))?\b(?!/)"
+                           r"(?!\s*(?:-\s*)?(?:miles?|mi\b|inch|inches|in\b|ft\b|feet|foot|hours?|hrs?\b|"
+                           r"of\b|way\b|mile|km\b|kilometers?|meters?|m\b|day|full|moon|moons|lit|illuminated))")
 _COUNT = re.compile(r"\b(\d{1,3}(?:,\d{3})+|\d+)\s+(?:lesser\s+)?(?:sandhill\s+)?(?:monarchs?|monarch butterflies|butterflies|cranes|geese|eagles|condors|dolphins|elephant seals|pups)\b", re.IGNORECASE)
 
 # How far back an explicitly written date may be and still describe this

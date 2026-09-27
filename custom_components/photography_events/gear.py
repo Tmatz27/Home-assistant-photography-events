@@ -2,8 +2,18 @@
 
 The old gear advice was written for nobody in particular - "super-telephoto
 (400mm+)", "fast prime or zoom" - which is shopping advice, not packing advice.
-This integration is built for one photographer with one bag, so every
-recommendation here names a lens in that bag, and says what to leave behind.
+This integration is built for one photographer with one bag, so TAKE, OPTIONAL
+and SKIP only ever name kit in that bag.
+
+Two further lists are kept apart from those on purpose, so owned and unowned
+kit are never mixed in one sentence:
+
+- **WORTH ADDING / RENTING** - a specific item not in the bag, only where it
+  makes a material difference to *this* photograph, with the reason. At most
+  two per plan; a buying guide is not the point.
+- **REQUIRED** - safety equipment the photograph cannot be taken without
+  (a certified front-mounted solar filter for a solar eclipse; a red headlamp
+  on a night beach). Required whether or not it is owned.
 
 Two pieces of reasoning are load-bearing and easy to get wrong:
 
@@ -37,6 +47,30 @@ DRONE = "DJI Mini 3"
 POCKET = "DJI Osmo Pocket 3"
 
 OWNED = (BODY, WIDE, MID, LONG, TC2X, DRONE, POCKET)
+# The photographer also owns a set of magnetic filters whose contents are not
+# declared yet; nothing here recommends a filter as owned until they are.
+
+# --- Not in the bag: named only in WORTH ADDING or REQUIRED -----------------
+TC14 = "Sony FE 1.4x Teleconverter"
+FAST_WIDE = "Sony FE 14mm f/1.8 GM or FE 20mm f/1.8 G"
+DEW_HEATER = "USB lens dew heater"
+RAIN_COVER = "Rain cover for camera and lens"
+RED_HEADLAMP = "Headlamp with a red-light mode"
+SOLAR_FILTER = ("Certified solar filter (ISO 12312-2 solar film or glass) mounted over the FRONT of the lens - "
+                "sized for the 200-600 (95 mm) and any other lens aimed at the Sun")
+ECLIPSE_GLASSES = "ISO 12312-2 eclipse glasses or a certified handheld solar viewer for your eyes"
+
+ADD_TC14 = {"item": TC14, "why": "840 mm at f/9 costs one stop instead of the 2x's two, and keeps autofocus usable on perched or soaring birds in good light."}
+ADD_FAST_WIDE = {"item": FAST_WIDE, "why": "About 1⅓ stops faster than f/2.8: half the ISO, or shorter exposures and rounder stars, on a faint night subject."}
+ADD_DEW_HEATER = {"item": DEW_HEATER, "why": "Coastal and desert nights dew the front element within an hour; a heater keeps the whole session sharp."}
+ADD_RAIN_COVER = {"item": RAIN_COVER, "why": "Wind-driven spray reaches set-back viewpoints; the 70-200 and 200-600 are not sealed against salt water."}
+
+# Solar eclipse safety, from NASA (science.nasa.gov/eclipses/safety): the
+# filter goes over the FRONT of the optics; only totality is safe unfiltered.
+SOLAR_SAFETY = (
+    "Never look at, or aim the camera at, the uneclipsed or partially eclipsed Sun without a certified solar "
+    "filter secured over the FRONT of the lens. ND filters (any strength), polarisers, stacked filters, "
+    "sunglasses, smoked glass and filters behind the lens are NOT safe and will not protect your eyes or sensor.")
 
 # DJI's published maximum wind speed resistance for the Mini 3 (Level 5).
 DRONE_MAX_WIND_MS = 10.7
@@ -84,6 +118,11 @@ class GearPlan:
     video: str = ""
     drone: str = ""
     drone_status: str = "not_recommended"
+    # Not in the bag: [{"item", "why"}], only where the benefit is material.
+    add: list[dict] = field(default_factory=list)
+    # Safety equipment this photograph cannot be taken without.
+    required: list[str] = field(default_factory=list)
+    safety: str = ""
 
     def as_dict(self) -> dict:
         return {key: value for key, value in asdict(self).items() if value not in ("", [], None)}
@@ -103,13 +142,13 @@ PROFILES: dict[str, dict] = {
     "astro_wide": dict(
         take=WIDE, skip=[MID, LONG, TC2X],
         start="16mm f/2.8, ISO 3200-6400, 15-20 s; focus manually on a bright star.",
-        support="Sturdy tripod, remote release, lens heater against dew",
+        support="Sturdy tripod, remote release", add=[ADD_FAST_WIDE, ADD_DEW_HEATER],
         technique="Stack several frames for noise; shoot a separate blue-hour foreground.",
     ),
     "meteor": dict(
         take=WIDE, skip=[MID, LONG, TC2X],
         start="16mm f/2.8, ISO 3200, 15-20 s continuous intervals for hours.",
-        support="Tripod, intervalometer, spare batteries (cold drains them)",
+        support="Tripod, intervalometer, spare batteries (cold drains them)", add=[ADD_FAST_WIDE, ADD_DEW_HEATER],
         technique="Point 30-45° from the radiant, not at it; composite the hits later.",
     ),
     "moon_horizon": dict(
@@ -139,11 +178,12 @@ PROFILES: dict[str, dict] = {
         skip=[f"{TC2X}: at dusk shutter speed and autofocus matter more than reach. {TC_COST}"],
         start="1/2000 s while the light allows, then accept motion blur or pan at 1/60 s; auto ISO with a high ceiling.",
         support="Handheld or gimbal", technique="Silhouette the lines against the brightest sky; track, do not chase.",
+        add=[{"item": TC14, "why": "For cranes feeding in the fields by day: 840 mm at f/9 costs one stop, not two. Not for the dusk fly-in itself."}],
     ),
     "raptor": dict(
         take=LONG, optional=[f"{TC2X} only for a perched bird in good light"],
         skip=[f"{TC2X} for birds in flight: autofocus and shutter speed suffer. {TC_COST}"],
-        start="1/3200 s for flight, f/6.3-f/8, auto ISO; wide-area tracking AF.",
+        start="1/3200 s for flight, f/6.3-f/8, auto ISO; wide-area tracking AF.", add=[ADD_TC14],
         support="Handheld for flight, monopod for perched birds",
         technique="Shoot on the thermals late morning or at the roost at dusk; keep the sun behind you.",
     ),
@@ -170,6 +210,7 @@ PROFILES: dict[str, dict] = {
         take=WIDE, skip=[LONG, TC2X],
         start="16-24mm, f/2.8, ISO 1600-3200, 10-20 s; protect the front element from spray.",
         support="Sturdy tripod, remote release, lens cloth", technique="Frame the bow opposite the Moon; check the dated viewpoint timetable.",
+        add=[ADD_FAST_WIDE], required=[f"{RED_HEADLAMP}: wet, icy footing near the falls at night"],
     ),
     "firefall": dict(
         take=MID, optional=[f"{LONG} to isolate the glowing streak"],
@@ -181,7 +222,7 @@ PROFILES: dict[str, dict] = {
         take=MID, optional=[f"{LONG} for isolated breaking lips from a safe distance", f"{WIDE} only from high, set-back ground"],
         skip=[f"{TC2X}: spray and haze kill the detail"],
         start="1/1000 s to freeze spray, or 1/4 s for motion; f/8.",
-        support="Tripod with rain cover", technique="Stay high and far back; never on beaches, rocks or jetties.",
+        support="Tripod", technique="Stay high and far back; never on beaches, rocks or jetties.", add=[ADD_RAIN_COVER],
     ),
     "eclipse_lunar": dict(
         take=LONG, optional=[f"{TC2X} on a steady tripod for a frame-filling Moon", f"{WIDE} for a composite over the landscape"],
@@ -191,7 +232,29 @@ PROFILES: dict[str, dict] = {
     "aurora": dict(
         take=WIDE, skip=[LONG, TC2X],
         start="16mm f/2.8, ISO 3200, 5-15 s; low-latitude aurora is faint and red, often only visible to the camera.",
-        support="Tripod", technique="Aim north over a dark horizon.",
+        support="Tripod", technique="Aim north over a dark horizon.", add=[ADD_FAST_WIDE],
+    ),
+    # Partial or annular: the Sun is never fully covered, so the filter never comes off.
+    "eclipse_solar": dict(
+        take=LONG, optional=[f"{TC2X} for a larger disc (1200 mm) - the filter stays on the front of the lens",
+                             f"{WIDE} for a landscape sequence - it needs its own front filter"],
+        skip=[f"{DRONE}: the camera gimbal cannot be filtered safely"],
+        required=[SOLAR_FILTER, ECLIPSE_GLASSES],
+        safety=SOLAR_SAFETY + " Outside totality the filter stays on for the whole event - including an annular 'ring of fire'.",
+        start="Filtered: about ISO 100, f/8, 1/500-1/4000 s. Test on the plain Sun days before, with the filter on.",
+        support="Tripod with the lens foot; remote release", technique="Frame so the Sun drifts across the frame; re-aim every few minutes.",
+    ),
+    # Total, from inside the path: the one moment the filter comes off.
+    "eclipse_solar_total": dict(
+        take=LONG, optional=[f"{TC2X} for a larger disc (1200 mm) - filtered for every partial phase",
+                             f"{WIDE} for the 360° twilight and the landscape - unfiltered only during totality"],
+        skip=[f"{DRONE}: the camera gimbal cannot be filtered safely"],
+        required=[SOLAR_FILTER, ECLIPSE_GLASSES],
+        safety=SOLAR_SAFETY + " Remove the filter only during totality, inside the path of totality, and put it back "
+               "at the first bead of returning sunlight (third contact). Outside the path there is no totality: it never comes off.",
+        start="Partial phases filtered: about ISO 100, f/8, 1/500-1/4000 s. Totality unfiltered: bracket 1/4000 s to 1 s for the corona.",
+        support="Tripod with the lens foot; remote release",
+        technique="Rehearse the filter-off / filter-on sequence; totality lasts minutes.",
     ),
     "tidepool": dict(
         take=WIDE, optional=[f"{MID} close focus for individual animals"],
@@ -209,6 +272,7 @@ PROFILES: dict[str, dict] = {
         take=WIDE, skip=[LONG, TC2X],
         start="16mm f/2.8, ISO 3200-6400, 2-8 s.",
         support="Tripod above the wash line", technique="Red light only; no white light near fish or glowing surf.",
+        add=[ADD_FAST_WIDE], required=[f"{RED_HEADLAMP}: white light ruins the subject and night vision; you need light to stay above the wash"],
     ),
     "general_wildlife": dict(
         take=LONG, optional=[MID],
@@ -223,7 +287,8 @@ def recommend(profile: str, *, land: str = LAND_UNKNOWN, wildlife: bool = False,
               wind_ms: float | None = None, drone_useful: bool = False) -> GearPlan:
     """A packing plan for one opportunity, with an honest drone verdict."""
     spec = PROFILES.get(profile) or PROFILES["landscape"]
-    plan = GearPlan(**{key: (list(value) if isinstance(value, list) else value) for key, value in spec.items()})
+    plan = GearPlan(**{key: ([dict(item) if isinstance(item, dict) else item for item in value]
+                             if isinstance(value, list) else value) for key, value in spec.items()})
     plan.drone_status, plan.drone = drone_verdict(land, wildlife=wildlife, wind_ms=wind_ms, useful=drone_useful)
     return plan
 
@@ -244,6 +309,10 @@ def drone_verdict(land: str, *, wildlife: bool = False, wind_ms: float | None = 
 
 
 def uses_only_owned(plan: GearPlan) -> bool:
-    """Whether every lens named in take/optional is one that is in the bag."""
+    """Whether every lens named in take/optional is one that is in the bag.
+
+    Unowned kit may appear only in ``add`` and ``required``.
+    """
     named = [plan.take, *plan.optional]
-    return all(any(item in text for item in OWNED) for text in named)
+    return all(any(item in text for item in OWNED) for text in named) and not any(
+        unowned in text for text in named + plan.skip for unowned in (TC14, FAST_WIDE, DEW_HEATER, RAIN_COVER))

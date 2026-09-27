@@ -306,8 +306,97 @@ def opportunities(now: datetime, home: tuple[float, float], tz, horizon_days: in
     return found
 
 
+def _light(moment: datetime, latitude: float, longitude: float) -> str:
+    altitude = math.degrees(astro.sun_altitude(moment, math.radians(latitude), math.radians(longitude)))
+    return "daylight" if altitude > 0 else "civil twilight" if altitude > -6 else "dark"
+
+
+# Where King Tide rows are planned from: the NOAA station nearest home.
+def _home_station(home: tuple[float, float]) -> dict:
+    from .verification import TIDE_STATIONS
+    from .wildlife import haversine_km
+
+    return min(TIDE_STATIONS.values(), key=lambda row: haversine_km(home[0], home[1], row["latitude"], row["longitude"]))
+
+
+def king_tide_opportunities(now: datetime, home: tuple[float, float], tz, tides: list | None = None,
+                            swell=None) -> list:
+    """Every published King Tide window of the season, from the day it is published.
+
+    Two kinds of fact, kept apart. The **published date** is a planning fact
+    from the Coastal Commission, available months ahead. The **exact time and
+    height** is an operational prediction from NOAA, which the integration
+    fetches only about 45 days ahead; until then the row says so rather than
+    inventing a time. Once NOAA covers the dates, each day's highest water is
+    attached with whether it falls in daylight, twilight or dark.
+    """
+    from .events import Opportunity
+    from .wildlife import estimate_drive_hours
+
+    station = _home_station(home)
+    highs: dict[date, object] = {}
+    for tide in tides or []:
+        if not tide.high or getattr(tide, "station", "") not in ("", station["name"]):
+            continue
+        local = tide.moment.astimezone(tz)
+        if king_tide_on(local.date()) and (local.date() not in highs or tide.feet > highs[local.date()].feet):
+            highs[local.date()] = tide
+    found = []
+    for first, last in KING_TIDE_DATES:
+        if last < now.astimezone(tz).date():
+            continue
+        start = datetime.combine(first, datetime.min.time(), tz)
+        end = datetime.combine(last, datetime.max.time(), tz)
+        days = [highs[day] for day in sorted(highs) if first <= day <= last]
+        predictions = [{"station": station["name"], "time": tide.moment.isoformat(), "ft": tide.feet,
+                        "light": _light(tide.moment, station["latitude"], station["longitude"])} for tide in days]
+        extra = {
+            "verification": "schedule", "evidence_state": "schedule", "king_tide": True,
+            "timing_basis": "California Coastal Commission published King Tide dates",
+            "operational": bool(days),
+            "verify_urls": [KING_TIDE_SOURCE, "https://tidesandcurrents.noaa.gov/"],
+            "access_note": "Stay off jetties, seawalls and beach access paths; waves overtop at high water.",
+        }
+        if days:
+            best = max(days, key=lambda tide: tide.feet)
+            local = best.moment.astimezone(tz)
+            extra.update({
+                "tide_predictions": predictions, "tide_ft": best.feet,
+                "timing_basis": "Published King Tide dates; times and heights from NOAA CO-OPS predictions",
+                "best_time_of_day": (f"Highest water {local:%a %d %b %H:%M}, {best.feet:.1f} ft MLLW at "
+                                     f"{station['name']} ({predictions[days.index(best)]['light']})"),
+            })
+        else:
+            extra["awaiting"] = ("Published date only. Exact times and heights appear when NOAA predictions "
+                                 "cover these days (the integration fetches about 45 days ahead).")
+            extra["best_time_of_day"] = "Morning high water on most King Tide days; exact time pending NOAA"
+        latest = swell[-1] if swell else None
+        if latest is not None and days and now - latest.time <= timedelta(hours=3) \
+                and first <= now.astimezone(tz).date() + timedelta(days=1) and now.astimezone(tz).date() <= last:
+            extra["swell_note"] = (f"Buoy 46011 measured {latest.height:.1f} m at {latest.period:.0f} s: with the "
+                                   "King Tide, expect wave overtopping. Watch from high, set-back ground.")
+        key = f"king_tide-{first.isoformat()}"
+        found.append(Opportunity(
+            key=key, roll=key, title="King Tides" + (" · NOAA times" if days else " (published dates)"),
+            category="waves", zone_id=station["name"], zone_name=f"{station['name']} and nearby coast",
+            start=start, end=end, score=50, detail=(
+                f"Published King Tide dates {first:%d %b}-{last:%d %b}. "
+                + ("; ".join(f"{row['ft']:.1f} ft at {datetime.fromisoformat(row['time']).astimezone(tz):%a %H:%M} ({row['light']})"
+                             for row in predictions) if predictions else "Times not yet predicted.")),
+            drive_hours=round(estimate_drive_hours(station["latitude"], station["longitude"], home), 2),
+            latitude=station["latitude"], longitude=station["longitude"], planning_only=True,
+            phenomenon="king_tide", drive_source="estimate", source_url=KING_TIDE_SOURCE, extra=extra,
+        ))
+    return found
+
+
 def tide_opportunities(tides: list, now: datetime, home: tuple[float, float], tz) -> list:
-    """King Tide mornings and daylight minus tides, as planner rows."""
+    """Daylight minus tides, as planner rows.
+
+    Only as far ahead as NOAA predictions are fetched (about 45 days): a minus
+    tide is an operational prediction, and nothing here pretends to know one
+    further out. King Tides have their own published-date rows above.
+    """
     from .events import Opportunity
     from .wildlife import estimate_drive_hours
 
@@ -320,16 +409,11 @@ def tide_opportunities(tides: list, now: datetime, home: tuple[float, float], tz
             local = tide.moment.astimezone(tz) if tide.moment.tzinfo else tide.moment.replace(tzinfo=tz)
             if local < now:
                 continue
-            king = king_tide_on(local.date())
             daylight = 7 <= local.hour <= 18
-            if tide.high and king:
-                kind, title = "king_tide", f"King Tide high water · {station}"
-                detail = f"{tide.feet:.1f} ft MLLW at {local:%H:%M} on a published King Tide date."
-            elif not tide.high and tide.feet <= MINUS_TIDE_FT and daylight:
-                kind, title = "minus_tide", f"Minus tide {tide.feet:.1f} ft · {station}"
-                detail = f"{tide.feet:.1f} ft MLLW at {local:%H:%M}. Arrive an hour before low water."
-            else:
+            if tide.high or tide.feet > MINUS_TIDE_FT or not daylight:
                 continue
+            kind, title = "minus_tide", f"Minus tide {tide.feet:.1f} ft · {station}"
+            detail = f"{tide.feet:.1f} ft MLLW at {local:%H:%M}. Arrive an hour before low water."
             key = f"{kind}-{station.lower().replace(' ', '_')}-{local.date().isoformat()}"
             if any(item.key == key for item in found):
                 continue
@@ -340,9 +424,8 @@ def tide_opportunities(tides: list, now: datetime, home: tuple[float, float], tz
                 drive_hours=round(estimate_drive_hours(lat, lon, home), 2), latitude=lat, longitude=lon,
                 planning_only=True, phenomenon=kind, drive_source="estimate",
                 source_url="https://tidesandcurrents.noaa.gov/",
-                extra={"verification": "computed", "evidence_state": "computed",
+                extra={"verification": "computed", "evidence_state": "computed", "operational": True,
                        "timing_basis": "NOAA CO-OPS tide prediction", "tide_ft": tide.feet,
-                       "verify_urls": [KING_TIDE_SOURCE] if kind == "king_tide" else [],
                        "access_note": "Stay off jetties and seawalls; skip during High Surf advisories."},
             ))
     return found

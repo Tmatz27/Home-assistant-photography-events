@@ -253,7 +253,11 @@ class Opportunity:
             "moonrise_azimuth", "moonrise_compass", "moonset_compass", "moon_climb", "distance_km",
             "diameter_arcmin", "distance_rank", "full_moons_in_year", "moon_labels", "rise_after_sunset_minutes",
             "sunrise", "civil_dusk", "nautical_dusk", "astronomical_dusk", "king_tide", "tide_ft",
-            "dawn_temp_f", "safety_notes", "safety_summary", "safety_state", "ethics", "gear_plan",
+            "dawn_temp_f", "safety_notes", "safety_summary", "safety_state", "eclipse_type",
+            "clearing_at", "firefall_sunset", "light_path_gate", "tide_predictions", "operational",
+            "swell_note", "dawn_wind_ms", "dawn_precip_probability", "sunset", "moonset_azimuth",
+            "set_after_sunrise_minutes", "civil_dawn", "supermoon_nolle", "illumination", "size_rank",
+            "full_moon_at", "ethics", "gear_plan",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -1477,7 +1481,7 @@ def build_grunion_runs(
         # The nights come from lunar geometry; the hour comes from the tide.
         # With a tide table the window is a real time to stand on the sand;
         # without one it stays a night, and says so.
-        tide_window = grunion_run_window(tides, first_night) if tides else None
+        tide_window = grunion_run_window(tides, first_night, (window.latitude, window.longitude)) if tides else None
         hour_note = (
             f"first night's window {tide_window[0]:%H:%M}-{tide_window[1]:%H:%M} "
             f"(1-2 h after the {tide_window[0].strftime('%H:%M')} high tide)"

@@ -116,9 +116,10 @@ def opportunities(catalog, now, zones, home, max_drive_hours, horizon_days=365):
                 detail=detail, drive_hours=round(drive, 2), latitude=point[0], longitude=point[1],
                 source_url=row.get("path_url") or row["source_url"], planning_only=planning_only,
                 drive_source="estimate", extra={"verification": "computed", "evidence_state": "computed", "evidence_note": note,
+                    "eclipse_type": str(row.get("type", "")).lower(),
                     "confidence_note": "Path-table prediction; verify local contacts." if planning_only else "",
                     "best_time_of_day": f"{preferred:%Y-%m-%d %H:%M} UTC" if row["kind"] == "lunar" else f"About {moment:%Y-%m-%d %H:%M} UTC",
                     "duration_minutes": int((end - start).total_seconds() / 60),
-                    "photo_tips": "Use a tripod and long lens; exposure changes dramatically during totality." if row["kind"] == "lunar" else "Use a certified solar filter for every non-total phase."},
+                    "photo_tips": "Use a tripod and long lens; exposure changes dramatically during totality." if row["kind"] == "lunar" else "A certified solar filter over the front of the lens for every phase except totality."},
             ))
     return found

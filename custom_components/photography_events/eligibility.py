@@ -200,6 +200,7 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
             blockers.append("significance below the Can't Miss floor")
 
     end = item.end or item.start + timedelta(hours=2)
+    in_horizon = end >= now and item.start <= now + timedelta(days=CANT_MISS_DAYS)
     if end < now:
         blockers.append("already over")
     elif item.start > now + timedelta(days=CANT_MISS_DAYS):
@@ -207,7 +208,8 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
     limit = max_drive_hours
     if item.phenomenon == "sunset_local" and sunset_drive_hours is not None:
         limit = min(limit, sunset_drive_hours)
-    if item.drive_hours is not None and item.drive_hours > limit:
+    within_drive = item.drive_hours is None or item.drive_hours <= limit
+    if not within_drive:
         blockers.append(f"beyond the {limit:g} h Can't Miss drive limit")
     # A source this phenomenon's condition needs is down or stale: its last
     # value is not a current assessment. Preferred and optional sources only
@@ -236,7 +238,10 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
     confidence = _confidence(item, state, now)
     plan = None
     if definition is not None:
-        plan = gear.recommend(definition.gear_profile, land=definition.land, wildlife=definition.wildlife,
+        profile = definition.gear_profile
+        if profile == "eclipse_solar" and item.extra.get("eclipse_type") == "total":
+            profile = "eclipse_solar_total"
+        plan = gear.recommend(profile, land=definition.land, wildlife=definition.wildlife,
                               wind_ms=item.extra.get("wind_ms"), drone_useful=definition.drone_useful)
     result = {
         "phenomenon": definition.key if definition else item.phenomenon,
@@ -255,6 +260,10 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
         "condition_quality": item.extra.get("provider_percent") or (item.score if state in ("computed", "forecast") else None),
         "evidence_state": state,
         "actionable": actionable,
+        # The policy alone (evidence), before conditions, safety and timing.
+        "policy_met": bool(definition is not None and state in definition.actionable),
+        "within_drive": within_drive,
+        "in_horizon": in_horizon,
         "eligible": eligible,
         "blockers": blockers,
         "presentation": presentation,
@@ -347,6 +356,39 @@ def merge_into_phenomena(opportunities: list, extra_rows: list, now: datetime) -
     return remaining
 
 
+def _bird_views(opportunities: list, birds: dict, suppressed) -> dict:
+    """The Birds view, classified from the same assessed rows as Can't Miss.
+
+    Before this, the view listed only what the eBird classifier produced, so a
+    Merced crane fly-in that reached Can't Miss on its documented calendar was
+    missing from Bird Spectacle, and a spectacle eight hours away was listed
+    although nothing else in the product would send you there. Spectacle now
+    means: a bird-spectacle phenomenon whose evidence policy is met, inside
+    the drive limit and the seven-day horizon - eligible or held back only by
+    weather or safety. One row per phenomenon.
+    """
+    from .event_state import event_id
+
+    spectacle, shown = [], set()
+    ordered = sorted(opportunities, key=lambda item: (-((item.extra.get("assessment") or {}).get("priority") or 0),
+                                                      -((item.extra.get("assessment") or {}).get("significance") or 0),
+                                                      item.start))
+    for item in ordered:
+        assessment = item.extra.get("assessment") or {}
+        definition = curation.definition(item.phenomenon, item.category)
+        if definition is None or definition.product_class != CLASS_BIRD_SPECTACLE or item.phenomenon in shown:
+            continue
+        if not (assessment.get("policy_met") and assessment.get("within_drive") and assessment.get("in_horizon")):
+            continue
+        if suppressed(event_id(item)):
+            continue
+        shown.add(item.phenomenon)
+        spectacle.append(cant_miss_row(item))
+    # An encounter of the species already shown as a spectacle is the same birds.
+    encounter = [row for row in birds.get("encounter", []) if row.get("phenomenon") not in shown]
+    return {"spectacle": spectacle, "encounter": encounter[:20], "chase": birds.get("chase", [])[:25]}
+
+
 def cant_miss_row(item, alternatives: int = 0) -> dict:
     row = item.compact()
     assessment = item.extra.get("assessment") or {}
@@ -437,9 +479,5 @@ def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: Fals
         "held": held[:SHOW_LIMIT],
         "signals": background(signals or [], now),
         "signal_count": len(signals or []),
-        "birds": {
-            "spectacle": [cant_miss_row(item) for item in (birds or {}).get("spectacle", [])],
-            "encounter": (birds or {}).get("encounter", [])[:20],
-            "chase": (birds or {}).get("chase", [])[:25],
-        },
+        "birds": _bird_views(opportunities, birds or {}, suppressed),
     }

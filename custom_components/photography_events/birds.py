@@ -143,7 +143,7 @@ def classify(sightings: list, now: datetime, home: tuple[float, float], max_driv
                 why = (f"{max_count:,} counted in one report" if concentrated
                        else f"behaviour reported by {behavior_reports[0].source_name}")
                 spectacle.append(_spectacle_row(spec, scientific, site, summary, why, now, land, behavior_reports))
-            elif repeated:
+            elif repeated and drive <= max_drive_hours:
                 encounter.append({**summary, "class": "bird_encounter",
                                   "why": f"{len(observers)} independent reports on {len(days)} days in the last week at a public viewing area",
                                   "encounter_confidence": min(90, 40 + 10 * len(observers) + 5 * len(days))})

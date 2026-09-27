@@ -359,8 +359,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         # and park alerts are the only source that can say the road is shut.
         if CATEGORY_RARE in categories:
             await self._refresh(self._sources["grunion"], now, lambda: self._fetch_grunion(session))
-            await self._refresh(self._sources["tides"], now, lambda: self._fetch_tides(session, now))
             await self._refresh(self._sources["streamflow"], now, lambda: self._fetch_streamflow(session))
+        if CATEGORY_RARE in categories or "waves" in categories:
+            await self._refresh(self._sources["tides"], now, lambda: self._fetch_tides(session, now))
         if CATEGORY_PARKS in categories and self.nps_key:
             await self._refresh(self._sources["park_alerts"], now, lambda: self._fetch_park_alerts(session))
 
@@ -397,8 +398,6 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         await self.hass.async_add_executor_job(lambda: eligibility.annotate(
             opportunities, now, max_drive_hours=self.max_drive_hours, alerts=alerts,
             sunset_drive_hours=self.category_drive_limits.get(CATEGORY_SUNSET)))
-        for row in (bird_views or {}).get("spectacle", []):
-            eligibility.assess(row, now, max_drive_hours=self.max_drive_hours, alerts=alerts)
         cant_miss = eligibility.dashboard(
             opportunities, now, suppressed=self.event_state.suppressed, signals=signals, birds=bird_views)
         action = event_builder.action_window(opportunities, now)
@@ -560,6 +559,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 coastal or {}, self._calibration, self.event_state, self.home,
                 self._sources["surf_alerts"].value or []))
             opportunities.extend(lunar.tide_opportunities(self._sources["tides"].value or [], now, self.home, local_tz))
+            # Published dates immediately; NOAA times and the buoy when in range.
+            opportunities.extend(lunar.king_tide_opportunities(
+                now, self.home, local_tz, self._sources["tides"].value or [],
+                (self._sources["ndbc"].value or {}).get("46011")))
         if CATEGORY_ASTRO in categories:
             opportunities.extend(spectacles.aurora_opportunities(self._sources["aurora"].value or {}, now, zones, self.event_state))
             opportunities.extend(await self.hass.async_add_executor_job(
@@ -664,7 +667,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if CATEGORY_RARE in cats:
             enabled.update(("grunion", "tides", "streamflow"))
         if "waves" in cats:
-            enabled.update(("ndbc", "cdip"))
+            enabled.update(("ndbc", "cdip", "tides"))
         if CATEGORY_PARKS in cats and self.nps_key:
             enabled.add("park_alerts")
         if self.google_key and self.routing_mode != ROUTING_OFF:

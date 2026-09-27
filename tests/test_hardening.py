@@ -11,8 +11,8 @@ import test_integration  # noqa: F401 - loads the pure package without Home Assi
 from zoneinfo import ZoneInfo
 
 from photography_events import (
-    birds, conditions, const, curation, eligibility, events, field_reports, phenomena, source_health, spectacles,
-    weather_hazards, wildlife,
+    birds, conditions, const, curation, eligibility, events, field_reports, gear, lunar, phenomena, source_health,
+    spectacles, verification, weather_hazards, wildlife,
 )
 
 UTC = timezone.utc
@@ -516,6 +516,238 @@ class TestMonarchLocation(unittest.TestCase):
     def test_the_threshold_is_labelled_a_heuristic(self):
         item = self.grove({"pismo_grove": {"local": forecast(self.NOW - timedelta(hours=2), temperature_2m=16.0)}})
         self.assertIn("product heuristic", " ".join(item.extra["assessment"]["blockers"]))
+
+
+def tide(moment, feet, high, station):
+    info = {row["name"]: row for row in verification.TIDE_STATIONS.values()}[station]
+    return verification.TideEvent(moment, feet, high, station, info["latitude"], info["longitude"])
+
+
+class TestKingTides(unittest.TestCase):
+    """Item 9: published dates at once; NOAA times only when predicted."""
+
+    NOW = datetime(2026, 9, 27, 17, tzinfo=UTC)
+
+    def test_published_dates_appear_months_ahead_without_noaa(self):
+        rows = lunar.king_tide_opportunities(self.NOW, HOME, PACIFIC, [])
+        self.assertEqual([row.start.date().isoformat() for row in rows], ["2026-11-24", "2026-12-23", "2027-01-21"])
+        for row in rows:
+            self.assertEqual(row.extra["evidence_state"], "schedule")
+            self.assertFalse(row.extra["operational"])
+            self.assertIn("NOAA", row.extra["awaiting"])
+            self.assertIn("published dates", row.title)
+            self.assertNotIn("tide_ft", row.extra, "no invented height")
+
+    def test_noaa_predictions_enrich_the_window(self):
+        now = datetime(2026, 11, 10, 17, tzinfo=UTC)
+        tides = [tide(datetime(2026, 11, 24, 16, 10, tzinfo=UTC), 6.8, True, "Port San Luis"),
+                 tide(datetime(2026, 11, 25, 16, 50, tzinfo=UTC), 7.0, True, "Port San Luis"),
+                 tide(datetime(2026, 11, 25, 17, 0, tzinfo=UTC), 7.4, True, "Los Angeles")]
+        rows = lunar.king_tide_opportunities(now, HOME, PACIFIC, tides)
+        november = rows[0]
+        self.assertTrue(november.extra["operational"])
+        self.assertEqual(november.extra["tide_ft"], 7.0, "the home station, not the highest anywhere")
+        self.assertEqual([row["light"] for row in november.extra["tide_predictions"]], ["daylight", "daylight"])
+        self.assertIn("Port San Luis", november.extra["best_time_of_day"])
+        self.assertFalse(rows[1].extra["operational"], "December is still beyond the prediction horizon")
+
+    def test_past_windows_drop_off(self):
+        rows = lunar.king_tide_opportunities(datetime(2027, 1, 1, tzinfo=UTC), HOME, PACIFIC, [])
+        self.assertEqual([row.start.date().isoformat() for row in rows], ["2027-01-21"])
+
+    def test_king_tide_is_planner_and_safety_gated(self):
+        (row, *_) = lunar.king_tide_opportunities(datetime(2026, 11, 24, 15, tzinfo=UTC), HOME, PACIFIC, [])
+        now = datetime(2026, 11, 24, 15, tzinfo=UTC)
+        result = eligibility.assess(row, now, max_drive_hours=6.0,
+                                    alerts=[alert("Coastal Flood Warning", same="006079", now=now)])
+        self.assertEqual(result["safety_state"], "unsafe")
+        self.assertEqual(result["presentation"], "planner")
+
+    def test_minus_tides_exist_only_where_noaa_predicts(self):
+        self.assertEqual(lunar.tide_opportunities([], self.NOW, HOME, PACIFIC), [])
+        low = tide(datetime(2026, 10, 7, 18, tzinfo=UTC), -1.3, False, "Port San Luis")
+        (row,) = lunar.tide_opportunities([low], self.NOW, HOME, PACIFIC)
+        self.assertTrue(row.extra["operational"])
+        self.assertEqual(row.extra["timing_basis"], "NOAA CO-OPS tide prediction")
+
+
+class TestGrunionStation(unittest.TestCase):
+    """Item 10: the beach's own station decides the hour."""
+
+    def test_conflicting_stations_use_the_nearest(self):
+        night = datetime(2026, 4, 8).date()
+        tides = [tide(datetime(2026, 4, 8, 22, 0, tzinfo=UTC), 7.1, True, "Los Angeles"),
+                 tide(datetime(2026, 4, 8, 21, 0, tzinfo=UTC), 6.2, True, "Santa Barbara")]
+        santa_barbara = (34.418, -119.670)
+        start, _ = verification.grunion_run_window(tides, night, santa_barbara)
+        self.assertEqual(start, tides[1].moment + verification.GRUNION_LAG_MIN,
+                         "Santa Barbara's high tide, not the higher Los Angeles one")
+        self.assertEqual({row.station for row in verification.tides_for_place(tides, *santa_barbara)}, {"Santa Barbara"})
+
+    def test_mixed_unlabelled_stations_are_refused(self):
+        tides = [verification.TideEvent(datetime(2026, 4, 8, 22, tzinfo=UTC), 7.1, True, "A"),
+                 verification.TideEvent(datetime(2026, 4, 8, 21, tzinfo=UTC), 6.2, True, "B")]
+        self.assertEqual(verification.tides_for_place(tides, 34.4, -119.7), [])
+
+
+def bird(name, latin, lat, lon, when, observer, count=None):
+    return wildlife.Sighting(species=name, scientific_name=latin, place="Site", latitude=lat, longitude=lon,
+                             latest=when, earliest=when, source="eBird", category="birds", observers=[observer],
+                             reports=1, count=count, dates=[when.date().isoformat()])
+
+
+class TestBirdViews(unittest.TestCase):
+    """Item 11: one drive limit, one classification, no duplicates."""
+
+    NOW = datetime(2026, 12, 20, 22, tzinfo=UTC)
+
+    def test_encounter_obeys_the_drive_limit(self):
+        sightings = [bird("Sandhill Crane", "Antigone canadensis", 38.156, -121.416, self.NOW - timedelta(days=day), obs, 40)
+                     for day, obs in ((0, "a"), (1, "b"), (2, "c"))]
+        near = birds.classify(sightings, self.NOW, HOME, 8.0)
+        self.assertEqual(len(near["encounter"]), 1)
+        far = birds.classify(sightings, self.NOW, HOME, 2.0)
+        self.assertEqual(far["encounter"], [])
+
+    def test_merced_crane_cant_miss_row_is_in_the_spectacle_view(self):
+        rows = events.build_seasonal_opportunities(self.NOW, 365, HOME)
+        eligibility.annotate(rows, self.NOW, max_drive_hours=6.0, alerts=[])
+        board = eligibility.dashboard(rows, self.NOW, birds={})
+        self.assertIn("sandhill_crane_flyin", [row["phenomenon"] for row in board["events"]])
+        self.assertEqual([row["phenomenon"] for row in board["birds"]["spectacle"]], ["sandhill_crane_flyin"])
+
+    def test_spectacle_view_obeys_the_drive_limit(self):
+        rows = events.build_seasonal_opportunities(self.NOW, 365, HOME)
+        eligibility.annotate(rows, self.NOW, max_drive_hours=2.0, alerts=[])
+        board = eligibility.dashboard(rows, self.NOW, birds={})
+        self.assertEqual(board["birds"]["spectacle"], [])
+
+    def test_a_count_merges_and_is_not_duplicated(self):
+        rows = events.build_seasonal_opportunities(self.NOW, 365, HOME)
+        count = [bird("Sandhill Crane", "Antigone canadensis", 37.18, -120.60, self.NOW - timedelta(hours=20), obs, 4000)
+                 for obs in "abc"]
+        views = birds.classify(count, self.NOW, HOME, 6.0)
+        leftovers = eligibility.merge_into_phenomena(rows, views["spectacle"], self.NOW)
+        rows += leftovers
+        eligibility.annotate(rows, self.NOW, max_drive_hours=6.0, alerts=[])
+        board = eligibility.dashboard(rows, self.NOW, birds=views)
+        self.assertEqual([row["phenomenon"] for row in board["birds"]["spectacle"]], ["sandhill_crane_flyin"])
+        self.assertEqual([row["phenomenon"] for row in board["events"]].count("sandhill_crane_flyin"), 1)
+        self.assertFalse([row for row in board["birds"]["encounter"] if row["phenomenon"] == "sandhill_crane_flyin"])
+
+
+UNOWNED = (gear.TC14, gear.FAST_WIDE, gear.DEW_HEATER, gear.RAIN_COVER)
+
+
+class TestGearSemantics(unittest.TestCase):
+    """Item 12: TAKE/OPTIONAL/SKIP are the bag; WORTH ADDING is not; REQUIRED is safety."""
+
+    def test_owned_lists_never_name_unowned_kit(self):
+        for name in gear.PROFILES:
+            with self.subTest(profile=name):
+                plan = gear.recommend(name)
+                self.assertTrue(gear.uses_only_owned(plan), plan)
+
+    def test_worth_adding_is_unowned_specific_and_brief(self):
+        for name in gear.PROFILES:
+            plan = gear.recommend(name)
+            self.assertLessEqual(len(plan.add), 2, f"{name}: no shopping list")
+            for item in plan.add:
+                self.assertTrue(item["why"], f"{name}: every suggestion says why")
+                self.assertFalse(any(owned in item["item"] for owned in gear.OWNED), f"{name}: {item} is already owned")
+
+    def test_suggestions_go_where_they_matter(self):
+        self.assertIn(gear.TC14, [item["item"] for item in gear.recommend("raptor").add])
+        for name in ("astro_wide", "meteor", "aurora", "waterfall_night", "night_beach"):
+            self.assertIn(gear.FAST_WIDE, [item["item"] for item in gear.recommend(name).add], name)
+        self.assertEqual(gear.recommend("wildlife_dawn").add, [], "an elk morning needs nothing new")
+        self.assertIn(gear.RAIN_COVER, [item["item"] for item in gear.recommend("storm_surf").add])
+
+    def test_the_2x_is_never_the_default(self):
+        for name in gear.PROFILES:
+            self.assertNotIn(gear.TC2X, gear.recommend(name).take, name)
+
+    def test_red_headlamp_is_required_on_a_night_beach(self):
+        self.assertTrue(any(gear.RED_HEADLAMP in item for item in gear.recommend("night_beach").required))
+
+    def test_plans_do_not_share_mutable_state(self):
+        first = gear.recommend("raptor")
+        first.add[0]["why"] = "changed"
+        self.assertNotEqual(gear.recommend("raptor").add[0]["why"], "changed")
+
+
+def eclipse(kind):
+    start = NOW + timedelta(days=2)
+    return events.Opportunity(key=f"eclipse-{kind}", title=f"{kind.title()} solar eclipse", category="astronomy",
+                              zone_id="home", zone_name="Home", start=start, end=start, score=75, detail="",
+                              drive_hours=0.0, phenomenon="eclipse_solar", planning_only=True,
+                              extra={"evidence_state": "computed", "eclipse_type": kind})
+
+
+class TestSolarEclipseGear(unittest.TestCase):
+    """Item 13: a solar event never omits the front-mounted certified filter."""
+
+    def test_every_solar_plan_requires_a_front_filter_and_eye_protection(self):
+        for kind in ("total", "annular", "hybrid", "partial"):
+            with self.subTest(kind=kind):
+                row = eclipse(kind)
+                assess(row)
+                plan = row.extra["gear_plan"]
+                self.assertIn(gear.SOLAR_FILTER, plan["required"])
+                self.assertIn(gear.ECLIPSE_GLASSES, plan["required"])
+                self.assertIn("FRONT", plan["safety"])
+                self.assertIn("ND filters", plan["safety"])
+                self.assertIn("polarisers", plan["safety"])
+                self.assertEqual(plan["take"], gear.LONG, "an owned lens")
+                self.assertTrue(any(gear.TC2X in option for option in plan["optional"]), "the TC is optional")
+
+    def test_only_totality_removes_the_filter(self):
+        total = eclipse("total")
+        assess(total)
+        self.assertIn("Remove the filter only during totality", total.extra["gear_plan"]["safety"])
+        annular = eclipse("annular")
+        assess(annular)
+        self.assertNotIn("Remove the filter", annular.extra["gear_plan"]["safety"])
+        self.assertIn("stays on for the whole event", annular.extra["gear_plan"]["safety"])
+
+    def test_the_catalog_uses_the_solar_profile(self):
+        self.assertEqual(curation.CATALOG["eclipse_solar"].gear_profile, "eclipse_solar")
+        self.assertIn("FRONT", curation.CATALOG["eclipse_solar"].safety)
+
+
+class TestWeatherIsNotCantMiss(unittest.TestCase):
+    """Item 14: weather subjects are watch signals until observed."""
+
+    def test_thunder_is_watch_only(self):
+        self.assertEqual(curation.CATALOG["thunderstorm_watch"].product_class, curation.CLASS_WATCH)
+        storm = opp("thunderstorm_watch", "rare_phenomena", evidence_state="behavior_confirmed")
+        self.assertFalse(assess(storm)["eligible"])
+
+    def test_no_weather_optics_are_curated_for_the_dashboard(self):
+        for word in ("lightning", "lenticular", "rainbow", "fog", "inversion", "halo", "waterspout", "sun_pillar"):
+            for key, definition in curation.CATALOG.items():
+                if word in key:
+                    self.assertNotEqual(definition.product_class, curation.CLASS_CANT_MISS, key)
+
+    def test_forecast_signals_never_become_rows(self):
+        now = NOW
+        model = forecast(now - timedelta(hours=2), weather_code=95, cloud_cover=100)
+        signals = weather_hazards.watch_signals({"yosemite_valley": {"local": model}},
+                                                [const.ZONES_BY_ID["yosemite_valley"]], now)
+        self.assertTrue(signals)
+        self.assertTrue(all(not hasattr(signal, "phenomenon") or signal.kind == "forecast" for signal in signals))
+        self.assertEqual(spectacles.report_opportunities([], now, HOME), [])
+
+
+class TestFractionsAreNotDates(unittest.TestCase):
+    """Found during this pass: "1/2 mile" in January read as 2 January."""
+
+    def test_fractions_are_rejected_and_dates_kept(self):
+        january = datetime(2027, 1, 10, tzinfo=UTC)
+        for text in ("Humpbacks 1/2 mile offshore", "about 1 1/2 hours out", "3/4 of the way to the island", "a 1/2 moon"):
+            self.assertIsNone(field_reports.explicit_date(text, january), text)
+        self.assertEqual(field_reports.explicit_date("Updated 1/8", january).date().isoformat(), "2027-01-08")
+        self.assertEqual(field_reports.explicit_date("Trip 1/8/2027", january).date().isoformat(), "2027-01-08")
 
 
 if __name__ == "__main__":

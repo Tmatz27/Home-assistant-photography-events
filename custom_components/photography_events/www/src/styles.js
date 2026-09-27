@@ -569,6 +569,11 @@ const CARD_STYLES = `
       .cm-where, .cm-when, .cm-status { font-size:13px; color:var(--secondary-text-color); overflow-wrap:anywhere; }
       .cm-why { font-size:14px; line-height:1.4; overflow-wrap:anywhere; }
       .cm-take { font-size:13px; font-weight:600; }
+      .cm-required { font-size:13px; font-weight:600; color:var(--error-color, #e0685c); }
+      .cm-held { margin:10px 0; padding:10px 12px; border-left:3px solid var(--warning-color, #dca54c); font-size:13px; color:var(--secondary-text-color); }
+      .cm-held strong { color:var(--primary-text-color); }
+      .cm-held ul { margin:4px 0 0; padding-left:18px; }
+      .cm-held li { margin:0 0 6px; overflow-wrap:anywhere; }
       .cm-row .outlook-detail { padding:0 12px 12px; }
       .cm-report { font-size:13px; margin:6px 0; overflow-wrap:anywhere; }
       .cm-empty { display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:22px 12px; color:var(--secondary-text-color); }

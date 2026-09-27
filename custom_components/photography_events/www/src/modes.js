@@ -629,11 +629,16 @@ const CARD_MODES = {
     if (event.precision === "season") dates.push(["Date precision", `Details firm up inside ${outlook.horizonDays} days; current reports are still required.`]);
     if (best.duration_minutes) dates.push([candidate ? "Candidate sky interval" : "Usable window", `${best.duration_minutes} minutes${best.limited_by ? ` · ${WINDOW_LIMIT_REASON[best.limited_by] || best.limited_by}` : ""}`]);
     dates.push(["Best time of day", event.best_time_of_day], ["Timing basis", event.timing_basis]);
+    // All of the Moon geometry the backend computes, not just the rise time.
+    dates.push(...moonGeometryRows(event));
+    if (Array.isArray(event.tide_predictions) && event.tide_predictions.length) {
+      dates.push(["NOAA predicted high water", event.tide_predictions.map(row => `${absoluteLabel(parseEventDate(row.time))} · ${row.ft} ft MLLW at ${row.station} (${row.light})`).join(" · ")]);
+    }
     if (!event.nights && (event.precision === "season" || ["watching", "unverified", "presence_only"].includes(event.verification))) dates.push(["Preferred days & alternatives", "No evidence-backed ideal day yet. An alternate date within the season is not known to be worse; current reports must narrow the timing."]);
     const options = event.nightOptions || [event, ...(event.alternatives || [])];
     const drives = options.map(e => e.drive_hours).filter(d => Number.isFinite(d) && d > 0);
     const places = Array.isArray(event.locations_detail) && event.locations_detail.length ? event.locations_detail.map(p=>p.name) : event.locations || [event.where || event.zone || park?.name].filter(Boolean);
-    const evidence = [["Status", VERIFICATION_META[event.verification]?.label], ["What is known", event.evidence_note], ["Still needed", event.awaiting], ["Observed", event.observed_at ? absoluteLabel(parseEventDate(event.observed_at)) : null], ["Priority", `${event.score}/100 — ranking, not a probability`], ["Data degraded", event.source_health_note]];
+    const evidence = [["Status", VERIFICATION_META[event.verification]?.label], ["What is known", event.evidence_note], ["Still needed", event.awaiting], ["Observed", event.observed_at ? absoluteLabel(parseEventDate(event.observed_at)) : null], ["Priority", `${event.score}/100 — ranking, not a probability`], ["Fallback in use", event.fallback_note], ["Data degraded", event.source_health_note]];
     if (event.condition_states && typeof event.condition_states === "object") evidence.push(...Object.entries(event.condition_states));
     if (Number.isFinite(event.cloud_cover)) evidence.push([cloudLabel(event), `${event.cloud_cover}%`]);
     if (Number.isFinite(event.streamflow_cfs)) evidence.push(["Basin flow observation", `${event.streamflow_cfs} cfs · ${event.streamflow_trend || "trend unknown"} · ${absoluteLabel(parseEventDate(event.streamflow_observed_at))}. Merced basin proxy, not waterfall spray or future flow.`]);
@@ -642,7 +647,7 @@ const CARD_MODES = {
     evidence.push(["Forecast", event.forecast_note], ["Limits", event.confidence_note]);
     if (event.measurement_label) evidence.push([event.measurement_label, `${event.wave_height_m ?? "Unknown"} m · ${event.wave_period_s ?? "Unknown"} s · from ${event.wave_direction_deg ?? "Unknown"}°`]);
     const locationGuides = (Array.isArray(event.locations_detail) ? event.locations_detail : []).map(place => `<section class="location-option"><strong>${escapeHtml(place.name)}</strong><p>${escapeHtml(place.note)}</p>${safeExternalUrl(place.url) ? `<a href="${escapeHtml(safeExternalUrl(place.url))}" target="_blank" rel="noopener noreferrer">Viewpoint guide / current access</a>` : ""}</section>`).join("");
-    const access = [["Locations", places.join(" · ")], ["Closest approximate drive", drives.length ? driveLabel(Math.round(Math.min(...drives) * 60)) : park?.drive_label], ["Access", event.access_note], ["Closures", event.closures?.join("; ")], ["Access check", event.closure_source], ["Coastal advisories", event.coastal_advisories?.join("; ")], ["Dogs", park?.dog_detail]];
+    const access = [["Locations", places.join(" · ")], ["Closest approximate drive", drives.length ? driveLabel(Math.round(Math.min(...drives) * 60)) : park?.drive_label], ["Access", event.access_note], ["Closures", event.closures?.join("; ")], ["Access check", event.closure_source], ["Coastal advisories", event.coastal_advisories?.join("; ")], ["Swell", event.swell_note], ["Safety", event.safety_summary], ["Dogs", park?.dog_detail]];
     if (event.tide_window_start && event.tide_window_end) access.push(["Tide window", `${absoluteLabel(parseEventDate(event.tide_window_start))} to ${absoluteLabel(parseEventDate(event.tide_window_end))}`]);
     const why = event.tips || event.detail || (event.reasons || []).join(", ") || "A seasonal photography lead; current conditions still need checking.";
     // Keep the first opening useful without exposing every technical field.
@@ -658,7 +663,9 @@ const CARD_MODES = {
       ${section("dates", "Dates & alternatives", list(dates) + this._nightComparisonHtml(event))}
       ${section("places", `Locations & access${places.length > 1 ? ` · ${places.length}` : ""}`, list(access) + locationGuides + (!event.nights && event.alternatives?.length ? options.map(location => this._locationHtml(location)).join("") : ""))}
       ${section("evidence", "Evidence & source reports", list(evidence) + (why !== intro ? `<p>${escapeHtml(why)}</p>` : "") + reportLinkHtml(event) + `<div class="outlook-verify">${links}</div>`)}
-      ${this._config.show_gear ? section("gear", "Photography gear", list([["Lens", event.gear || outlook.gear?.[event.category]?.glass], ["Support", outlook.gear?.[event.category]?.support], ["Settings", outlook.gear?.[event.category]?.settings]])) : ""}
+      ${this._config.show_gear ? section("gear", "Photography gear", list(event.gear_plan && typeof event.gear_plan === "object"
+        ? gearPlanRows(event.gear_plan)
+        : [["Lens", event.gear || outlook.gear?.[event.category]?.glass], ["Support", outlook.gear?.[event.category]?.support], ["Settings", outlook.gear?.[event.category]?.settings]])) : ""}
     </div>`;
   },
 

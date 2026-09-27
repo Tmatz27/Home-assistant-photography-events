@@ -72,3 +72,49 @@ Whale Safe's public get-involved page lists API inquiries, but endpoint, authent
 - Lower Fall footbridge, Sentinel Bridge parking area (Upper Fall), and Glacier Point have distinct guidance and timing. The card links the specialist predictions and [NPS current conditions](https://www.nps.gov/yose/planyourvisit/conditions.htm). These guides do not establish current spray or open roads.
 - [Point Sal State Beach](https://www.parks.ca.gov/?page_id=605) documents public trail access and links County closure information. That establishes a place to research, not a verified storm shooting position or calibration of the Vandenberg coastal model at Point Sal. Runtime wave coverage was not expanded.
 - Firefall's previous backlog claim of solved geometry and wired basin flow was incorrect. The builder remains a seasonal lead with manual flow/light-path verification; Merced discharge does not measure Horsetail Fall.
+
+
+## 0.16.0 source register — 2026-09-27
+
+Every source the integration reads, what it is, and what its absence means. "Missing means" is the rule the code follows: a failed feed is reported through source health and **never** read as "nothing happened". Live access to these hosts was blocked from the development container this round; shapes below come from each provider's documentation or published client libraries and earlier saved responses, and are named as such.
+
+| Source | Authority / URL | Supplies | Cadence (min poll) | Basis | Auth · limits | Failure detected by | Missing means |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Open-Meteo forecast | Open-Meteo, api.open-meteo.com | Layered cloud (home, zones, light-path probes), weather code, snowfall, temperature, wind (m/s) | 60 min | Forecast (model; ≤7 d "forecast", beyond "outlook") | None · free tier | Incomplete multi-location answer → partial failure | Cloud unknown; forecast-dependent rows cannot pass the gate |
+| Open-Meteo air quality | Open-Meteo | Aerosol optical depth at home | 3 h | Forecast | None | Wrong location count | Sunset clarity falls back to humidity/visibility |
+| SunsetWx Sunburst | SunsetWx LLC, sunburst.sunsetwx.com/v1 ([docs](https://sunburst.sunsetwx.com/v1/docs/), [sunburst.js](https://github.com/sunsetwx/sunburst.js), [PySunsetWx example response](https://github.com/salvoventura/PySunsetWx)) | Sunset/sunrise quality label + percent, valid time, source model | 3 h, 2 requests (+login) | Forecast (their model) | Client ID/secret from a SunsetWx account; plan per their terms; no public rate limit found | Login or empty/invalid features → failed | Local sky model decides alone and says so |
+| NWS active alerts | NOAA/NWS, api.weather.gov/alerts/active?area=CA | Every California warning/advisory: event, polygon or county SAME codes, onset/ends | 1 h | Official warnings | User-Agent only | Non-GeoJSON or missing `features` → failed | Rows say "NWS alerts unavailable — check warnings"; never "all clear" |
+| NOAA NDBC 46011 / CDIP B1500 | NOAA, CDIP | Measured offshore swell; nearshore model | 30 min / 3 h | Observed / forecast | None | QC flags, stale run time (see above) | No swell row; swell forecast alone is only a watch |
+| NOAA CO-OPS tides | NOAA, api.tidesandcurrents.noaa.gov | High/low predictions at four stations, now attributed per station | 12 h | Computed prediction | None | No predictions from any station | No King Tide/minus-tide rows; grunion hour unknown |
+| California Coastal Commission King Tides | [coastal.ca.gov/kingtides](https://www.coastal.ca.gov/kingtides/) | Published statewide dates (2026-27: 24–26 Nov, 23–25 Dec, 21–22 Jan) | Static table | Published | — | — | Later seasons not guessed; added when published |
+| eBird notable | Cornell Lab, api.ebird.org v2 | Notable reports, count, reviewer flags, `locationPrivate` | 60 min | Observed (presence) | Free key | Non-list answer per region → partial failure | Bird Chase may be incomplete |
+| eBird species | Cornell Lab, `/data/obs/{region}/recent/{species}` | Condor, bald eagle, crane, Ross's and snow goose reports and counts in their viewing counties | 6 h, 6 requests | Observed | Same key | As above | Bird Spectacle/Encounter may be incomplete. eBird may withhold sensitive species; absence is not absence of birds |
+| iNaturalist | iNaturalist, api.inaturalist.org v1 | Presence of every species a curated window names; box now covers all windows, not only the coast | 60 min | Observed (presence) | None; ~1 req/s | Error object per taxon → partial failure | Presence corroboration missing; never proves behaviour |
+| Hotlines (Theodore Payne, DesertUSA, California Fall Color) | Scraped public pages | Bloom/colour text; a date stated in the text becomes the observation date | 24 h | Reported | None | Layout/topic check (see above) | Phenomenon stays "watching"; undated text is labelled undated |
+| Emailed reports (`ingest_report`) | Whoever the user subscribes to | Fixed-vocabulary phenomenon, place, count; dated only by an explicit date or "today/this morning" | On arrival | Reported | User's IMAP | No match → discarded | Nothing inferred |
+| Condor Express RSS | Operator | Dated, explicitly sized megapods | 3 h | Reported | None | Non-RSS → failed | No megapod row |
+| NOAA OVATION | NOAA SWPC | Local aurora nowcast | 15 min | Model nowcast | None | Missing coordinates | No aurora row |
+| NASA eclipse catalog | NASA GSFC (bundled) | Eclipse geometry 2026–2035 | Static | Computed | — | — | — |
+| Friends of the Elephant Seal | [elephantseal.org](https://elephantseal.org/birthing-and-breeding/) | Documented breeding cycle (calendar basis) | Documentation | Published cycle | — | — | "What's happening now" page structure could not be inspected here; no scraper. Use `ingest_report` for docent updates |
+| City of Carpinteria / Seal Watch | [City rookery page](https://carpinteriaca.gov/parks-and-recreation/carpinteria-harbor-seal-rookery/), [Seal Watch](https://carpinteriasealwatch.org/information/) | Closure 1 Dec–31 May; births mostly Feb–Mar; ~60 pups | Documentation | Published cycle | — | — | Counts not machine-readable |
+| USFWS Merced NWR | [fws.gov/refuge/merced](https://www.fws.gov/refuge/merced) | Up to 20,000 cranes, 60,000 geese; sunset fly-in "predictable daily spectacle"; best Dec–Feb | Documentation | Published cycle | — | — | — |
+| Xerces Society / State Parks (monarchs) | [Xerces visiting guidance](https://xerces.org/blog/everything-you-need-to-know-about-visiting-overwintering-monarchs), [Pismo grove](https://www.parks.ca.gov/?page_id=30273) | Monarchs do not fly below ~55 °F; Pismo season Nov–mid-Feb | Documentation | Published | — | — | Current counts must be supplied by report; recent early-season counts were in the hundreds |
+
+### Thresholds and where they come from
+
+| Threshold | Value | Basis |
+| --- | --- | --- |
+| Monarch cold dawn | ≤ 55 °F | Sourced: Xerces Society |
+| Monarch meaningful count | ≥ 1,000 | Product threshold |
+| Goose/crane mass count | ≥ 1,000 | Product threshold, against USFWS wintering numbers in the tens of thousands |
+| Condor concentration | ≥ 3 birds in one report | Product threshold |
+| Bird encounter repetition | ≥ 3 independent reports on ≥ 2 days in 7 days within 15 km of a public site | Product threshold |
+| Orca exceptional presence | 2 independent reports in 72 h, or one research-grade in 36 h | Product threshold |
+| Bioluminescence | Report ≤ 3 days old, Moon < 50 % lit | Product threshold |
+| Minus tide | ≤ −1.0 ft MLLW, daylight | Common tidepooling guidance; product threshold |
+| Photogenic moonrise | Within 60 min of sunset | Product threshold |
+| Fresh snow watch | ≥ 10 cm modelled in 24 h, then ≤ 30 % cloud within 18 h | Product threshold; watch only |
+| Drone wind | 10.7 m/s | Sourced: DJI Mini 3 specification (Level 5) |
+| Significance floor | 70 | Product threshold |
+
+Drone legality: NPS Policy Memorandum 14-05 under 36 CFR 1.5 (national parks); 50 CFR 27.34 and 27.51 (national wildlife refuges).

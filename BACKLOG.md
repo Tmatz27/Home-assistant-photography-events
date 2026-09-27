@@ -1,4 +1,4 @@
-# Remaining work after 0.14.0
+# Remaining work after 0.16.0
 
 Updated 2026-09-17. Read AGENTS.md first. The cancelled feature list below remains authoritative.
 
@@ -19,3 +19,15 @@ Source-health/HA contract foundations, card source split and sourced eclipse pat
 ## Cancelled by the user
 
 Phone notifications/delivery, notification blueprint, hassfest, brand submission, the optional watching filter, score divided by drive sorting, and a separate this_week mode. Do not revive these without a new request.
+
+
+## Open after 0.16.0
+
+- **Live checks of new sources.** SunsetWx login/quality, the eBird species endpoint and the all-California NWS alert payload were implemented against documentation and published clients; confirm against a live response on the user's instance.
+- **Friends of the Elephant Seal "What's happening now".** The best live rookery source; its structure could not be inspected from here, so no scraper. Until then, docent updates go through `ingest_report`.
+- **Lightning.** No detection feed is connected (GOES GLM needs netCDF tooling); thunder stays a watch signal.
+- **Weather subjects deferred:** lenticulars, rainbows (geometry is computable, radar is not wired), fog inversions (no validated viewpoint above the deck), halos and other optics.
+- **Sky gaps:** planetary and Moon-planet conjunctions in the backend (the standalone card computes them), bright comets (needs an observed-magnitude source such as COBS; predictions are not facts), zodiacal light.
+- **Wildlife deferred:** sea otter mother-pup rafts (conflicting peak statements), grebe rushing (no sourced dates within six hours), golden eagle display (no public concentration found), La Jolla leopard sharks and tarantulas are planner-only candidates not yet built as rows.
+- **Monarch counts** have no machine-readable source; they must arrive by report.
+- **Grunion tide window** still takes the highest night tide across all stations; now that tides carry their station, restrict it to Santa Barbara.

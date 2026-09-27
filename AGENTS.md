@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.15.0.** `main` is the working branch; there is no PR flow.
+**Current version: 0.16.0.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -31,6 +31,19 @@ Everything below exists to prevent that. A confident wrong answer is worse than
 an admitted unknown, every time.
 
 ---
+
+## 0.16.0 handoff amendments — Can't Miss
+
+- The product is a regret-prevention system, not an encyclopedia. The default card (`action_hero`) is **Can't Miss**: 0-5 rows is normal and an empty week is a success. Read DISCOVERY_AUDIT.md before adding anything to it.
+- Data flow is **signal → phenomenon → opportunity**. `signals.py` holds raw evidence; `curation.py` holds every curated phenomenon with significance, trigger policy, product class and `policy_reason`; `eligibility.py` runs the hard gate **before** ranking. Do not reintroduce ranking-then-truncating, and do not let one score stand for significance, confidence and urgency again.
+- A raw sighting must never become a row. Reports merge into the phenomenon they describe (fixed vocabulary, `curation.phenomena_named`); only unmatched hotline reports become planner rows. Duplicate rows for one phenomenon are a bug.
+- The Can't Miss drive gate is separate from the planner's `within_drive`; `planning_only` must not bypass it.
+- An observation date comes from the report's own text (an explicit date, or "today/this morning" in an email). Download or arrival time never does.
+- NWS warnings at a place block it from Can't Miss; a failed alert feed says "unavailable", never "all clear". Weather subjects are watch signals until observed.
+- Sunsets are assessed at home only. SunsetWx is primary when configured; its percentage is never presented as a probability.
+- Gear advice names only the owned kit (`gear.py`); the 2x teleconverter is never the default; the drone verdict follows land status, wildlife and wind.
+- New thresholds must be sourced or labelled as product thresholds in `curation.py` and SOURCE_VALIDATION.md.
+- `_build` returns a list (real-HA contract); signals and bird views live on `_last_signals` / `_last_birds`. HA contract tests were run locally with a Python 3.12 venv; HA 2024.11 does not install on Python 3.11.
 
 ## 0.14.0 handoff amendments
 
@@ -102,8 +115,12 @@ already shipped once and specifically complained about.
 | Level | Basis | May alert? |
 | --- | --- | --- |
 | `EVIDENCE_COMPUTED` | Orbital geometry | Yes, on its own |
-| `EVIDENCE_LIVE` | A *search season*; dates alone are an estimate | Only once a sighting corroborates it |
-| `EVIDENCE_STATIC` | A calendar estimate no feed publishes | **Never**, at any score |
+| `EVIDENCE_CALENDAR` (0.16.0) | A documented annual cycle published by the site's managers; window ≤ 40 days and sourced | Inside that core window, through the Can't Miss gate; the elk rut also needs a nearby report |
+| `EVIDENCE_LIVE` | A *search season*; dates alone are an estimate | Only once its trigger policy is met; presence never proves behaviour |
+| `EVIDENCE_STATIC` | A calendar estimate no feed publishes | **Never** by date or presence; only a dated, located report of the behaviour itself |
+
+Since 0.16.0 the planner score no longer decides alerts; `eligibility.assess`
+does. Scores keep their ceilings so the planner still ranks honestly.
 
 Corroboration = a reported sighting of the window's named species within
 **120 km** in the **last 14 days** (`LIVE_CORROBORATION_KM` / `_DAYS`).
@@ -247,7 +264,7 @@ yet.").
 | File | Responsibility |
 | --- | --- |
 | `astronomy.py` | Meeus ch.25 solar, ch.47 lunar (60 terms). Rise/set, twilight, illumination, shooting-window intersection, solar-longitude crossings, precession. No dependencies by design - astropy/skyfield pull numpy or download kernels, both bad for HACS. |
-| `phenomena.py` | 22 `PeakWindow` entries, evidence constants, source URLs, `active_windows()`, `corroboration_taxa()`. **The data table.** |
+| `phenomena.py` | 24 `PeakWindow` entries, evidence constants, source URLs, `active_windows()`, `corroboration_taxa()`. **The data table.** |
 | `events.py` | All opportunity building and scoring. `Opportunity` dataclass, `compact()` payload reduction, `_apply_evidence()`, `alert_candidate()`, lunar look-ahead. |
 | `weather_scoring.py` | Sky model (canvas / light path / clarity), `light_path_probes()`, `mark_standouts()`, Open-Meteo request builders. |
 | `coordinator.py` | `DataUpdateCoordinator`. Per-source throttles, staggered startup groups, deferred scrapers on cold start, ingested-report store. |
@@ -264,7 +281,15 @@ yet.").
 | `routing.py` | Google Routes API + legacy Distance Matrix. |
 | `throttle.py` | `Source` - due/succeed/fail/status, 15-min failure backoff. |
 | `config_flow.py` | **HA selectors only.** See below. |
-| `www/photography-events-card.js` | Three modes: `action_hero`, `calendar_outlook`, timeline. Generated vanilla artifact; sources under `www/src/`, assembled by `scripts/build-card.mjs`. |
+| `signals.py` | Raw evidence (sightings, reports, forecasts) with basis and dates. Never rows. |
+| `curation.py` | Curated phenomena: significance, trigger policy, product class, behaviour vocabulary, land status, ethics, safety. |
+| `eligibility.py` | The Can't Miss gate, separate assessment fields, dashboard assembly, evidence merging. |
+| `birds.py` | Bird Spectacle / Encounter / Chase; orca exceptional presence. |
+| `lunar.py` | Ranked full Moons with horizon geometry; King Tide and minus-tide planner rows. |
+| `sunburst.py` | SunsetWx request building and parsing. |
+| `weather_hazards.py` | NWS warning gate; forecast watch signals; monarch dawn temperature. |
+| `gear.py` | Owned-kit packing plans, teleconverter tradeoffs, drone verdicts. |
+| `www/photography-events-card.js` | Four modes: `action_hero` (Can't Miss), `calendar_outlook`, `birds`, timeline. Generated vanilla artifact; sources under `www/src/`, assembled by `scripts/build-card.mjs`. |
 | `tools/generate_tracking_inventory.py` | Generates `TRACKING.md` from the code so the two cannot drift. |
 
 ### Config flow warning

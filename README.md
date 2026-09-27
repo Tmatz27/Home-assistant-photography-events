@@ -1,6 +1,46 @@
 # Photography Events
 
-> **0.11.0 card update:** Use `mode: action_hero` for compact next-seven-days briefs, or `mode: calendar_outlook` for the year planner with List/Calendar controls. Both read `outlook_entity` (auto-detected by default). Existing Timeline cards use the integration when installed. Full date ranges, preferred Milky Way nights and alternate-night tradeoffs are available inside event details. [Release notes](RELEASE_NOTES.md).
+A regret-prevention system for one photographer based at Vandenberg SFB. It
+watches a lot of California behind the scenes and asks one question on the main
+card: *is something happening within roughly six hours that is unusual,
+photographically exceptional, reachable, likely enough, and safe - so that I
+would regret missing it?* "Nothing worth changing plans for this week." is a
+successful answer. [Release notes](RELEASE_NOTES.md) · [Discovery audit](DISCOVERY_AUDIT.md)
+
+## Five kinds of output, kept apart (0.16.0)
+
+| View | What it holds | How something gets there |
+| --- | --- | --- |
+| **Can't Miss** (`mode: action_hero`, the default) | Usually 0-5 rows for the next seven days | Passes a hard gate: a curated phenomenon, its trigger policy satisfied, inside the drive limit, significance at or above the floor, no NWS warning at the place. Then ranked. |
+| **Planner** (`mode: calendar_outlook`) | Everything with a date: seasons, parks, full Moons, tides, watch windows, the Can't Miss rows too | Classified, never deleted. Long trips are listed beyond the drive limit here. |
+| **Bird Spectacle** (`mode: birds`) | Iconic birds doing something: condors together, eagles fishing, the crane fly-in | Iconic subject + credible encounter + behaviour or concentration. May also reach Can't Miss. |
+| **Bird Encounter / Bird Chase** (`mode: birds`) | Repeated iconic-bird reports at a public site; notable individual birds | Encounter: repeated reports. Chase: eBird notable, ranked by how findable it still is. Never on Can't Miss. |
+| **Background signals** | One collapsed section on the Can't Miss card | Sightings, undated reports, forecasts, presence without behaviour. A sighting is a signal, not an event. |
+
+The data flow is **signal → phenomenon → opportunity**. Signals (`signals.py`)
+are raw evidence. Phenomena (`curation.py`) are curated experiences with a
+significance, a trigger policy and a written reason. Opportunities are
+phenomena at a time and place; `eligibility.py` gives each separate
+significance, confidence, urgency, encounter, access and condition-quality
+values, then the gate decides. One score no longer pretends to be all of them.
+
+### Gear from your bag
+
+Recommendations name the owned kit - Sony A7R IV, FE 16-35mm GM, FE 70-200mm GM
+II, FE 200-600mm G, the 2x teleconverter, DJI Osmo Pocket 3 and DJI Mini 3 -
+with a *take / optional / skip* split. The 2x is optional at most (it costs two
+stops and autofocus; an APS-C crop of the 61 MP file often does as well). The
+drone verdict says **Prohibited** in national parks, national wildlife refuges
+and under Vandenberg's restricted airspace, **not appropriate** over wildlife,
+and **not safe** above its published 10.7 m/s wind rating.
+
+### Sunsets are a home feature
+
+Only tonight's sunset and tomorrow's sunrise at home are assessed. With
+optional SunsetWx client credentials, SunsetWx's forecast is primary and only
+its top tier ("Great") reaches Can't Miss; the built-in model is the fallback
+and a comparison. A provider percentage is its forecast score, never presented
+as a probability.
 
 
 ![Photography Events](banner.svg)
@@ -50,8 +90,9 @@ confident date that nothing has actually confirmed.
 | Basis | What it means | What it can do |
 | --- | --- | --- |
 | **Computed** | Geometry - darkness, moon phase, radiant altitude | Alerts on its merits, verifiable to the minute |
-| **Live** | A search season. The dates say when to start watching | Planning only until sightings corroborate it, then it can alert and names the evidence |
-| **Static** | A calendar estimate with no live source | Planning only, always. Never notifies |
+| **Calendar-reliable** | A documented annual cycle published by the site's managers (elephant seals, Carpinteria harbor seals, Merced cranes, tule elk rut) | Inside its sourced core window only; the elk rut also needs a recent report near the site |
+| **Live** | A search season. The dates say when to start watching | Only once its trigger policy is met. Species presence corroborates a watch; it never proves behaviour |
+| **Static** | A calendar estimate with no live source | Never by date or presence; only a dated, located report of the behaviour itself |
 
 So a humpback window reads *"watch window - nothing reported yet, so this is
 where to look, not when to go"* until something is seen, and then becomes
@@ -313,10 +354,11 @@ Set up in the UI. Everything can be changed later from the integration's
 | Option | Default | Description |
 | --- | --- | --- |
 | Enabled categories | all | Astronomy, sunsets, marine, mammals, birds, blooms, foliage |
-| Max drive hours | `6.0` | Zones beyond this are dropped entirely |
-| Sunset score threshold | `85` | Minimum colour score before a sunset is surfaced |
-| Alert score threshold | `75` | Minimum score to trip the drop-everything flag |
-| eBird API key | *(none)* | Optional, for rare-bird alerts |
+| Max drive hours | `6.0` | The Can't Miss drive limit. The planner still lists longer trips |
+| Sunset score threshold | `85` | Local sky-model score before a home sunset is considered |
+| Alert score threshold | `75` | Legacy: only applies to rows the gate never assessed |
+| eBird API key | *(none)* | Optional; Bird Chase and iconic-bird counts |
+| SunsetWx client ID / secret | *(none)* | Optional; purpose-built sunset quality forecast |
 
 ### Target zones
 
@@ -387,7 +429,7 @@ Work through these in order. Step 1 tells you which half of the problem you have
 dashboard page and look for the version banner:
 
 ```
-Photography Events Card v0.14.0
+Photography Events Card v0.16.0
 ```
 
 - **Banner present** → the card is registered. Skip to step 4.
@@ -430,25 +472,41 @@ the version banner, please open an issue with that message.
 
 ## Card modes
 
-The card has three modes. All use the integration when available; timeline
+The card has four modes. All use the integration when available; timeline
 also offers a standalone browser calculator when the integration is absent.
 
 ```yaml
 type: custom:photography-events-card
-mode: action_hero          # timeline | action_hero | calendar_outlook
+mode: action_hero          # action_hero (Can't Miss) | calendar_outlook | birds | timeline
 ```
 
-### `action_hero` — compact next seven days
+### `action_hero` — Can't Miss
 
-One expandable brief for every opportunity overlapping the coming week. Milky Way nights are consolidated into one lunar-window entry, with all supplied locations, a preferred night, alternate-night comparisons and the nearest listed approximate drive. Details separate calculation, forecast and live evidence. The integration compares 35 days; the supplied coverage boundary is not assumed to be the end of the season.
+Reads `sensor.photography_events_can_t_miss` (auto-detected; override with
+`cant_miss_entity`). Each collapsed row answers what, where and how far, why
+now, when, the evidence status and the lens to take. Opening it shows evidence
+and sources, dates and timing, gear and technique, and access, safety and
+ethics. At most five rows show before a "Show more" control. An empty week
+says so; stale or missing data says *that* instead, never "quiet". Everything
+still building sits in one collapsed "Watching N background signals" section.
 
 ```yaml
 type: custom:photography-events-card
 mode: action_hero
-outlook_entity: sensor.photography_events_planning_outlook
 ```
 
-The sensor is auto-detected when omitted. A legacy binary-sensor-only installation retains its older hero fallback until the planning sensor is available.
+Against an older backend without the Can't miss sensor, the 0.15 seven-day
+view (and before that the legacy hero) is used.
+
+### `birds` — Spectacle, Encounter, Chase
+
+```yaml
+type: custom:photography-events-card
+mode: birds
+```
+
+Needs an eBird key in the integration for notable birds and iconic-species
+counts. Spectacles lead; Encounters and the Bird Chase list are collapsed.
 
 ### `calendar_outlook` - the year ahead
 
@@ -516,9 +574,10 @@ Parks behave differently from everything else in two ways, both deliberate:
 - **They are never a drop-everything alert.** A park is a trip you plan, not a
   sky you chase, so park windows score below the alert threshold by
   construction and never enter the 48-hour action window.
-- **They ignore the drive-time limit.** Half the list is further than any sane
-  day trip - Redwood is nine and a half hours - and gating those out at six
-  hours would defeat the point of listing them.
+- **The planner ignores the drive-time limit for them.** Half the list is a
+  long weekend rather than an evening. Can't Miss never lists a park season at
+  all; a spectacle inside a park (firefall, moonbow, condors) is its own
+  phenomenon with its own gate.
 
 Drive times and distances are the measured ones for the Vandenberg origin rather
 than anything computed. Coordinates are approximate main-area or visitor-centre

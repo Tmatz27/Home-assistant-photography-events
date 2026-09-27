@@ -6,6 +6,22 @@
 
 
 
+## 0.16.0
+
+Regret prevention instead of an encyclopedia. See RELEASE_NOTES.md and DISCOVERY_AUDIT.md.
+
+- New SIGNAL → PHENOMENON → OPPORTUNITY data flow: `signals.py` (raw evidence), `curation.py` (curated phenomena, significance, trigger policies, product classes), `eligibility.py` (hard Can't Miss gate before ranking; separate significance, confidence, urgency, encounter, access, condition quality).
+- New `sensor.photography_events_can_t_miss`; the action binary sensor now requires an eligible occurrence.
+- Raw sightings no longer become rows; hotline and emailed reports merge into matching phenomena. Fixed: ingested emails and scraped hotline pages could never corroborate anything (they never carried an observation date or phenomenon key).
+- `calendar_reliable` evidence level for sourced annual cycles (elephant seals, Carpinteria harbor seals, Merced crane fly-in, tule elk rut with a nearby report). Static windows can be activated by a dated behaviour report, never by presence.
+- `birds.py`: Bird Spectacle / Encounter / Chase, eBird species queries for iconic birds, private locations excluded; orca exceptional presence.
+- `lunar.py`: ranked full Moons with horizon geometry; King Tide and minus-tide planner rows. Tide predictions now carry their station.
+- `sunburst.py`: optional SunsetWx provider; sunsets scored at home only.
+- `weather_hazards.py`: NWS warnings gate every Can't Miss row; forecast thunder and snow-then-clearing are watch signals only.
+- `gear.py`: recommendations from the owned kit, teleconverter tradeoffs, drone legality and wind.
+- Card: Can't Miss view (≤5 rows, healthy empty state, collapsed background signals), `birds` mode, planner badges; new browser fixture `tests/cant-miss-browser-fixture.html`.
+- iNaturalist corroboration now covers every curated window, not just the coast.
+
 ## 0.15.0
 
 Four changes, all from watching the cards in use.

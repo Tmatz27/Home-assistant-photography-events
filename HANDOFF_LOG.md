@@ -1,4 +1,4 @@
-# Handoff log — current release 0.14.0
+# Handoff log — current release 0.16.0
 
 ## 2026-09-06: card review and date-choice improvements (0.11.0)
 
@@ -78,3 +78,20 @@ The installed HA version/local URL was requested but not supplied during this im
 Validation for 0.14.0: 231 portable Python tests, 25 real HA contract tests and 102 JS tests pass (358 total). Pyflakes is clean; build/artifact and version checks pass. HA tests used the existing isolated HA 2024.11.3 installation; CI additionally covers HA 2025.3.4. Browser checks and their limits are in BROWSER_VALIDATION.md.
 
 Final documentation review corrected the old HACS resource URL, minimum HA version, 30-day horizon, Whale Safe API claim, timeline-mode behavior and eclipse coverage. Removed the obsolete standalone sunset-notification example and conflicting hardcoded meteor-date claim. Documented source assembly and the local freshness timer.
+
+
+## 2026-09-27: Can't Miss overhaul (0.16.0)
+
+Base: 522023d (0.15.0). The user asked for a regret-prevention system instead of an encyclopedia: a narrow default dashboard, broad collection behind it, and SIGNAL → PHENOMENON → OPPORTUNITY as distinct concepts. DISCOVERY_AUDIT.md was written and committed first (3d32adc), then the refactor.
+
+Implemented (see RELEASE_NOTES.md for the user-facing summary):
+- `signals.py`, `curation.py`, `eligibility.py`: raw evidence, curated phenomena with significance/policy/product class and a written reason, and a hard gate before ranking. Assessments carry separate significance, confidence, urgency, encounter, access and condition quality.
+- `sensor.photography_events_can_t_miss`; action binary sensor requires an eligible occurrence. `_build` still returns a list (a real-HA contract); signals and bird views are left on the coordinator.
+- Reports merge into phenomena by fixed vocabulary; hotline and email dates come only from the text. This fixed a pre-existing gap: ingested emails and scraped hotlines could never corroborate anything in production.
+- `calendar_reliable` evidence for sourced annual cycles; static windows activate only on a dated behaviour report.
+- `birds.py`, `lunar.py`, `sunburst.py`, `weather_hazards.py`, `gear.py` (see CHANGELOG).
+- Card: Can't Miss view, `birds` mode, planner "Can't miss" badge, new synthetic fixture.
+
+Validation: 288 portable Python tests; 27 real Home Assistant contract tests against HA 2024.11.3 in a local venv (Python 3.12); 112 JavaScript tests; pyflakes clean; card build and version checks pass. Browser checks in BROWSER_VALIDATION.md. Real HA caught one regression during the work (the `_build` return contract) which was fixed before commit.
+
+Not verified: no live network access to any data host from this container (all returned blocked), so SunsetWx, the eBird species endpoint and the all-California NWS alert shape were written against documentation and published client libraries, not a live response. The user's installed Home Assistant was not available. See BACKLOG.md for remaining work.

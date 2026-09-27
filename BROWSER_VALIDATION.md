@@ -16,3 +16,21 @@ Verified:
 - At a 390×844 viewport, both cards fit without horizontal document overflow. Card width was approximately 319 px within the fixture margins. Expanded sections and the native popup remain keyboard-accessible. This is responsive layout testing, not validation on a physical phone.
 
 Still required: inspect the user's actual HA version/upgrade, resource caching, logs, options/restart and a full live update cycle. The local fixture does not establish those outcomes.
+
+
+# Browser validation — 0.16.0
+
+2026-09-27, Playwright with the pre-installed Chromium, against `tests/cant-miss-browser-fixture.html` served from the repository root. Synthetic rows only; not the user's Home Assistant.
+
+Viewports: desktop 1280×900; phone 390×844 (DPR 3, touch); Home Assistant Android app-like 412×915 (DPR 2.625, touch, HA app user agent).
+
+Verified at all three:
+- No horizontal document overflow collapsed, expanded, or with the background section open.
+- Collapsed rows show title, place · drive, why now, when/best time, evidence status and "Take:" lens only; the drone verdict and full technique stay in the details.
+- Expanding a row and opening "Gear & technique" survives a pushed state update (row still expanded, section still open).
+- Empty week shows "Nothing worth changing plans for this week."; aged data shows "Can't Miss is not up to date … not evidence of a quiet week" instead.
+- Eight eligible rows render five plus "Show 3 more".
+- Background signals are one closed `<details>` until opened (11 items in the fixture); the bird view keeps Encounters and Bird Chase subordinate to Spectacle.
+- No page errors.
+
+A contrast issue was found and fixed: default-blue links in the background and bird lists were hard to read on the dark theme; they now use the theme's primary colour.

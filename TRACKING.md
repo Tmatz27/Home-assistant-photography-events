@@ -4,7 +4,7 @@ _Generated from the code by `tools/generate_tracking_inventory.py`. Every date,
 evidence level and link below is read out of the modules that run, so this file
 cannot drift from the thing it describes._
 
-Generated 2026-09-18.
+Generated 2026-09-27.
 
 ## How to read this
 
@@ -15,8 +15,15 @@ reason to drive anywhere.
 | Evidence | What the dates rest on | May it raise an alert? |
 | --- | --- | --- |
 | **computed** | Orbital geometry. Verifiable to the minute against any ephemeris. | Yes, on its own. |
-| **live** | A *search season* - when to start watching. The dates alone are an estimate. | Only once a live sighting corroborates it. |
-| **static** | A calendar estimate. No feed anywhere publishes this. | **Never**, at any score. |
+| **calendar_reliable** | A documented, highly repeatable annual cycle published by the site's managers or monitors. | Inside its documented core window only (≤ 40 days, sourced). |
+| **live** | A *search season* - when to start watching. The dates alone are an estimate. | Only once evidence satisfies its trigger policy (species presence is not behaviour). |
+| **static** | A calendar estimate. No feed anywhere publishes this. | Never by date or presence; only a dated, located report of the behaviour itself. |
+
+Since 0.16.0 the evidence level is only half the rule. Each curated phenomenon also
+has a **trigger policy** and a **product class** (section 3a), and nothing reaches the
+Can't Miss dashboard without passing a hard gate: curated class, policy satisfied,
+inside seven days, inside the drive limit (planning-only rows are not exempt),
+significance at or above the floor, and no active NWS warning at the place.
 
 Corroboration means a reported sighting of the named species within **120 km** in the last **14 days**. Without one, a live window is capped at 60 and marked planning-only.
 
@@ -125,6 +132,10 @@ Measured inputs, all from Open-Meteo (free, no key):
 - `relative_humidity_2m`
 - `precipitation_probability`
 - `visibility`
+- `weather_code`
+- `snowfall`
+- `temperature_2m`
+- `wind_speed_10m`
 - `aerosol_optical_depth`, `dust` (air-quality endpoint) - decides saturation.
 
 A sky only raises an alert when it is a **standout**: at least 82, and within
@@ -136,8 +147,19 @@ Verify against: <https://open-meteo.com/en/docs> and <https://open-meteo.com/en/
 
 ## 3. Biological windows
 
-22 entries. Each carries a background season (informational, never scored)
+24 entries. Each carries a background season (informational, never scored)
 and a concrete peak window (the only thing that scores).
+
+### Documented annual cycles (`calendar_reliable`)
+
+The core window of a cycle the site's managers publish. Species presence is not needed for the behaviour; the tule elk rut additionally needs a recent report near the site for the encounter.
+
+| Phenomenon | Peak window | Days | Background season | Corroborated by | Where to verify |
+| --- | --- | --- | --- | --- | --- |
+| Harbor seal pupping, Carpinteria | 15 Feb – 25 Mar | 38 | Beach closed 1 December to 31 May; births mostly February and March | _Phoca vitulina_ | [1](https://carpinteriaca.gov/parks-and-recreation/carpinteria-harbor-seal-rookery/) [2](https://carpinteriasealwatch.org/information/) |
+| Tule elk rut | 15 Sep – 10 Oct | 25 | August to October | _Cervus canadensis nannodes_ | [1](https://www.blm.gov/visit/carrizo-plain-national-monument) [2](https://www.nps.gov/thingstodo/tule-elk-viewing-point-reyes.htm) |
+| Sandhill crane sunset fly-in | 10 Dec – 18 Jan | 39 | October to February; USFWS says December to February is best | _Antigone canadensis_ | [1](https://www.fws.gov/refuge/merced) [2](https://wildlife.ca.gov/Lands/Places-to-Visit/Woodbridge-ER) [3](https://ebird.org/species/sancra) |
+| Elephant seal bull battles and pupping | 25 Dec – 31 Jan | 37 | December to March | _Mirounga angustirostris_ | [1](https://elephantseal.org/whats-happening-now/) [2](https://elephantseal.org/birthing-and-breeding/) |
 
 ### Live-verified windows (`live`)
 
@@ -154,18 +176,16 @@ These may alert, but only once a sighting corroborates them. Until then they are
 | Bigg's transient orcas hunting | 20 Apr – 25 May | 35 | April to June | _Orcinus orca_ | [1](https://whalesafe.com/) [2](https://www.fisheries.noaa.gov/resource/tool-app/whale-alert) [3](https://pacificwhale.org/what-we-do/research/learn-about-marine-life/whale-dolphin-tracker-live-sightins-map/) |
 | Blue whale feeding aggregation | 15 Jul – 10 Sep | 57 | May to October (NOAA feeding season); watch window mid-Jul to mid-Sep | _Balaenoptera musculus_ | [1](https://whalesafe.com/) [2](https://www.fisheries.noaa.gov/west-coast/marine-mammal-protection/whalewatch) [3](https://www.fisheries.noaa.gov/resource/tool-app/whale-alert) |
 | Humpback lunge feeding | 1 Aug – 15 Oct | 75 | March to November (NOAA feeding season); watch window Aug-mid Oct | _Megaptera novaeangliae_ | [1](https://whalesafe.com/) [2](https://www.fisheries.noaa.gov/resource/tool-app/whale-alert) [3](https://pacificwhale.org/what-we-do/research/learn-about-marine-life/whale-dolphin-tracker-live-sightins-map/) |
-| Tule elk rut | 15 Sep – 10 Oct | 25 | August to October | _Cervus canadensis nannodes_ | [1](https://www.blm.gov/visit/carrizo-plain-national-monument) |
 | Eastern Sierra aspen, high elevation ⚠︎ moves year to year | 25 Sep – 5 Oct | 10 | Late September to mid October | — | [1](https://www.californiafallcolor.com/) |
 | Eastern Sierra aspen, mid elevation ⚠︎ moves year to year | 5 Oct – 18 Oct | 13 | Early to mid October | — | [1](https://www.californiafallcolor.com/) |
 | Northern passes aspen ⚠︎ moves year to year | 10 Oct – 25 Oct | 15 | Mid to late October | — | [1](https://www.californiafallcolor.com/) |
-| Pismo monarch butterfly roost | 1 Nov – 15 Dec | 44 | Late October to February | _Danaus plexippus_ | [1](https://westernmonarchcount.org/) |
-| Sandhill crane sunset fly-in | 15 Nov – 15 Jan | 61 | October to February | _Antigone canadensis_ | [1](https://wildlife.ca.gov/Lands/Places-to-Visit/Woodbridge-ER) [2](https://ebird.org/species/sancra) |
+| Pismo monarch butterfly roost | 15 Nov – 31 Dec | 46 | November to mid-February; historically peaks Thanksgiving to Christmas | _Danaus plexippus_ | [1](https://westernmonarchcount.org/) [2](https://www.parks.ca.gov/?page_id=30273) [3](https://xerces.org/blog/everything-you-need-to-know-about-visiting-overwintering-monarchs) |
+| Bald eagles fishing, Cachuma Lake | 1 Dec – 10 Feb | 71 | November to February (county naturalist eagle cruises) | _Haliaeetus leucocephalus_ | [1](https://www.countyofsb.org/parks) |
 | Common dolphin calving in the mega-pods | 15 Dec – 28 Feb | 75 | Winter, after a 10-11 month gestation | _Delphinus delphis_, _Delphinus capensis_ | [1](https://pacificwhale.org/what-we-do/research/learn-about-marine-life/whale-dolphin-tracker-live-sightins-map/) [2](https://www.fisheries.noaa.gov/resource/tool-app/whale-alert) |
-| Elephant seal bull battles and pupping | 25 Dec – 31 Jan | 37 | December to March | _Mirounga angustirostris_ | [1](https://elephantseal.org/whats-happening-now/) |
 
 ### Estimates nothing can confirm (`static`)
 
-**These never alert.** No feed publishes them. They are in the calendar so you can plan around them, and they are flagged on the card as estimates - check the sources yourself before booking anything.
+**These never alert on a date or on species presence.** No feed publishes them. Only a dated, located report of the behaviour itself (for example a sow with cubs) can activate one; otherwise they stay in the planner as estimates.
 
 | Phenomenon | Peak window | Days | Background season | Corroborated by | Where to verify |
 | --- | --- | --- | --- | --- | --- |
@@ -174,6 +194,62 @@ These may alert, but only once a sighting corroborates them. Until then they are
 | Black bear sows with new cubs | 15 Apr – 10 Jun | 56 | March to July; CDFW puts den emergence at March-May | _Ursus americanus_ | [1](https://wildlife.ca.gov/Conservation/Mammals/Black-Bear) [2](https://keepbearswild.org/bear-tracker/) [3](https://www.tahoebears.org/learn-more) |
 | Desert bighorn sheep rut | 1 Aug – 15 Sep | 45 | July to October | _Ovis canadensis nelsoni_ | [1](https://wildlife.ca.gov/Conservation/Mammals/Bighorn-Sheep/Desert/Natural-History/life-history) |
 | Sierra bighorn sheep rut | 1 Nov – 10 Dec | 39 | October to December | _Ovis canadensis sierrae_ | [1](https://wildlife.ca.gov/Conservation/Mammals/Bighorn-Sheep/Sierra-Nevada/Recovery-Program) |
+
+### 3a. Trigger policies and product classes
+
+Curated in `curation.py`. Significance floor for Can't Miss: **70**.
+Thresholds are sourced or labelled product thresholds; see DISCOVERY_AUDIT.md.
+
+| Phenomenon | Significance | Policy | Best class | Why this policy |
+| --- | --- | --- | --- | --- |
+| Local aurora | 95 | `conditions_required` | cant miss | OVATION nowcast at the local cell with darkness; short notice by nature. |
+| Orcas hunting | 95 | `behavior_report_required` | cant miss | Hunting needs a behaviour report. Orca presence alone may qualify separately as exceptional presence (see orca_presence). |
+| Solar eclipse | 95 | `computed` | planner | Central-path sites need their own contact calculation and road check; planner until then. |
+| Total lunar eclipse | 92 | `computed` | cant miss | NASA catalog geometry with local visibility. |
+| Blue whale feeding aggregation | 90 | `aggregation_required` | cant miss | A single blue whale is intrinsically notable, but the photograph worth a trip is the krill aggregation that holds several close to boats; that needs a dated aggregation report. |
+| Death Valley superbloom | 90 | `live_confirmation_required` | cant miss | As above; perhaps once a decade. |
+| Elephant seal breeding & pupping | 90 | `calendar_reliable` | cant miss | Friends of the Elephant Seal document a stable annual cycle: bulls from November, births mid-December to early February, peak births late January, fights December-January. Inside that core window the calendar is reliable; a dated docent report can open it earlier. |
+| Horsetail Fall firefall | 90 | `conditions_required` | cant miss | The alignment is computable; the water is not. Needs a dated report of water on Horsetail Fall plus a clear western horizon forecast. Merced discharge is a different drainage and is never used. |
+| Orcas reported | 88 | `exceptional_presence` | cant miss | Orcas are rare enough off this coast that repeated recent presence is itself worth a boat trip. Product threshold: two independent reports within 72 h, or one research-grade report within 36 h. |
+| Bioluminescent surf | 85 | `live_confirmation_required` | cant miss | No dependable date exists. A credible report within three days, darkness and a Moon under half lit are all required. |
+| Black bear sows with cubs | 85 | `behavior_report_required` | cant miss | Bears are seen year-round; a generic bear sighting is not evidence of cubs. Only a report of a sow with cubs in a public area qualifies. Den locations are never used. |
+| California condors | 85 | `exceptional_presence` | bird spectacle | NPS says there is no guarantee of a sighting. Repeated reports at a public viewing area make an encounter plausible (bird encounter); several birds together or a behaviour report make it a spectacle. Product thresholds. |
+| Carrizo Plain superbloom | 85 | `live_confirmation_required` | cant miss | Entirely rainfall-dependent; a dated strong bloom report is required. |
+| Fresh snow then clearing | 85 | `forecast_plus_confirmation` | cant miss | A snowfall forecast is a watch; observed accumulation (a dated report) plus a clearing forecast confirms. Product threshold: 10 cm modelled in 24 h followed by 30 % cloud or less within 18 h. |
+| Humpback lunge feeding | 85 | `behavior_report_required` | cant miss | Humpbacks are common here for months; the photograph is the bait-ball lunge, which only a dated behaviour report can establish. Presence corroborates the watch, never the behaviour. |
+| Sandhill crane fly-in | 85 | `calendar_reliable` | bird spectacle | USFWS Merced NWR: up to 20,000 cranes and 60,000 geese winter there, and the sunset fly-in is 'a predictable daily spectacle', best December-February. |
+| Tule elk rut | 85 | `calendar_reliable` | cant miss | NPS: the rut runs August-October, peaking late August-September, so behaviour is reliable in the peak window. Encounter at Carrizo is not - the herd is dispersed - so a recent elk report near the site is also required (product rule). |
+| Yosemite moonbow | 85 | `conditions_required` | cant miss | Sky geometry is computed; spray and the viewpoint light path are not. Needs a dated report of strong fall flow or a moonbow, plus a clear-sky forecast. |
+| Major meteor shower | 82 | `computed` | cant miss | Peak is computed from solar longitude; conditions (moon, radiant, cloud) decide. |
+| Pismo monarch clusters | 82 | `aggregation_required` | cant miss | The season is predictable, the numbers are not: recent Pismo counts have been in the hundreds. Requires a dated count of at least 1,000 at the grove (product threshold), plus a cold dawn: Xerces notes monarchs cannot fly below about 55 °F, so they stay clustered. |
+| Common dolphin megapod | 80 | `aggregation_required` | cant miss | Presence is ordinary; a dated operator report of one explicitly sized pod of thousands is the aggregation. |
+| Eastern Sierra aspen, high elevation | 80 | `live_confirmation_required` | cant miss | Timing moves with temperature and wind; a dated peak report is required. Undated hotline text is shown as reported, date unknown. |
+| Eastern Sierra aspen, mid elevation | 80 | `live_confirmation_required` | cant miss | As above. |
+| Exceptional Pacific swell | 80 | `forecast_plus_confirmation` | cant miss | The CDIP forecast is a watch; the calibrated NDBC 46011 measurement confirms the swell is here. |
+| Mass goose lift-off | 80 | `count_threshold` | bird spectacle | Tens of thousands of geese winter at Merced NWR, but a lift-off is not predictable; a count of thousands at the refuge (product threshold 1,000) or a lift-off report is required. |
+| Antelope Valley poppy bloom | 78 | `live_confirmation_required` | cant miss | As above. |
+| Anza-Borrego desert bloom | 78 | `live_confirmation_required` | cant miss | As above. |
+| Gray whale mothers and calves | 78 | `behavior_report_required` | cant miss | Gray whales pass for months; the mother-calf pairs hugging the surf line are the photograph, and only a report of pairs close in says they are. |
+| Yosemite frazil ice | 78 | `forecast_plus_confirmation` | cant miss | NPS: needs high waterfall flow and nights below freezing, mostly April, usually before 9 am. A freezing forecast is only a watch; a dated report confirms. |
+| Bald eagles fishing at Cachuma Lake | 75 | `behavior_report_required` | bird spectacle | Wintering eagles are reliably present; eagles actively fishing, or several together, is the photograph and needs a report. |
+| Desert bighorn rut | 75 | `behavior_report_required` | planner | Sparse animals on rough ground; no source reports it. Planning only. |
+| Largest full Moon of the year | 75 | `conditions_required` | cant miss | The year's closest full Moon is a computed fact; it earns the dashboard only when the moonrise falls near sunset (a lit landscape and a low, large-looking Moon) and the forecast is not overcast. |
+| Sierra bighorn rut | 75 | `behavior_report_required` | planner | Endangered, few hundred animals on steep ground; positions are not published and should not be. Planning only. |
+| Thunderstorm potential | 75 | `forecast_plus_confirmation` | watch | No lightning detection feed is connected; forecast thunder is a watch only. |
+| Common dolphin calving | 72 | `behavior_report_required` | cant miss | Common dolphins are present most days; newborn calves in the pods need a report. |
+| Exceptional sunset | 72 | `conditions_required` | cant miss | Local to home only. A purpose-built provider's top tier, or the local model's modelled-light-path standout, is required; ordinary good sunsets happen most weeks. |
+| Harbor seal pupping | 72 | `calendar_reliable` | cant miss | Carpinteria Seal Watch: births mostly February-March at a monitored rookery (~60 pups a year) below a public overlook; the beach is closed 1 Dec-31 May by City Ordinance 470. |
+| Milky Way core night | 70 | `computed` | cant miss | A recurring monthly condition; only a drop-everything night (new Moon, forecast clear, dark site) reaches the dashboard. |
+| Northern passes aspen | 70 | `live_confirmation_required` | cant miss | As above; beyond six hours in most traffic. |
+| Grunion run | 60 | `live_confirmation_required` | planner | CDFW publishes expected runs, not observed ones; fish may not appear on a given beach. |
+| Partial lunar eclipse | 60 | `computed` | planner | Visible but modest. |
+| Gray whale southbound migration | 55 | `live_confirmation_required` | planner | Distant blows from a headland are planning context, not a regret event. |
+| King Tide | 55 | `computed` | planner | Published Coastal Commission dates; a compound note for swell and full-Moon events. |
+| Hotline report | 50 | `live_confirmation_required` | planner | A report that names no curated phenomenon stays planning context. |
+| Minus tide | 50 | `computed` | planner | Tide predictions are exact; a monthly condition, so planning only. |
+| Minor meteor shower | 45 | `computed` | planner | Rates too low to change plans. |
+| Full Moon | 40 | `computed` | planner | Monthly; planning facts only. |
+| Park season | 30 | `planning_context` | planner | A park is a place, not an event. |
 
 ## 4. National parks and monuments
 
@@ -200,13 +276,15 @@ biology, which is genuinely a matter of months. Closures are live.
 | --- | --- | --- | --- |
 | NOAA NDBC 46011 | Measured offshore significant wave height, period and direction | none | 30 min |
 | CDIP B1500 | Experimental nearshore forecast; run age checked | none | 3 h |
-| NWS active alerts | Santa Barbara coastal advisories | none | 1 h |
+| NWS active alerts (California) | Safety gate on every Can't Miss row; coastal advisories for swell | none | 1 h |
+| SunsetWx Sunburst API | Home sunset/sunrise quality (primary when configured) | yours, optional | every 3 h |
 | NOAA OVATION | Conservative local aurora model signal | none | 15 min |
 | Condor Express RSS | Explicitly dated and sized megapod reports only | none | 3 h |
 | CDFW grunion schedule | Published expected intervals at Santa Barbara | none | 24 h |
 | Open-Meteo forecast | Layered cloud at each zone and both light-path probes | none | every 60 min |
 | Open-Meteo air quality | Aerosol optical depth and dust - colour saturation | none | every 3 h |
-| eBird notable observations | Rare birds, and crane corroboration | free, instant | every 60 min |
+| eBird notable observations | Bird Chase list; corroboration | free, instant | every 60 min |
+| eBird species observations | Condor, bald eagle, crane and goose counts for bird spectacles | same key | every 6 h |
 | iNaturalist observations | Whale, dolphin and mammal corroboration | none | every 60 min |
 | Theodore Payne Wildflower Hotline | Whether a bloom is actually happening | none (scraped) | every 24 h |
 | DesertUSA wildflower reports | Desert bloom reports | none (scraped) | every 24 h |
@@ -239,7 +317,10 @@ Written down rather than papered over.
 - Bloom timing depends on winter rainfall and cannot be computed at all. The three
   hotline scrapers are the only real source, and they describe the past.
 
-## Additional special search targets
+## Search guidance (no calendar rows)
+
+These used to be year-long rows. They are now curated phenomena that only appear when live
+evidence activates them; the guidance is kept here.
 
 - **Bioluminescent surf** — No dependable annual date. Requires a recent report of visibly glowing water, not just a red tide. Source: https://scripps.ucsd.edu/news/everything-you-wanted-know-about-red-tides
 - **Mass winter waterfowl flights** — Sacramento National Wildlife Refuge is a longer-trip target. Seasonal abundance is established; the timing of a mass lift-off is not predictable. Check refuge counts and access. Source: https://www.fws.gov/refuge/sacramento

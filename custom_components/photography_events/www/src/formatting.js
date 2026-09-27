@@ -52,7 +52,8 @@ const CATEGORY_TOGGLE_KEYS = [
 const MODE_TIMELINE = "timeline";
 const MODE_HERO = "action_hero";
 const MODE_OUTLOOK = "calendar_outlook";
-const BACKEND_MODES = new Set([MODE_HERO, MODE_OUTLOOK]);
+const MODE_BIRDS = "birds";
+const BACKEND_MODES = new Set([MODE_HERO, MODE_OUTLOOK, MODE_BIRDS]);
 
 const CATEGORY_META = Object.freeze({
   waves: { color: "#56cbd2", label: "Waves", icon: "mdi:waves" },
@@ -174,6 +175,8 @@ const VERIFICATION_META = {
   forecast: { label: "Forecast", tone: "warn", text: "Conditions are forecast, not yet observed." },
   watching: { label: "Watching", tone: "warn", text: "Nothing reported yet - this is where to look, not when to go." },
   unverified: { label: "Estimate", tone: "warn", text: "Not confirmed. Check the event’s timing basis and outstanding conditions." },
+  calendar: { label: "Documented cycle", tone: "ok", text: "A documented annual cycle published by the site's managers or monitors." },
+  schedule: { label: "Published schedule", tone: "warn", text: "An expected schedule, not an observation." },
 };
 
 /**

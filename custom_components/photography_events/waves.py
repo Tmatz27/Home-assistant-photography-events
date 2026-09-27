@@ -165,6 +165,7 @@ def build_opportunities(now, observations, forecasts, calibration, state, home, 
             result.append(Opportunity(
                 key=occurrence + "-" + point, roll=occurrence,
                 title="Exceptional Pacific swell", category="waves", zone_id=point, zone_name=name,
+                phenomenon="exceptional_swell",
                 start=first, end=last + timedelta(hours=3), score=92 if measured and supported else 85 if supported else 60,
                 planning_only=not supported,
                 detail=(f"NDBC {station} measured" if measured else "CDIP forecasts") +
@@ -179,6 +180,7 @@ def build_opportunities(now, observations, forecasts, calibration, state, home, 
                 source_url=(f"https://www.ndbc.noaa.gov/station_page.php?station={station}"
                             if measured else "https://cdip.ucsd.edu/?nav=recent&sub=forecast"),
                 extra={"verification": "corroborated" if measured else "forecast", "special": True,
+                       "evidence_state": "measured" if measured else "forecast",
                        "observed_at": latest.time.isoformat() if measured else None,
                        "wave_height_m": round(display.height, 2),
                        "wave_period_s": display.period, "wave_direction_deg": display.direction,
@@ -189,7 +191,8 @@ def build_opportunities(now, observations, forecasts, calibration, state, home, 
                        "access_note": "Check current Ocean Beach access and NWS surf warnings. This point is a coastal model location, not an approved or safe shooting position.",
                        "verify_urls": ["https://cdip.ucsd.edu/", "https://www.weather.gov/lox",
                                        "https://www.countyofsb.org/parks"],
-                       "coastal_advisories": [a.get("headline", "") for a in (alerts or []) if a.get("headline")],
+                       "coastal_advisories": [a.get("headline", "") for a in (alerts or []) if a.get("headline")
+                                              and (a.get("event") is None or "Surf" in a.get("event", "") or "Coastal" in a.get("event", "") or "Beach" in a.get("event", ""))],
                        "best_time_of_day": "Daylight; exact local peak timing depends on the coastal forecast."},
             ))
     return result

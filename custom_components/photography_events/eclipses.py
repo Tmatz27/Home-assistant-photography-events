@@ -110,10 +110,12 @@ def opportunities(catalog, now, zones, home, max_drive_hours, horizon_days=365):
             found.append(Opportunity(
                 key=f"eclipse-{row['date'][:10]}-{site['id']}", roll=f"eclipse-{row['date'][:10]}",
                 title=title, category=CATEGORY_ASTRO, zone_id=site["id"], zone_name=site["name"],
+                phenomenon=("eclipse_solar" if row["kind"] == "solar" else
+                            "eclipse_lunar_total" if total_visible else "eclipse_lunar_partial"),
                 start=start, end=end, score=90 if row["kind"] == "lunar" and total_visible else 75,
                 detail=detail, drive_hours=round(drive, 2), latitude=point[0], longitude=point[1],
                 source_url=row.get("path_url") or row["source_url"], planning_only=planning_only,
-                drive_source="estimate", extra={"verification": "computed", "evidence_note": note,
+                drive_source="estimate", extra={"verification": "computed", "evidence_state": "computed", "evidence_note": note,
                     "confidence_note": "Path-table prediction; verify local contacts." if planning_only else "",
                     "best_time_of_day": f"{preferred:%Y-%m-%d %H:%M} UTC" if row["kind"] == "lunar" else f"About {moment:%Y-%m-%d %H:%M} UTC",
                     "duration_minutes": int((end - start).total_seconds() / 60),

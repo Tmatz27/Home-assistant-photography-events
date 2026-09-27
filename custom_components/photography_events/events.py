@@ -15,7 +15,7 @@ from .event_state import event_id
 from .const import (
     CATEGORY_ASTRO,
     CATEGORY_BIRDS,
-    CATEGORY_MARINE,
+    CATEGORY_RARE,
     CATEGORY_PARKS,
     CATEGORY_SUNSET,
     DEFAULT_HOME,
@@ -26,6 +26,7 @@ from .const import (
 from .parks import active_windows as active_park_windows
 from .phenomena import (
     WINDOWS_BY_KEY,
+    EVIDENCE_CALENDAR,
     EVIDENCE_COMPUTED,
     EVIDENCE_LIVE,
     EVIDENCE_STATIC,
@@ -36,7 +37,7 @@ from .phenomena import (
 )
 from .weather_scoring import cloud_confidence, cloud_is_scorable, mark_standouts, score_sky
 from .verification import grunion_run_window
-from .wildlife import describe_drive, estimate_drive_hours, haversine_km, nearest_zone
+from .wildlife import estimate_drive_hours, haversine_km
 
 # Only showers worth a drive; the spec's ZHR floor.
 MIN_METEOR_ZHR = 60
@@ -150,6 +151,10 @@ class Opportunity:
     # figure or an estimate instead of presenting both as equally certain.
     drive_source: str = "baseline"
     drive_in_traffic: bool = False
+    # Which curated phenomenon this row is an occurrence of (curation.CATALOG).
+    # Eligibility, gear and ethics are looked up from it, never inferred from
+    # the title.
+    phenomenon: str = ""
 
     def as_dict(self) -> dict:
         data = asdict(self)
@@ -180,6 +185,14 @@ class Opportunity:
             "drive_hours": self.drive_hours,
             "drive_source": self.drive_source,
         }
+        if self.phenomenon:
+            row["phenomenon"] = self.phenomenon
+        # What the eligibility gate decided, so the planner can say "this one
+        # made Can't Miss" or "watch only" without re-deriving it.
+        for key in ("presentation", "significance", "eligible", "why_now", "status", "blockers"):
+            value = (self.extra.get("assessment") or {}).get(key)
+            if value not in (None, "", []):
+                row[key] = value
         if self.roll:
             row["roll"] = self.roll
         where = (self.extra.get("primary_locations") or [None])[0] or self.zone_name
@@ -234,6 +247,13 @@ class Opportunity:
             "feed_status", "confidence_note", "coastal_advisories",
             "moon_illumination", "peak_altitude", "cloud_cover", "comparison_through",
             "cloud_confidence", "cloud_is_forecast", "degraded_sources", "source_health_note",
+            "evidence_state", "behavior_evidence", "presence_count", "count", "current_phase", "phases",
+            "provider_quality", "provider_percent", "provider_model", "provider_valid_at", "provider_note",
+            "sunset_at", "color_window_start", "color_window_end", "moonrise", "moonset",
+            "moonrise_azimuth", "moonrise_compass", "moonset_compass", "moon_climb", "distance_km",
+            "diameter_arcmin", "distance_rank", "full_moons_in_year", "moon_labels", "rise_after_sunset_minutes",
+            "sunrise", "civil_dusk", "nautical_dusk", "astronomical_dusk", "king_tide", "tide_ft",
+            "dawn_temp_f", "safety_notes", "safety_summary", "ethics", "gear_plan",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -274,15 +294,24 @@ def build_sunset_opportunities(
     days: int = 3,
     upstream: dict | None = None,
     air_quality: dict | None = None,
+    provider: list | None = None,
 ) -> list[Opportunity]:
-    """Score the next few sunsets and sunrises at one zone.
+    """Score the next few sunsets and sunrises at one place - in practice, home.
 
     Every candidate in the window is scored before any is filtered, because
     "should I go tonight" is a comparison and not a threshold. A sky only earns
     the standout flag - and with it the right to raise an alert - when nothing
     in the forecast window beats it. That is the difference between being told
     about a good sunset and being told about *the* sunset.
+
+    ``provider`` is a purpose-built external forecast (SunsetWx) when one is
+    configured. It becomes the primary opinion: a sky the provider rates in its
+    top tier is listed even if the local model is lukewarm, and the local score
+    rides along as a comparison. Without it the local model decides alone and
+    says so.
     """
+    from . import sunburst
+
     lat, lon = _zone_coords(zone)
     upstream = upstream or {}
     candidates: list[tuple[datetime, bool, str, object]] = []
@@ -305,15 +334,48 @@ def build_sunset_opportunities(
 
     mark_standouts([scored for _, _, _, scored in candidates])
 
+    local_home = zone.get("id") == "home"
     found: list[Opportunity] = []
     for moment, rising, label, scored in candidates:
-        if scored.score < threshold:
+        external = sunburst.match(provider or [], label.lower(), moment)
+        top_tier = bool(external and external["quality"] == sunburst.TOP_TIER)
+        if scored.score < threshold and not top_tier:
             continue
-        title = (
-            f"{label} is the best in the forecast at {zone['name']}"
-            if scored.standout
-            else f"{label} could go off at {zone['name']}"
-        )
+        if local_home:
+            when = "tonight" if not rising and moment.date() == now.date() else (
+                "tomorrow morning" if rising else f"on {moment:%a %d %b}")
+            title = f"{label} could be exceptional {when}"
+        else:
+            title = (
+                f"{label} is the best in the forecast at {zone['name']}"
+                if scored.standout
+                else f"{label} could go off at {zone['name']}"
+            )
+        # The colour usually builds after the Sun is down; a sunrise mirrors it.
+        colour_start = moment - timedelta(minutes=10 if not rising else 25)
+        colour_end = moment + timedelta(minutes=25 if not rising else 10)
+        extra = {
+            "standout": scored.standout,
+            "light_path": scored.light_path,
+            "limited_by": scored.limited_by,
+            "sky": scored.detail,
+            "evidence_state": "forecast",
+            "verification": "forecast",
+            "sunset_at": moment.isoformat(),
+            "color_window_start": colour_start.isoformat(),
+            "color_window_end": colour_end.isoformat(),
+            "best_time_of_day": ("Best colour usually from about 10 minutes before to 25 minutes after sunset"
+                                 if not rising else "Best colour usually from about 25 minutes before sunrise to 10 minutes after"),
+            "local_score": scored.score,
+        }
+        if external:
+            extra.update({
+                "provider_quality": external["quality"],
+                "provider_percent": external["percent"],
+                "provider_model": external["model"],
+                "provider_valid_at": external["valid_at"].isoformat(),
+                "provider_note": f"{sunburst.ATTRIBUTION}. {external['quality']} ({external['percent']:.0f}%) is their forecast score, not a probability.",
+            })
         found.append(
             Opportunity(
                 key=f"sky-{zone['id']}-{moment.date().isoformat()}-{label.lower()}",
@@ -331,12 +393,8 @@ def build_sunset_opportunities(
                 gear=_gear_for(CATEGORY_SUNSET),
                 latitude=zone["latitude"],
                 longitude=zone["longitude"],
-                extra={
-                    "standout": scored.standout,
-                    "light_path": scored.light_path,
-                    "limited_by": scored.limited_by,
-                    "sky": scored.detail,
-                },
+                phenomenon="sunset_local",
+                extra=extra,
             )
         )
     return found
@@ -463,6 +521,7 @@ def build_meteor_opportunities(
 
             found.append(
                 Opportunity(
+                    phenomenon="meteor_major" if shower["zhr"] >= MIN_METEOR_ZHR else "meteor_minor",
                     key=f"meteor-{shower['name']}-{year}-{zone['id']}",
                     roll=f"meteor-{shower['name']}-{year}",
                     title=f"{shower['name']} peak at {zone['name']}",
@@ -483,9 +542,11 @@ def build_meteor_opportunities(
                     longitude=zone["longitude"],
                     extra={
                         "verification": "computed",
+                        "evidence_state": "computed",
                         "duration_minutes": window.duration_minutes,
                         "limited_by": window.limited_by,
                         "zhr": shower["zhr"],
+                        "expected_rate": expected,
                         "cloud_cover": round(cloud, 1) if cloud is not None else None,
                         "cloud_confidence": cloud_confidence(lead_days) if cloud is not None else None,
                         "cloud_is_forecast": bool(cloud is not None and cloud_is_scorable(lead_days)),
@@ -653,6 +714,7 @@ def build_milky_way_opportunities(
 
         found.append(
             Opportunity(
+                phenomenon="milky_way",
                 key=f"milkyway-{zone['id']}-{window.start.date().isoformat()}",
                 roll=f"milkyway-{window.start.date().isoformat()}",
                 title=f"Milky Way core at {zone['name']}",
@@ -681,6 +743,7 @@ def build_milky_way_opportunities(
                     "peak_altitude": round(window.peak_target_altitude, 1),
                     "score_ceiling": ceiling,
                     "verification": "computed",
+                    "evidence_state": "computed",
                     "comparison_through": (now + timedelta(days=horizon_days)).date().isoformat(),
                 },
             )
@@ -699,6 +762,11 @@ UNCONFIRMED_PENALTY = 8
 # alert threshold by construction, so a date that nothing has confirmed can
 # reach the planning view and never the notification.
 UNVERIFIED_CEILING = 60
+# A documented calendar cycle ranks above an unverified estimate in the
+# planner but still below the alert score: since 0.16.0 the score only ranks
+# planner rows, and the Can't Miss gate is ``eligibility.assess``.
+CALENDAR_CEILING = 70
+CALENDAR_PRESENCE_CEILING = 74
 # What a live-confirmed window may reach once something has actually been seen.
 CORROBORATED_SCORE = 82
 
@@ -735,18 +803,19 @@ def build_seasonal_opportunities(
 ) -> list[Opportunity]:
     """Natural phenomena, told at the precision the distance justifies.
 
-    Beyond thirty days an entry reports its background season and scores as
+    Beyond sixty days an entry reports its background season and scores as
     planning material - "gray whales, December to May" is the most honest thing
     anyone can say four months out, and dressing it up as an appointment would
-    be a lie. Inside thirty days it switches to the concrete peak window and
-    carries the locations, gear and behaviour notes, and only then can it reach
-    the alert threshold.
+    be a lie. Inside sixty days it switches to the concrete peak window and
+    carries the locations, gear and behaviour notes.
 
-    The alert fires as the window *opens*, not every day it is open: the
-    48-hour action window admits an opportunity by its start date, so a
-    five-week rut peak announces itself once rather than for thirty-five
-    consecutive days.
+    Reports and sightings are merged *into* the phenomenon they are evidence
+    for, never listed beside it. Which ones merged is recorded in
+    ``extra["merged_reports"]`` so the caller can keep only the unmatched ones
+    as standalone planning rows.
     """
+    from . import curation, gear as gear_module
+
     origin = home or DEFAULT_HOME
     found: list[Opportunity] = []
 
@@ -754,6 +823,8 @@ def build_seasonal_opportunities(
         window = entry["window"]
         near = entry["precision"] == "peak"
         drive_hours = estimate_drive_hours(window.latitude, window.longitude, origin)
+        evidence = window_evidence(window, sightings, field_reports, now)
+        definition = curation.definition(window.key)
 
         if not near:
             score = SEASON_SCORE
@@ -767,22 +838,24 @@ def build_seasonal_opportunities(
             verification = {
                 EVIDENCE_COMPUTED: "computed",
                 EVIDENCE_LIVE: "watching",
+                EVIDENCE_CALENDAR: "calendar",
             }.get(window.evidence, "unverified")
             awaiting = (
                 f"Too far out to confirm. Specifics and live corroboration start "
                 f"{PRECISION_HORIZON_DAYS} days before the window opens."
             )
+            state = "season"
         else:
             score = PEAK_UNDERWAY_SCORE if entry["underway"] else PEAK_UPCOMING_SCORE
             if window.confirm:
                 score -= UNCONFIRMED_PENALTY
-            state = "underway now" if entry["underway"] else f"opens in {entry['days_away']} days"
+            timing = "underway now" if entry["underway"] else f"opens in {entry['days_away']} days"
             detail = (
-                f"Peak window {entry['start']:%d %b} to {entry['end']:%d %b} ({state}). "
+                f"Peak window {entry['start']:%d %b} to {entry['end']:%d %b} ({timing}). "
                 f"{window.photo_tips}"
             )
             reasons = [
-                state,
+                timing,
                 f"peak of a season that runs {window.season_range}",
                 window.primary_locations[0],
             ]
@@ -793,12 +866,24 @@ def build_seasonal_opportunities(
 
             # The guard against booking a trip around a date nothing has
             # confirmed. A calendar entry may fill the planning view; only
-            # evidence may raise a notification.
-            score, verification, extra_reasons, awaiting = _apply_evidence(
-                window, entry, score, sightings, field_reports, now
-            )
+            # evidence, or a narrowly granted documented cycle, may interrupt.
+            score, verification, extra_reasons, awaiting = _score_from_evidence(window, score, evidence)
             reasons.extend(extra_reasons)
+            state = evidence.state
 
+        start_day = entry["start"]
+        # A dated behaviour report ahead of the documented window means it is
+        # already happening; the occurrence opens on the report, not the
+        # calendar. Only a month early at most, so an off-season report cannot
+        # drag next season's window into this one.
+        if near and evidence.state == "behavior_confirmed" and entry["start"] > now.date():
+            earliest = min(item.observed_at for item in evidence.behavior).date()
+            if entry["start"] - earliest <= timedelta(days=30):
+                start_day = min(start_day, max(earliest, now.date() - timedelta(days=1)))
+                reasons.insert(0, "reported ahead of the documented window")
+        plan = gear_module.recommend(definition.gear_profile, land=definition.land,
+                                     wildlife=definition.wildlife, drone_useful=definition.drone_useful) \
+            if definition else None
         found.append(
             Opportunity(
                 key=entry["key"],
@@ -806,22 +891,24 @@ def build_seasonal_opportunities(
                 category=window.category,
                 zone_id=window.key,
                 zone_name=window.primary_locations[0],
-                start=datetime.combine(entry["start"], datetime.min.time()).replace(tzinfo=now.tzinfo),
+                start=datetime.combine(start_day, datetime.min.time()).replace(tzinfo=now.tzinfo),
                 end=datetime.combine(entry["end"], datetime.max.time()).replace(tzinfo=now.tzinfo),
                 score=score,
                 detail=detail,
                 drive_hours=round(drive_hours, 2),
                 reasons=reasons,
-                gear={"glass": window.recommended_gear, "settings": window.photo_tips},
+                gear={"glass": plan.take if plan else window.recommended_gear, "settings": window.photo_tips},
                 latitude=window.latitude,
                 longitude=window.longitude,
                 drive_source="estimate",
+                phenomenon=window.key,
                 # A background season is never something to act on today, and
                 # neither is an unconfirmed window.
                 planning_only=not near or score <= UNVERIFIED_CEILING,
                 extra={
                     "precision": entry["precision"],
                     "evidence": window.evidence,
+                    "evidence_state": state,
                     "verification": verification,
                     "awaiting": awaiting,
                     "search_season": window.is_search_season,
@@ -830,8 +917,10 @@ def build_seasonal_opportunities(
                     "peak_start": entry["start"].isoformat(),
                     "peak_end": entry["end"].isoformat(),
                     "days_away": entry["days_away"],
+                    "underway": entry["underway"],
                     "primary_locations": list(window.primary_locations),
-                    "recommended_gear": window.recommended_gear,
+                    "recommended_gear": plan.take + (f"; optional {plan.optional[0]}" if plan and plan.optional else "")
+                    if plan else window.recommended_gear,
                     "photo_tips": window.photo_tips,
                     "best_time_of_day": window.best_time_of_day,
                     "confirm": window.confirm,
@@ -839,68 +928,172 @@ def build_seasonal_opportunities(
                     # Who actually counts these animals, so a date can be
                     # checked against the surveyors before a trip is booked.
                     "verify_urls": list(window.verify_urls),
+                    "presence_count": sum(max(1, item.reports) for item in evidence.presence) if near else 0,
+                    "behavior_evidence": [_report_summary(item) for item in evidence.behavior] if near else [],
+                    "count": evidence.count if near else None,
+                    "merged_reports": [report_id(item) for item in (evidence.behavior + evidence.undated + evidence.insufficient)] if near else [],
+                    "latest_observed": evidence.latest.isoformat() if near and evidence.latest else None,
                 },
             )
         )
     return found
 
 
-def _apply_evidence(window, entry, score, sightings, field_reports, now):
+@dataclass
+class WindowEvidence:
+    """Everything the live feeds say about one curated window."""
+
+    state: str
+    presence: list = field(default_factory=list)
+    behavior: list = field(default_factory=list)
+    undated: list = field(default_factory=list)
+    # Behaviour reported, but without the count this phenomenon needs.
+    insufficient: list = field(default_factory=list)
+    count: int | None = None
+    latest: datetime | None = None
+
+
+def report_id(report) -> str:
+    """A stable identity for a report, so a merged one is not listed twice."""
+    import hashlib
+
+    text = f"{getattr(report, 'source_id', '')}|{getattr(report, 'zone_id', '')}|{getattr(report, 'snippet', '')}"
+    return f"{getattr(report, 'source_id', 'report')}:{hashlib.sha1(text.encode()).hexdigest()[:12]}"
+
+
+def _report_text(report) -> str:
+    return " ".join(str(getattr(report, key, "") or "") for key in ("headline", "snippet", "context"))
+
+
+def _report_summary(report) -> dict:
+    observed = getattr(report, "observed_at", None)
+    return {"source": getattr(report, "source_name", ""), "observed_at": observed.isoformat() if observed else None,
+            "text": (getattr(report, "snippet", "") or "")[:220], "url": getattr(report, "url", "") or None,
+            "count": getattr(report, "count", None)}
+
+
+def _report_matches(window, report, definition) -> bool:
+    """Whether a report is about this phenomenon at all (not whether it is fresh)."""
+    from . import curation
+
+    key = getattr(report, "phenomenon_key", "") or ""
+    if key:
+        return key == window.key
+    category = getattr(report, "category", None)
+    if category != window.category and not (category == CATEGORY_RARE and window.category == CATEGORY_BIRDS):
+        return False
+    if definition is None or not definition.behavior_terms:
+        return False
+    return window.key in curation.phenomena_named(_report_text(report), window.category)
+
+
+def window_evidence(window, sightings, field_reports, now) -> WindowEvidence:
+    """Classify the evidence for one window. Pure; no scoring here."""
+    from . import curation
+
+    definition = curation.definition(window.key)
+    days = min(LIVE_CORROBORATION_DAYS, definition.evidence_days) if definition else LIVE_CORROBORATION_DAYS
+    stale_before = now - timedelta(days=days)
+    presence = corroborating_sightings(window, sightings, now)
+    behavior, undated, insufficient = [], [], []
+    for report in field_reports or []:
+        if not _report_matches(window, report, definition):
+            continue
+        # Corroboration is distance-based; an unlocatable report is nowhere.
+        if haversine_km(window.latitude, window.longitude, *_report_point(report, window)) > LIVE_CORROBORATION_KM:
+            continue
+        observed = getattr(report, "observed_at", None)
+        if observed is None:
+            undated.append(report)
+            continue
+        # Download time never renews an observation; the report's own date does.
+        if not stale_before <= observed <= now + timedelta(hours=1):
+            continue
+        needed = definition.min_count if definition else None
+        if needed and (getattr(report, "count", None) or 0) < needed:
+            insufficient.append(report)
+            continue
+        behavior.append(report)
+    counts = [getattr(item, "count", None) for item in behavior + insufficient if getattr(item, "count", None)]
+    stamps = [item.latest for item in presence] + [item.observed_at for item in behavior]
+    latest = max(stamps) if stamps else None
+
+    if window.evidence == EVIDENCE_COMPUTED:
+        state = "computed"
+    elif behavior:
+        state = "behavior_confirmed"
+    elif window.evidence == EVIDENCE_CALENDAR:
+        state = "calendar_presence" if presence else "calendar"
+    elif window.evidence == EVIDENCE_STATIC:
+        state = "unverified"
+    elif presence:
+        state = "presence_only"
+    elif undated or insufficient:
+        state = "reported_undated"
+    else:
+        state = "watching"
+    return WindowEvidence(state, presence, behavior, undated, insufficient, max(counts) if counts else None, latest)
+
+
+def _score_from_evidence(window, score, evidence: WindowEvidence):
     """Hold a score down to what the evidence actually supports.
 
-    Three bases, three ceilings:
+    Four bases, four ceilings:
 
     - **Computed.** Geometry, verifiable to the minute. Scores on its merits.
-    - **Live.** The dates are a search season: they say when to start watching,
-      not when to go. Capped at planning level until something is actually
-      seen, then released - and the text names what was seen, when, and how far
-      away, so the claim is checkable rather than asserted.
-    - **Static.** A calendar estimate with nothing behind it. Never alerts, at
-      any time of year, however confident the date looks.
+    - **Calendar-reliable.** A documented annual cycle (elephant seals,
+      Carpinteria harbor seals, the Merced crane fly-in, the tule elk rut). The
+      planner ranks it above estimates; the Can't Miss gate may act on it only
+      inside the documented core window.
+    - **Live.** The dates are a search season. Presence releases a window
+      whose phenomenon *is* presence; a window about a behaviour needs a dated
+      report of that behaviour. The text names what was seen, when and where.
+    - **Static.** A calendar estimate with nothing behind it. Only a dated,
+      located report of the behaviour itself can activate it.
 
-    Alongside the ceiling each case returns ``awaiting``: one sentence naming
-    the specific thing that would turn this window from an estimate into a
-    fact. That is the difference between a card that says "78" and one that
-    says what the 78 is missing - and the second is the only one worth booking
-    a trip against.
-
-    The failure this prevents is the expensive one: a confident date, a booked
-    trip, and an animal that moved three weeks ago.
+    Alongside the ceiling each case returns ``awaiting``: the specific thing
+    that would turn this window from an estimate into a fact.
     """
     if window.evidence == EVIDENCE_COMPUTED:
         return score, "computed", [], "Calculated timing; local visibility and conditions still matter."
+
+    if evidence.behavior:
+        newest = max(evidence.behavior, key=lambda item: item.observed_at)
+        count = f" ({evidence.count:,} counted)" if evidence.count else ""
+        return (
+            max(score, CORROBORATED_SCORE),
+            "corroborated",
+            [f"confirmed by {newest.source_name}{count}"],
+            f"Dated report from {newest.source_name}, observed {newest.observed_at:%d %b}; "
+            "conditions may have changed since, and future presence is not guaranteed.",
+        )
+
+    if window.evidence == EVIDENCE_CALENDAR:
+        if evidence.state == "calendar_presence":
+            nearest = evidence.presence[0]
+            return (min(score, CALENDAR_PRESENCE_CEILING), "calendar",
+                    [f"documented annual cycle; {nearest.species} reported {nearest.latest:%d %b}"],
+                    "Documented annual cycle and a recent report near the site. Conditions and access on the day still matter.")
+        return (min(score, CALENDAR_CEILING), "calendar",
+                ["documented annual cycle - " + (window.verify_urls[0] if window.verify_urls else "see sources")],
+                "Documented annual cycle from the site's managers or monitors; conditions and access on the day still matter.")
 
     if window.evidence == EVIDENCE_STATIC:
         return (
             min(score, UNVERIFIED_CEILING),
             "unverified",
             ["calendar estimate - no live source confirms this one"],
-            "No feed reports this one. Check the linked sources yourself before committing to it.",
+            "No feed reports this one. A dated report of the behaviour itself is the only thing that can confirm it; species presence cannot.",
         )
 
-    matches = corroborating_sightings(window, sightings, now)
-    # Corroboration expires. A report that never goes stale is not evidence
-    # about today - and once reports can arrive by email rather than from a page
-    # re-read every morning, "when did somebody actually see this" becomes a
-    # real question with a real answer, so it is asked.
-    stale_before = now - timedelta(days=LIVE_CORROBORATION_DAYS)
-    reports = [
-        report for report in (field_reports or [])
-        if getattr(report, "category", None) == window.category
-        and getattr(report, "observed_at", None) is not None
-        and stale_before <= report.observed_at <= now
-        and getattr(report, "phenomenon_key", "") == window.key
-        and haversine_km(window.latitude, window.longitude, *_report_point(report, window)) <= LIVE_CORROBORATION_KM
-    ] if field_reports else []
-
-    if matches and window.requires_behavior and not reports:
+    matches = evidence.presence
+    if matches and window.requires_behavior:
         return (min(score, UNVERIFIED_CEILING), "presence_only",
                 ["species reported; the named behavior or aggregation is not confirmed"],
                 "A dated report of this behavior or aggregation at this location. Species presence alone is not enough.")
 
     if matches:
         freshest = max(item.latest for item in matches)
-        age_days = max(0, round((now - freshest).total_seconds() / 86400))
         observers = sum(max(1, item.reports) for item in matches)
         nearest = min(
             haversine_km(window.latitude, window.longitude, item.latitude, item.longitude)
@@ -911,19 +1104,19 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
             "corroborated",
             [
                 f"confirmed: {observers} report{'s' if observers != 1 else ''} within "
-                f"{round(LIVE_CORROBORATION_KM)} km, most recent {age_days} day{'s' if age_days != 1 else ''} ago",
+                f"{round(LIVE_CORROBORATION_KM)} km, most recent {freshest:%d %b}",
             ],
             f"Species presence reported. Nearest report {round(nearest)} km away, "
-            f"{age_days} day{'s' if age_days != 1 else ''} old.",
+            f"latest {freshest:%d %b}.",
         )
 
-    if reports:
-        return (
-            max(score, CORROBORATED_SCORE - 5),
-            "corroborated",
-            [f"confirmed by {reports[0].source_name}"],
-            f"Dated report from {reports[0].source_name}; future presence is not guaranteed.",
-        )
+    if evidence.undated or evidence.insufficient:
+        source = (evidence.undated or evidence.insufficient)[0].source_name
+        why = ("the page does not date it" if evidence.undated else
+               "it does not give the count this phenomenon needs")
+        return (min(score, UNVERIFIED_CEILING), "watching",
+                [f"reported by {source}, but {why}"],
+                f"{source} mentions it, but {why}. A dated report is needed before this can be acted on.")
 
     taxa = ", ".join(window.live_taxa) if window.live_taxa else "the species"
     return (
@@ -931,8 +1124,14 @@ def _apply_evidence(window, entry, score, sightings, field_reports, now):
         "watching",
         ["watch window - nothing reported yet, so this is where to look, not when to go"],
         f"A sighting of {taxa} within {round(LIVE_CORROBORATION_KM)} km in the last "
-        f"{LIVE_CORROBORATION_DAYS} days. None yet.",
+        f"{LIVE_CORROBORATION_DAYS} days. None yet." if window.live_taxa else
+        "A dated report from the listed sources. None yet.",
     )
+
+
+def _apply_evidence(window, entry, score, sightings, field_reports, now):
+    """The planner-facing verdict for one window: (score, verification, reasons, awaiting)."""
+    return _score_from_evidence(window, score, window_evidence(window, sightings, field_reports, now))
 
 
 # Far enough that no corroboration test can pass. Used for a report whose
@@ -943,9 +1142,9 @@ _NOWHERE = (0.0, 0.0)
 
 
 def _report_point(report, window) -> tuple[float, float]:
+    """Where a field report actually is, or nowhere at all."""
     if getattr(report, "latitude", None) is not None and getattr(report, "longitude", None) is not None:
         return report.latitude, report.longitude
-    """Where a field report actually is, or nowhere at all."""
     zone = ZONES_BY_ID.get(getattr(report, "zone_id", ""))
     if zone:
         return zone["latitude"], zone["longitude"]
@@ -1008,29 +1207,42 @@ def within_drive(
 
 
 def action_window(opportunities: list[Opportunity], now: datetime, hours: int = 48) -> list[Opportunity]:
-    """Opportunities starting inside the drop-everything window."""
+    """Opportunities starting inside the drop-everything window.
+
+    Assessed rows that passed the Can't Miss gate lead, by priority; a
+    planning row enters only if the gate admitted it. Unassessed rows keep
+    the old score order so callers without the gate behave as before.
+    """
     cutoff = now + timedelta(hours=hours)
-    return sorted(
-        (
-            item
-            for item in opportunities
-            if not item.planning_only and item.start <= cutoff
+
+    def admitted(item):
+        eligible = (item.extra.get("assessment") or {}).get("eligible")
+        return (eligible or not item.planning_only) and item.start <= cutoff \
             and (item.end or item.start + timedelta(hours=2)) > now
-        ),
-        key=lambda item: (-item.score, item.start),
-    )
+
+    def rank(item):
+        assessment = item.extra.get("assessment") or {}
+        return (0 if assessment.get("eligible") else 1, -(assessment.get("priority") or item.score), item.start)
+
+    return sorted((item for item in opportunities if admitted(item)), key=rank)
 
 
 def alert_candidate(item: Opportunity, alert_score: int) -> bool:
     """Whether one opportunity has earned the drop-everything sensor.
 
+    Once the eligibility gate has run (``extra["assessment"]``), its verdict is
+    the answer: significance, a satisfied trigger policy, the six-hour drive
+    and safety - not a score. The score path below remains only for rows that
+    were never assessed, so an older caller cannot fire on a planning row.
+
     Clearing the score bar is necessary and, for a sky, not sufficient. A good
     sunset happens most weeks; being told about every one of them is how a
-    notification gets muted, and a muted notification is worth nothing on the
-    evening that actually matters. So a sky must also be a standout - as good
-    as anything in the forecast window - and its light path must have been
-    modelled rather than guessed at from the deck overhead.
+    notification gets muted. So a sky must also be a standout and its light
+    path must have been modelled rather than guessed at from the deck overhead.
     """
+    assessment = item.extra.get("assessment")
+    if assessment is not None:
+        return bool(assessment.get("eligible"))
     if item.planning_only or item.score < alert_score:
         return False
     if item.category == CATEGORY_SUNSET:
@@ -1044,9 +1256,9 @@ def zones_for_category(category: str) -> list[dict]:
 
 # --- Live sightings ---------------------------------------------------------
 
-# Marine draw ranking. Humpbacks are abundant off this coast in season, so a
-# report of one is not news; blue whales and orcas are the reason you cancel
-# your afternoon.
+# Marine draw ranking, used by the orca/blue exceptional-presence rule and to
+# order background signals. Humpbacks are abundant off this coast in season, so
+# a report of one is not news; blue whales and orcas are.
 MARINE_DRAW = {
     "Orcinus orca": 10,
     "Balaenoptera musculus": 10,
@@ -1055,165 +1267,27 @@ MARINE_DRAW = {
 }
 
 
-# A deliberately small photography shortlist. eBird "notable" can include
-# ordinary-looking birds that are merely unusual in this reporting region.
-# Keep raw observations for seasonal corroboration; curate only standalone rows.
+# Birds that tend to make a striking photograph. Since 0.16.0 this is only a
+# ranking hint inside the optional Bird Chase view; it is not a Can't Miss gate.
+# Whether a bird is worth a drive is an encounter question (repeat reports at a
+# public place, counts, behaviour), answered in ``birds.py``.
 PHOTOGRAPHY_BIRDS = frozenset({
-    "vermilion flycatcher",
-    "bald eagle",
-    "golden eagle",
-    "california condor",
-    "peregrine falcon",
-    "snowy owl",
-    "great gray owl",
-    "great horned owl",
-    "short-eared owl",
-    "burrowing owl",
-    "tufted puffin",
-    "horned puffin",
-    "harlequin duck",
-    "wood duck",
-    "mandarin duck",
-    "painted bunting",
-    "scarlet tanager",
-    "summer tanager",
-    "blackburnian warbler",
-    "roseate spoonbill",
-    "sandhill crane",
-    "american white pelican",
-    "long-tailed duck",
-    "king eider",
+    "vermilion flycatcher", "bald eagle", "golden eagle", "california condor", "peregrine falcon",
+    "snowy owl", "great gray owl", "great horned owl", "short-eared owl", "burrowing owl",
+    "tufted puffin", "horned puffin", "harlequin duck", "wood duck", "mandarin duck",
+    "painted bunting", "scarlet tanager", "summer tanager", "blackburnian warbler",
+    "roseate spoonbill", "sandhill crane", "american white pelican", "long-tailed duck", "king eider",
 })
 
 
-def build_wildlife_opportunities(
-    sightings: list,
-    now: datetime,
-    home: tuple[float, float] | None = None,
-) -> list[Opportunity]:
-    """Score clustered live sightings, placing each by its own coordinates.
-
-    Birds and whales decay differently and the scoring says so. A vagrant that
-    has not been reported since the day before yesterday has almost certainly
-    moved on, while whales stay as long as the food does - so the bird score
-    falls off a cliff and the marine score slopes.
-
-    Drive time comes from the sighting's position rather than from a zone. A
-    rarity is far more likely to appear at some lagoon nobody listed than at one
-    of the twelve destinations, and gating those out would throw away the
-    closest, most actionable reports this integration receives.
-    """
-    origin = home or DEFAULT_HOME
-    found: list[Opportunity] = []
-    for sighting in sightings:
-        if sighting.category == CATEGORY_BIRDS and sighting.species.casefold() not in PHOTOGRAPHY_BIRDS:
-            continue
-        drive_hours = estimate_drive_hours(sighting.latitude, sighting.longitude, origin)
-        match = nearest_zone(sighting.latitude, sighting.longitude)
-        zone_id = match[0]["id"] if match else f"sighting-{_slug(sighting.place)}"
-        zone_name = sighting.place or (match[0]["name"] if match else "Reported location")
-
-        if sighting.latest + timedelta(hours=SIGHTING_WINDOW_HOURS) <= now:
-            continue
-        age_hours = max(0.0, (now - sighting.latest).total_seconds() / 3600)
-        observers = max(sighting.reports, len(sighting.observers))
-        reasons: list[str] = []
-
-        if sighting.category == CATEGORY_MARINE:
-            score = 55
-            if age_hours <= 24:
-                score += 22
-                reasons.append("reported in the last 24 hours")
-            elif age_hours <= 48:
-                score += 15
-                reasons.append("reported in the last two days")
-            elif age_hours <= 72:
-                score += 5
-                reasons.append("reported in the last three days")
-            else:
-                score -= 10
-                reasons.append(f"last reported {round(age_hours / 24)} days ago")
-            draw = MARINE_DRAW.get(sighting.scientific_name, 4)
-            score += draw
-            if draw >= 10:
-                reasons.append("one of the species worth dropping everything for")
-        else:
-            score = 50
-            if age_hours <= 12:
-                score += 25
-                reasons.append("seen this morning")
-            elif age_hours <= 24:
-                score += 18
-                reasons.append("seen in the last 24 hours")
-            elif age_hours <= 48:
-                score += 8
-                reasons.append("seen in the last two days")
-            else:
-                score -= 10
-                reasons.append(f"not reported for {round(age_hours / 24)} days")
-
-        if observers >= 3:
-            score += 12
-            reasons.append(f"{observers} separate reports - it is staying put")
-        elif observers == 2:
-            score += 6
-            reasons.append("two separate reports")
-
-        if sighting.confirmed:
-            score += 8
-            reasons.append("confirmed by a reviewer")
-        elif observers < 2:
-            # One unreviewed report is where misidentification lives. Worth
-            # surfacing, not worth a two-hour drive on its own.
-            score -= 5
-            reasons.append("single unconfirmed report")
-
-        if sighting.count and sighting.count > 1:
-            reasons.append(f"{sighting.count} individuals")
-
-        near = f" near {match[0]['name']}" if match else ""
-        detail = (
-            f"{sighting.species} at {sighting.place}{near},"
-            f" {describe_drive(drive_hours)}, via {sighting.source}."
-            " " + ", ".join(reasons) + "."
-        )
-
-        found.append(
-            Opportunity(
-                key=f"sighting-{sighting.source.lower()}-{_slug(sighting.scientific_name or sighting.species)}-{_slug(sighting.place)}",
-                # One species, one row. Four reports of the same vagrant at four
-                # lagoons is one bird to go and see, not four things to plan.
-                roll=f"sighting-{_slug(sighting.scientific_name or sighting.species)}",
-                title=f"{sighting.species} at {sighting.place}",
-                category=sighting.category,
-                zone_id=zone_id,
-                zone_name=zone_name,
-                # A sighting is not an appointment. The window is "while it is
-                # still there", so it opens now and runs out with the evidence.
-                start=max(now, sighting.latest),
-                end=sighting.latest + timedelta(hours=SIGHTING_WINDOW_HOURS),
-                score=int(max(0, min(100, score))),
-                detail=detail,
-                drive_hours=round(drive_hours, 2),
-                reasons=reasons,
-                gear=_gear_for(sighting.category),
-                source_url=sighting.url,
-                extra={"observed_at": sighting.latest.isoformat(), "source_name": sighting.source,
-                       "verification": "presence_only", "evidence_note": "Species presence, not behavior or a guarantee it remains there."},
-                drive_source="estimate",
-                latitude=sighting.latitude,
-                longitude=sighting.longitude,
-            )
-        )
-    return found
-
-
 def build_field_report_opportunities(reports: list, now: datetime) -> list[Opportunity]:
-    """Bloom and colour reports scraped from the hotlines.
+    """Bloom and colour reports that match no curated phenomenon.
 
-    These are leads, not forecasts: somebody drove somewhere and wrote down what
-    they saw, days ago. The score is capped below the alert threshold so a
-    scraped sentence can never on its own tell you to get in the car.
+    A report that *does* match one (Carrizo carpets, Bishop Creek "go now") is
+    merged into that phenomenon by ``build_seasonal_opportunities`` and must not
+    be passed here, or the same bloom appears twice. What arrives here is the
+    rest: leads for the planner, capped below the alert threshold, never Can't
+    Miss on their own.
     """
     found: list[Opportunity] = []
     for report in reports:
@@ -1237,6 +1311,7 @@ def build_field_report_opportunities(reports: list, now: datetime) -> list[Oppor
                 drive_hours=zone["drive_hours"],
                 reasons=[f"{report.source_name} report", "confirm before driving"],
                 planning_only=True,
+                phenomenon="hotline_report",
                 extra={"verification": "watching", "observed_at": report.observed_at.isoformat() if report.observed_at else None,
                        "evidence_note": "Observation time unknown" if not report.observed_at else "Dated field report"},
                 gear=_gear_for(report.category),
@@ -1314,6 +1389,7 @@ def build_park_opportunities(
         found.append(
             Opportunity(
                 key=window["key"],
+                phenomenon="park_season",
                 title=f"{park.name} - {tier_text.lower()}",
                 category=CATEGORY_PARKS,
                 zone_id=park.key,
@@ -1409,6 +1485,7 @@ def build_grunion_runs(
             Opportunity(
                 key=f"grunion-{first_night.isoformat()}",
                 title="Grunion run nights",
+                phenomenon="grunion_run",
                 category=window.category,
                 zone_id="grunion_run",
                 zone_name=window.primary_locations[0],

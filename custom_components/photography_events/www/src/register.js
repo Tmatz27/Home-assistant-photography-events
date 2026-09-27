@@ -1,4 +1,4 @@
-Object.assign(PhotographyEventsCard.prototype, CARD_MODES);
+Object.assign(PhotographyEventsCard.prototype, CARD_MODES, CANT_MISS_MODES);
 
 // Test-only seam: the astronomy math is written as free functions (no `this`
 // juggling), so it is exposed here for direct unit testing the same way the
@@ -25,11 +25,15 @@ PhotographyEventsCard.backend = {
   reportLinkHtml,
   rangeLabel,
   findEntity,
+  cantMissFromState,
+  shortLens,
+  whereLabel,
   CATEGORY_META,
   DOG_META,
   MODE_HERO,
   MODE_OUTLOOK,
   MODE_TIMELINE,
+  MODE_BIRDS,
 };
 
 PhotographyEventsCard.astro = {
@@ -63,7 +67,7 @@ if (!window.customCards.some((card) => card?.type === "photography-events-card")
   window.customCards.push({
     type: "photography-events-card",
     name: "Photography Events Card",
-    description: "Upcoming golden hour, moon phases, meteor showers, eclipses, and more near your location",
+    description: "Can't Miss photography opportunities within your drive limit, a year planner, and a bird view",
     preview: true,
     documentationURL: "https://github.com/Tmatz27/Home-assistant-photography-events",
   });

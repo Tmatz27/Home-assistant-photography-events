@@ -42,6 +42,7 @@ from homeassistant.util import dt as dt_util
 from . import events as event_builder
 from .event_state import EventState, event_id
 from . import waves, spectacles, grunion, source_health, eclipses
+from . import birds as birds_module, eligibility, lunar, signals as signals_module, sunburst, weather_hazards
 from homeassistant.helpers.storage import Store
 from . import field_reports as reports_module
 
@@ -73,6 +74,8 @@ from .const import (
     CONF_NPS_API_KEY,
     CONF_ROUTING_MODE,
     CONF_SUNSET_SCORE,
+    CONF_SUNSETWX_CLIENT_ID,
+    CONF_SUNSETWX_CLIENT_SECRET,
     DEFAULT_ALERT_SCORE,
     DEFAULT_HOME,
     DEFAULT_MAX_DRIVE_HOURS,
@@ -83,6 +86,8 @@ from .const import (
     INATURALIST_URL,
     MARINE_TAXA,
     MIN_INTERVAL_EBIRD,
+    MIN_INTERVAL_EBIRD_SPECIES,
+    MIN_INTERVAL_SUNSETWX,
     MIN_INTERVAL_FIELD_REPORTS,
     MIN_INTERVAL_INATURALIST,
     MIN_INTERVAL_PARK_ALERTS,
@@ -156,7 +161,11 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "streamflow": Source("USGS Merced River discharge", 180),
             "ndbc": Source("NOAA offshore waves", 30),
             "cdip": Source("CDIP coastal forecast", 180),
-            "surf_alerts": Source("NWS coastal alerts", 60),
+            # All California alerts: coastal ones for the swell text, and every
+            # warning as the safety gate on Can't Miss. Key kept for continuity.
+            "surf_alerts": Source("NWS active alerts", 60),
+            "sunsetwx": Source("SunsetWx sunset quality", MIN_INTERVAL_SUNSETWX),
+            "ebird_species": Source("eBird iconic species", MIN_INTERVAL_EBIRD_SPECIES),
             "condor_reports": Source("Condor Express dated trip reports", 180),
             "aurora": Source("NOAA OVATION", 15),
             "weather": Source("Open-Meteo", MIN_INTERVAL_WEATHER),
@@ -181,6 +190,11 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         self._choice_lock = asyncio.Lock()
         self._batch_cache: dict[str, dict] = {}
         self._deferred_task = None
+        self._sunsetwx_token: tuple[str, datetime] | None = None
+        # Full-Moon geometry changes once a day; cloud is re-read every cycle.
+        self._lunar_cache: tuple | None = None
+        self._last_signals: list = []
+        self._last_birds: dict = {}
         for source in reports_module.REPORT_SOURCES:
             self._sources[source["id"]] = Source(source["name"], MIN_INTERVAL_FIELD_REPORTS)
 
@@ -206,6 +220,11 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             data["preferences"] = dict(self.event_state.choices)
             action = [item for item in data.get("action_events", []) if not self.event_state.suppressed(event_id(item))]
             data["top_action"] = next((item for item in action if event_builder.alert_candidate(item, self.alert_score)), None)
+            # A skipped or seen row must leave Can't Miss immediately, not
+            # at the next fetch cycle.
+            data["cant_miss"] = eligibility.dashboard(
+                data.get("opportunities", []), dt_util.utcnow(), suppressed=self.event_state.suppressed,
+                signals=self._last_signals, birds=self._last_birds)
             self.async_set_updated_data(data)
 
     # --- Configuration ------------------------------------------------------
@@ -256,6 +275,19 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         return DEFAULT_HOME
 
     @property
+    def home_zone(self) -> dict:
+        """Home as a forecast point: the only place sunsets are scored."""
+        latitude, longitude = self.home
+        return {"id": "home", "name": "Home coast", "latitude": latitude, "longitude": longitude,
+                "drive_hours": 0.0, "bortle": 4, "specialties": (CATEGORY_SUNSET,)}
+
+    @property
+    def sunsetwx_credentials(self) -> tuple[str, str] | None:
+        client = (self._options.get(CONF_SUNSETWX_CLIENT_ID) or "").strip()
+        secret = (self._options.get(CONF_SUNSETWX_CLIENT_SECRET) or "").strip()
+        return (client, secret) if client and secret else None
+
+    @property
     def ebird_key(self) -> str:
         return (self._options.get(CONF_EBIRD_API_KEY) or "").strip()
 
@@ -285,11 +317,14 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
         # Group 1: weather. Everything that can raise a drop-everything alert in
         # the next 48 hours depends on it, so it goes first and alone.
+        forecast_zones = [*zones, self.home_zone]
         if categories & {CATEGORY_SUNSET, CATEGORY_ASTRO, CATEGORY_RARE}:
-            await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, zones, now))
+            await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, forecast_zones, now))
         forecasts = self._sources["weather"].value or {}
         if CATEGORY_SUNSET in categories:
-            await self._refresh(self._sources["air_quality"], now, lambda: self._fetch_air_quality(session, zones))
+            await self._refresh(self._sources["air_quality"], now, lambda: self._fetch_air_quality(session, [self.home_zone]))
+            if self.sunsetwx_credentials:
+                await self._refresh(self._sources["sunsetwx"], now, lambda: self._fetch_sunsetwx(session, now))
         air_quality = self._sources["air_quality"].value or {}
 
         # Group 2: the wildlife APIs, spaced away from the weather burst.
@@ -297,6 +332,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             await asyncio.sleep(GROUP_STAGGER_SECONDS)
         if CATEGORY_BIRDS in categories and self.ebird_key:
             await self._refresh(self._sources["ebird"], now, lambda: self._fetch_ebird(session))
+            await self._refresh(self._sources["ebird_species"], now, lambda: self._fetch_ebird_species(session))
         if categories & {"marine", "mammals", "rare_phenomena", "birds"}:
             await self._refresh(self._sources["inaturalist"], now, lambda: self._fetch_inaturalist(session, now))
 
@@ -323,24 +359,39 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
         # These bounded public feeds carry their own timestamps and cadence.
         # An HTTP success with an unusable payload is not a successful refresh.
+        # The alert feed is a safety gate for every category, not a wave extra.
+        await self._refresh(self._sources["surf_alerts"], now, lambda: self._fetch_surf_alerts(session))
         if "waves" in categories:
             await self._refresh(self._sources["ndbc"], now, lambda: self._fetch_wave_data(session, False, now))
             await self._refresh(self._sources["cdip"], now, lambda: self._fetch_wave_data(session, True, now))
-            await self._refresh(self._sources["surf_alerts"], now, lambda: self._fetch_surf_alerts(session))
         if CATEGORY_MARINE in categories:
             await self._refresh(self._sources["condor_reports"], now, lambda: self._fetch_condor(session, now))
         if CATEGORY_ASTRO in categories:
             await self._refresh(self._sources["aurora"], now, lambda: self._fetch_aurora(session))
 
+        self._last_signals, self._last_birds = [], {}
         opportunities = await self._build(now, zones, forecasts, air_quality, categories)
+        signals, bird_views = self._last_signals, self._last_birds
         opportunities = await self._apply_routing(session, now, opportunities)
 
+        # The planner's travel policy: long trips (parks, planning windows)
+        # stay listed. Can't Miss applies its own six-hour gate below, which
+        # planning_only does not bypass.
         opportunities = event_builder.within_drive(
             opportunities, self.max_drive_hours, self.category_drive_limits
         )
         health = source_health.snapshot(self._sources, self._enabled_sources(), now)
         source_health.annotate(opportunities, health)
         self._update_repairs(health)
+        alerts_source = self._sources["surf_alerts"]
+        alerts = alerts_source.value if alerts_source.fetched_at and not alerts_source.failures else None
+        await self.hass.async_add_executor_job(lambda: eligibility.annotate(
+            opportunities, now, max_drive_hours=self.max_drive_hours, alerts=alerts,
+            sunset_drive_hours=self.category_drive_limits.get(CATEGORY_SUNSET)))
+        for row in (bird_views or {}).get("spectacle", []):
+            eligibility.assess(row, now, max_drive_hours=self.max_drive_hours, alerts=alerts)
+        cant_miss = eligibility.dashboard(
+            opportunities, now, suppressed=self.event_state.suppressed, signals=signals, birds=bird_views)
         action = event_builder.action_window(opportunities, now)
         top = next((item for item in action if not self.event_state.suppressed(event_id(item))
                     and event_builder.alert_candidate(item, self.alert_score)), None)
@@ -366,35 +417,46 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             "forecast_zones": sorted(forecasts),
             "sources": health,
             "routing_endpoint": self._routing_endpoint,
+            "cant_miss": cant_miss,
         }
 
-    async def _build(self, now, zones, forecasts, air_quality, categories) -> list:
-        """Assemble opportunities. All pure CPU, so it runs off the event loop."""
+    async def _build(self, now, zones, forecasts, air_quality, categories):
+        """Collect signals, resolve them into phenomena, build opportunities.
+
+        Returns the opportunities; the background signals and bird views are
+        left on ``_last_signals`` / ``_last_birds`` for the dashboard. Raw
+        sightings and hotline text are *signals*: they corroborate phenomena
+        and fill the background list, and never become rows of their own.
+        """
         opportunities: list = []
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        home_bundle = forecasts.get("home") or {}
+        home_forecast = home_bundle.get("local") or (home_bundle if "hourly" in home_bundle else None)
+
+        # Sunsets are a home feature: tonight's sky over Vandenberg, not a
+        # regional sky map nobody drives six hours for.
+        if CATEGORY_SUNSET in categories and home_forecast:
+            provider = self._sources["sunsetwx"].value if self.sunsetwx_credentials else None
+            opportunities.extend(
+                await self.hass.async_add_executor_job(
+                    event_builder.build_sunset_opportunities,
+                    self.home_zone,
+                    home_forecast,
+                    now,
+                    self.sunset_score,
+                    3,
+                    home_bundle.get("upstream") or {},
+                    air_quality.get("home"),
+                    provider or [],
+                )
+            )
 
         for zone in zones:
             bundle = forecasts.get(zone["id"]) or {}
             # A value cached from before the bundle shape existed is a flat
-            # forecast. Tolerating it costs a line and saves a cycle of missing
-            # sunsets after an upgrade.
+            # forecast. Tolerating it costs a line and saves a cycle.
             forecast = bundle.get("local") or (bundle if "hourly" in bundle else None)
-            upstream = bundle.get("upstream") or {}
             cloud_lookup = _make_cloud_lookup(forecast)
-
-            if CATEGORY_SUNSET in categories and forecast:
-                opportunities.extend(
-                    await self.hass.async_add_executor_job(
-                        event_builder.build_sunset_opportunities,
-                        zone,
-                        forecast,
-                        now,
-                        self.sunset_score,
-                        3,
-                        upstream,
-                        air_quality.get(zone["id"]),
-                    )
-                )
-
             if CATEGORY_ASTRO in categories:
                 opportunities.extend(
                     await self.hass.async_add_executor_job(
@@ -411,29 +473,17 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                     )
                 )
 
-        sightings = list(self._sources["ebird"].value or []) + list(self._sources["inaturalist"].value or [])
-        digested: list = []
-        if sightings:
-            digested = await self.hass.async_add_executor_job(wildlife_module.digest, sightings, now)
-            opportunities.extend(
-                await self.hass.async_add_executor_job(
-                    event_builder.build_wildlife_opportunities, digested, now, self.home
-                )
-            )
+        raw_sightings = (list(self._sources["ebird"].value or []) + list(self._sources["ebird_species"].value or [])
+                         + list(self._sources["inaturalist"].value or []))
+        # Corroboration needs the whole 14-day allowance.
+        corroboration = wildlife_module.digest(raw_sightings, now, 14 * 24)
+        reports = list(self._sources["field_reports"].value or []) + self._fresh_ingested(now) \
+            + list(self._sources["condor_reports"].value or [])
+        signals = [signals_module.from_sighting(item) for item in wildlife_module.digest(raw_sightings, now, 7 * 24)]
+        signals += [signals_module.from_report(item) for item in reports]
 
-        # Corroboration needs the whole 14-day allowance; action sightings
-        # deliberately retain the shorter four-day digestion above.
-        corroboration = wildlife_module.digest(sightings, now, 14 * 24)
-        reports = list(self._sources["field_reports"].value or []) + self._fresh_ingested(now)
-        if reports:
-            opportunities.extend(
-                await self.hass.async_add_executor_job(
-                    event_builder.build_field_report_opportunities, reports, now
-                )
-            )
-
-        # The evidence gate needs the live signals, so the phenomena are built
-        # after the wildlife and hotline sources rather than in isolation.
+        # Reports merge into the phenomenon they describe; only the rest may
+        # stand as planning rows of their own.
         seasonal = await self.hass.async_add_executor_job(
             event_builder.build_seasonal_opportunities,
             now,
@@ -443,6 +493,25 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             reports or None,
         )
         opportunities.extend(seasonal)
+        merged = {ident for item in seasonal for ident in item.extra.get("merged_reports", [])}
+        unmatched = [report for report in reports if event_builder.report_id(report) not in merged
+                     and report.category in (CATEGORY_BLOOMS, CATEGORY_FOLIAGE) and not report.phenomenon_key]
+        if unmatched:
+            opportunities.extend(event_builder.build_field_report_opportunities(unmatched, now))
+        self._annotate_monarch_conditions(seasonal, home_forecast, now, local_tz)
+
+        bird_views = {"spectacle": [], "encounter": [], "chase": []}
+        if CATEGORY_BIRDS in categories or CATEGORY_RARE in categories:
+            bird_views = await self.hass.async_add_executor_job(
+                birds_module.classify, raw_sightings, now, self.home, self.max_drive_hours, reports)
+            leftovers = eligibility.merge_into_phenomena(opportunities, bird_views["spectacle"], now)
+            opportunities.extend(leftovers)
+            upgraded = [item for item in seasonal if item.extra.get("evidence_state") == "behavior_confirmed"
+                        and item.category in (CATEGORY_BIRDS, CATEGORY_RARE) and item.phenomenon in
+                        {row.phenomenon for row in bird_views["spectacle"]}]
+            bird_views["spectacle"] = [*leftovers, *upgraded]
+        if CATEGORY_MARINE in categories:
+            opportunities.extend(birds_module.marine_presence(corroboration, now, self.home))
 
         if CATEGORY_RARE in categories:
             opportunities.extend(grunion.opportunities(self._sources["grunion"].value or [], now, self.home))
@@ -460,9 +529,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         opportunities.extend(
             await self.hass.async_add_executor_job(
                 spectacles.watch_opportunities, now, self.home, self._fresh_streamflow(now),
-                _make_cloud_lookup((forecasts.get("yosemite_valley") or {}).get("local"))
+                _make_cloud_lookup((forecasts.get("yosemite_valley") or {}).get("local")), reports
             )
         )
+        opportunities.extend(spectacles.report_opportunities(reports, now, self.home))
         if "waves" in categories:
             # A failed download cannot keep a forecast authoritative indefinitely.
             source = self._sources["cdip"]
@@ -470,13 +540,47 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             opportunities.extend(waves.build_opportunities(now, self._sources["ndbc"].value or {},
                 coastal or {}, self._calibration, self.event_state, self.home,
                 self._sources["surf_alerts"].value or []))
-        if CATEGORY_MARINE in categories:
-            opportunities.extend(spectacles.report_opportunities(self._sources["condor_reports"].value or [], now, self.home))
+            opportunities.extend(lunar.tide_opportunities(self._sources["tides"].value or [], now, self.home, local_tz))
         if CATEGORY_ASTRO in categories:
             opportunities.extend(spectacles.aurora_opportunities(self._sources["aurora"].value or {}, now, zones, self.event_state))
             opportunities.extend(await self.hass.async_add_executor_job(
                 eclipses.opportunities, self._eclipse_catalog, now, zones, self.home, self.max_drive_hours))
+            opportunities.extend(await self.hass.async_add_executor_job(
+                self._lunar_opportunities, now, local_tz, _make_cloud_lookup(home_forecast)))
+        signals += weather_hazards.watch_signals(forecasts, [*zones, self.home_zone], now)
+        self._last_signals, self._last_birds = signals, bird_views
         return [item for item in opportunities if item.category in categories]
+
+    def _lunar_opportunities(self, now, tz, cloud_lookup):
+        """Full-Moon geometry once a day; cloud re-read against it every cycle."""
+        day = now.astimezone(tz).date()
+        if self._lunar_cache is None or self._lunar_cache[0] != (day, self.home):
+            rows = lunar.opportunities(now, self.home, tz, eclipse_catalog=self._eclipse_catalog)
+            self._lunar_cache = ((day, self.home), rows)
+        fresh = []
+        for item in self._lunar_cache[1]:
+            if (item.end or item.start) < now:
+                continue
+            copy = event_builder.Opportunity(**{**item.__dict__, "extra": dict(item.extra), "reasons": list(item.reasons)})
+            rise = datetime.fromisoformat(copy.extra["moonrise"])
+            cloud = cloud_lookup(rise) if cloud_lookup else None
+            lead = max(0.0, (rise - now).total_seconds() / 86400)
+            copy.extra["cloud_cover"] = round(cloud, 1) if cloud is not None else None
+            copy.extra["cloud_is_forecast"] = bool(cloud is not None and weather_scoring.cloud_is_scorable(lead))
+            copy.extra["cloud_confidence"] = weather_scoring.cloud_confidence(lead) if cloud is not None else None
+            fresh.append(copy)
+        return fresh
+
+    def _annotate_monarch_conditions(self, seasonal, home_forecast, now, tz):
+        """Tomorrow's dawn temperature for the Pismo grove (nearest forecast: home)."""
+        dawn = weather_hazards.dawn_temperature(home_forecast, now, tz)
+        for item in seasonal:
+            if item.phenomenon != "pismo_monarchs" or dawn is None:
+                continue
+            moment, celsius = dawn
+            item.extra["dawn_temp_f"] = round(celsius * 9 / 5 + 32, 1)
+            item.extra["best_time_of_day"] = (f"Dawn {moment.astimezone(tz):%a %H:%M}: forecast "
+                                              f"{item.extra['dawn_temp_f']:.0f} °F at the nearest forecast point (Vandenberg, ~40 km).")
 
     async def _refresh(self, source: Source, now: datetime, fetcher: Callable[[], Awaitable[Any]]) -> None:
         """Run a fetch if it is due, recording the outcome either way."""
@@ -541,7 +645,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if CATEGORY_SUNSET in cats:
             enabled.add("air_quality")
         if CATEGORY_BIRDS in cats and self.ebird_key:
-            enabled.add("ebird")
+            enabled.update(("ebird", "ebird_species"))
+        if CATEGORY_SUNSET in cats and self.sunsetwx_credentials:
+            enabled.add("sunsetwx")
+        enabled.add("surf_alerts")
         if cats & {"marine", "mammals", "rare_phenomena", "birds"}:
             enabled.add("inaturalist")
         if CATEGORY_MARINE in cats:
@@ -549,7 +656,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if CATEGORY_RARE in cats:
             enabled.update(("grunion", "tides", "streamflow"))
         if "waves" in cats:
-            enabled.update(("ndbc", "cdip", "surf_alerts"))
+            enabled.update(("ndbc", "cdip"))
         if CATEGORY_PARKS in cats and self.nps_key:
             enabled.add("park_alerts")
         if self.google_key and self.routing_mode != ROUTING_OFF:
@@ -617,13 +724,58 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         return {"B1500" if coastal else "46011": rows}
 
     async def _fetch_surf_alerts(self, session):
+        """Every active California alert, compacted to what the gates need.
+
+        A failed or malformed response raises, so source health says "failed"
+        and the Can't Miss rows say "alerts unavailable" - never "no warnings".
+        """
         data = await self._get_json(session, "https://api.weather.gov/alerts/active?area=CA",
-                                   headers={"User-Agent": "PhotographyEvents/0.10 (+https://github.com/Tmatz27/Home-assistant-photography-events)"})
-        if not isinstance(data, dict) or "features" not in data:
+                                   headers={"User-Agent": "PhotographyEvents/0.16 (+https://github.com/Tmatz27/Home-assistant-photography-events)",
+                                            "Accept": "application/geo+json"})
+        if not isinstance(data, dict) or not isinstance(data.get("features"), list):
             raise ValueError("NWS alerts unavailable")
-        return [f["properties"] for f in data["features"]
-                if "Santa Barbara" in f.get("properties", {}).get("areaDesc", "")
-                and any(term in f["properties"].get("event", "") for term in ("Surf", "Coastal", "Beach"))]
+        return [alert for alert in (weather_hazards.compact_alert(feature) for feature in data["features"]) if alert]
+
+    async def _fetch_sunsetwx(self, session, now):
+        """SunsetWx quality for the next home sunset and sunrise."""
+        client, secret = self.sunsetwx_credentials
+        if self._sunsetwx_token is None or self._sunsetwx_token[1] <= now:
+            url, headers, form = sunburst.login_request(client, secret)
+            payload = await self._request(session, "post", url, headers=headers, form=form,
+                                          label="SunsetWx login", as_json=True)
+            token = sunburst.parse_login(payload, now)
+            if token is None:
+                raise ValueError("SunsetWx login failed - check the client ID and secret")
+            self._sunsetwx_token = token
+        found = []
+        latitude, longitude = self.home
+        for kind in ("sunset", "sunrise"):
+            url, params, headers = sunburst.quality_request(latitude, longitude, kind, self._sunsetwx_token[0])
+            payload = await self._get_json(session, url, params=params, headers=headers, label=f"SunsetWx {kind}")
+            parsed = sunburst.parse_quality(payload)
+            if not parsed:
+                # An expired token looks like an empty answer; log in again next time.
+                self._sunsetwx_token = None
+                raise ValueError(f"SunsetWx returned no usable {kind} forecast")
+            found.extend(parsed)
+        return found
+
+    async def _fetch_ebird_species(self, session) -> list:
+        """Recent reports of the iconic species at their viewing counties."""
+        headers = wildlife_module.build_ebird_headers(self.ebird_key)
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        successful, failed = {}, []
+        for index, (species, region) in enumerate(birds_module.EBIRD_SPECIES_QUERIES):
+            if index:
+                await asyncio.sleep(0.5)
+            payload = await self._get_json(session, wildlife_module.build_ebird_species_url(region, species),
+                                           params=wildlife_module.build_ebird_species_params(), headers=headers,
+                                           label=f"eBird {species} {region}")
+            if isinstance(payload, list):
+                successful[f"{species}-{region}"] = wildlife_module.parse_ebird(payload, local_tz, notable=False)
+            else:
+                failed.append(f"{species} {region}")
+        return self._finish_batch("ebird_species", successful, failed)
 
     async def _fetch_condor(self, session, now):
         raw = await self._get_text(session, spectacles.CONDOR_FEED)
@@ -831,7 +983,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             url, params = verify_module.build_tide_request(station["station"], start, end)
             payload = await self._get_json(session, url, params=params, label=f"NOAA {station['name']}")
             if payload:
-                found.extend(verify_module.parse_tide_predictions(payload, local_tz))
+                found.extend(verify_module.parse_tide_predictions(payload, local_tz, station))
         if not found:
             raise RuntimeError("no tide predictions returned")
         return sorted(found, key=lambda tide: tide.moment)
@@ -956,6 +1108,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         params=None,
         headers=None,
         json_body=None,
+        form=None,
         label: str = "",
         as_json: bool = True,
     ) -> Any:
@@ -967,7 +1120,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         """
         try:
             async with asyncio.timeout(REQUEST_TIMEOUT):
-                response = await session.request(method, url, params=params, headers=headers, json=json_body)
+                if form is not None:
+                    response = await session.request(method, url, params=params, headers=headers, data=form)
+                else:
+                    response = await session.request(method, url, params=params, headers=headers, json=json_body)
                 if response.status != 200:
                     _LOGGER.debug("%s returned HTTP %s", label or url, response.status)
                     return None

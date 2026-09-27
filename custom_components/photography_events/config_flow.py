@@ -38,6 +38,8 @@ from .const import (
     CONF_ROUTING_MODE,
     CONF_SUNSET_DRIVE_HOURS,
     CONF_SUNSET_SCORE,
+    CONF_SUNSETWX_CLIENT_ID,
+    CONF_SUNSETWX_CLIENT_SECRET,
     DEFAULT_ALERT_SCORE,
     DEFAULT_MAX_DRIVE_HOURS,
     DEFAULT_SUNSET_DRIVE_HOURS,
@@ -117,6 +119,16 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
                 CONF_NPS_API_KEY,
                 description={"suggested_value": defaults.get(CONF_NPS_API_KEY, "")},
             ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
+            # Optional SunsetWx client credentials (sunsetwx.com). The local
+            # sky model remains the fallback and comparison.
+            vol.Optional(
+                CONF_SUNSETWX_CLIENT_ID,
+                description={"suggested_value": defaults.get(CONF_SUNSETWX_CLIENT_ID, "")},
+            ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.TEXT)),
+            vol.Optional(
+                CONF_SUNSETWX_CLIENT_SECRET,
+                description={"suggested_value": defaults.get(CONF_SUNSETWX_CLIENT_SECRET, "")},
+            ): selector.TextSelector(selector.TextSelectorConfig(type=selector.TextSelectorType.PASSWORD)),
             vol.Required(
                 CONF_ROUTING_MODE,
                 default=defaults.get(CONF_ROUTING_MODE, ROUTING_AUTO),
@@ -150,7 +162,8 @@ def _clean(user_input: dict[str, Any]) -> dict[str, Any]:
     for key in (CONF_MAX_DRIVE_HOURS, CONF_SUNSET_DRIVE_HOURS):
         if key in cleaned:
             cleaned[key] = float(cleaned[key])
-    for key in (CONF_EBIRD_API_KEY, CONF_GOOGLE_API_KEY, CONF_NPS_API_KEY):
+    for key in (CONF_EBIRD_API_KEY, CONF_GOOGLE_API_KEY, CONF_NPS_API_KEY,
+                CONF_SUNSETWX_CLIENT_ID, CONF_SUNSETWX_CLIENT_SECRET):
         if not (cleaned.get(key) or "").strip():
             cleaned.pop(key, None)
         else:

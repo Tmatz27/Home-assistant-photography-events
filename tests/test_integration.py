@@ -723,7 +723,8 @@ class TestPeakWindows(unittest.TestCase):
             item for item in events.build_seasonal_opportunities(now, 365)
             if "crane" in item.title.lower()
         )
-        self.assertEqual(crane.start.month, 11)
+        # USFWS: best December-February; the calendar-reliable core crosses New Year.
+        self.assertEqual(crane.start.month, 12)
         self.assertEqual(crane.end.month, 1)
 
     def test_rainfall_dependent_entries_are_flagged(self):
@@ -927,66 +928,70 @@ class TestDriveEstimation(unittest.TestCase):
         self.assertIsNone(wildlife.nearest_zone(44.0, -121.0))
 
 
-class TestSightingOpportunities(unittest.TestCase):
+class TestSightingsAreSignals(unittest.TestCase):
+    """0.16.0: a sighting is evidence, never a row of its own.
+
+    These replace the old TestSightingOpportunities, which scored raw reports
+    on freshness and observer count and let a fresh common bird outrank a
+    meteor peak. The intent that survives - repeat, confirmed reports matter
+    more than one unreviewed report - now ranks the Bird Chase list.
+    """
+
     def setUp(self):
         self.now = datetime(2026, 3, 20, 20, tzinfo=UTC)
+        from photography_events import birds
+        self.birds = birds
 
-    def _build(self, payload):
-        return events.build_wildlife_opportunities(
-            wildlife.digest(wildlife.parse_ebird(payload, UTC), self.now), self.now, const.DEFAULT_HOME
-        )
+    def _chase(self, payload):
+        sightings = wildlife.parse_ebird(payload, UTC)
+        return self.birds.classify(sightings, self.now, const.DEFAULT_HOME, 6.0)["chase"]
 
-    def test_a_staked_out_confirmed_rarity_clears_the_alert_bar(self):
-        payload = [
+    def test_a_staked_out_confirmed_rarity_ranks_above_a_single_report(self):
+        staked = self._chase([
             _ebird_entry(obsDt="2026-03-20 07:15", subId="S1"),
             _ebird_entry(obsDt="2026-03-19 16:00", subId="S2", obsReviewed=False),
             _ebird_entry(obsDt="2026-03-19 08:00", subId="S3", obsReviewed=False),
-        ]
-        built = self._build(payload)
-        self.assertEqual(len(built), 1)
-        self.assertGreaterEqual(built[0].score, const.DEFAULT_ALERT_SCORE)
+        ])
+        single = self._chase([_ebird_entry(obsDt="2026-03-20 07:15", subId="S1", obsReviewed=False, obsValid=False)])
+        self.assertEqual(len(staked), 1, "one species, one chase row")
+        self.assertGreater(staked[0]["encounter_confidence"], single[0]["encounter_confidence"])
 
-    def test_a_single_unconfirmed_stale_report_does_not(self):
-        payload = [_ebird_entry(obsDt="2026-03-18 07:15", subId="S1", obsReviewed=False)]
-        self.assertEqual(self._build(payload), [], "expired sightings must leave the actionable list")
+    def test_a_stale_report_leaves_the_chase_list(self):
+        self.assertEqual(self._chase([_ebird_entry(obsDt="2026-03-17 07:15", subId="S1")]), [])
 
-    def test_sightings_far_from_any_zone_still_appear_and_are_gated_by_drive_time(self):
-        """A vagrant does not have to land on a target zone to count, but it
-        does have to be reachable."""
-        payload = [
-            _ebird_entry(locName="Somewhere in Oregon", lat=44.0, lng=-121.0, subId="S1"),
+    def test_the_chase_list_is_gated_by_drive_time(self):
+        found = self._chase([
+            _ebird_entry(locName="Somewhere in Oregon", lat=44.0, lng=-121.0, subId="S1",
+                         comName="Rustic Bunting", sciName="Emberiza rustica"),
             _ebird_entry(subId="S2"),
-        ]
-        built = self._build(payload)
-        self.assertEqual(len(built), 2)
-        reachable = events.within_drive(built, 6.0)
-        self.assertEqual([item.title for item in reachable], ["Vermilion Flycatcher at Oso Flaco Lake"])
+        ])
+        self.assertEqual([row["species"] for row in found], ["Vermilion Flycatcher"])
 
-    def test_every_sighting_carries_coordinates_for_routing(self):
-        for item in self._build([_ebird_entry()]):
-            self.assertIsNotNone(item.latitude)
-            self.assertIsNotNone(item.longitude)
+    def test_private_locations_are_never_offered_as_a_destination(self):
+        self.assertEqual(self._chase([_ebird_entry(subId="S1", locationPrivate=True)]), [])
 
-    def test_humpbacks_rank_below_orcas_all_else_equal(self):
-        """Humpbacks are abundant here in season; an orca is why you cancel
-        your afternoon."""
-        def marine(name):
-            payload = {
-                "results": [
-                    {
-                        "id": 1,
-                        "observed_on": "2026-03-20",
-                        "latitude": 34.85,
-                        "longitude": -120.65,
-                        "taxon": {"name": name},
-                        "place_guess": "Surf Beach",
-                    }
-                ]
-            }
-            parsed = wildlife.digest(wildlife.parse_inaturalist(payload, UTC), self.now)
-            return events.build_wildlife_opportunities(parsed, self.now, const.DEFAULT_HOME)[0].score
+    def test_every_sighting_signal_keeps_its_evidence(self):
+        from photography_events import signals
+        sighting = wildlife.parse_ebird([_ebird_entry()], UTC)[0]
+        signal = signals.from_sighting(sighting)
+        self.assertEqual(signal.basis, signals.BASIS_OBSERVED)
+        self.assertIsNotNone(signal.latitude)
+        self.assertEqual(signal.observed_at, sighting.latest)
+        self.assertTrue(signal.url.startswith("https://ebird.org/checklist/"))
 
-        self.assertGreater(marine("Orcinus orca"), marine("Megaptera novaeangliae"))
+    def test_orca_presence_outranks_humpback_presence(self):
+        """Humpbacks are abundant in season; orcas are exceptional presence."""
+        def sightings(name, observers):
+            return [wildlife.Sighting(species=name, scientific_name=name, place="Monterey Bay",
+                                      latitude=36.8, longitude=-121.9, latest=self.now - timedelta(hours=h),
+                                      earliest=self.now - timedelta(hours=h), source="iNaturalist",
+                                      category=const.CATEGORY_MARINE, observers=[f"o{h}"]) for h in observers]
+        self.assertEqual(self.birds.marine_presence(sightings("Megaptera novaeangliae", (2, 5)), self.now, const.DEFAULT_HOME), [])
+        orcas = self.birds.marine_presence(sightings("Orcinus orca", (2, 5)), self.now, const.DEFAULT_HOME)
+        self.assertEqual(len(orcas), 1)
+        self.assertEqual(orcas[0].extra["evidence_state"], "repeated_presence")
+        self.assertEqual(self.birds.marine_presence(sightings("Orcinus orca", (2,)), self.now, const.DEFAULT_HOME), [],
+                         "one unreviewed orca report is not repeated presence")
 
 
 class TestFieldReportScraping(unittest.TestCase):

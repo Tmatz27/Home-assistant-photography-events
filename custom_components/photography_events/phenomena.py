@@ -35,6 +35,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from .const import (
+    CATEGORY_BIRDS,
     CATEGORY_BLOOMS,
     CATEGORY_FOLIAGE,
     CATEGORY_MAMMALS,
@@ -58,8 +59,17 @@ EVIDENCE_COMPUTED = "computed"
 # A search season, not a promise. May plan, and may only alert once live
 # sightings corroborate it.
 EVIDENCE_LIVE = "live"
-# A calendar estimate with no live source. Plans only, never alerts.
+# A calendar estimate with no live source. Plans only; it can only be
+# activated by a dated, located report of the behaviour itself - never by its
+# date and never by species presence.
 EVIDENCE_STATIC = "static"
+# A documented, highly repeatable annual cycle published by the people who
+# manage or monitor the site (Friends of the Elephant Seal, USFWS, a city
+# ordinance and its volunteer monitors). Granted narrowly: the window must be
+# the documented core of the cycle, no longer than MAX_TRUE_PEAK_DAYS, and name
+# its source. Inside that window the date alone may reach the Can't Miss
+# dashboard; outside it the entry behaves like a live window.
+EVIDENCE_CALENDAR = "calendar_reliable"
 
 # A window longer than this is a season wearing a peak's clothes. The rule it
 # triggers is about verifiability rather than length: a window this broad may
@@ -132,6 +142,14 @@ SOURCE_CDFW_WOODBRIDGE = "https://wildlife.ca.gov/Lands/Places-to-Visit/Woodbrid
 # eBird's regional bar charts show arrival and departure week by week, which is
 # the closest thing to a published peak for a bird that nobody surveys daily.
 SOURCE_EBIRD_CRANE = "https://ebird.org/species/sancra"
+SOURCE_FWS_MERCED = "https://www.fws.gov/refuge/merced"
+SOURCE_CARPINTERIA_SEALS = "https://carpinteriaca.gov/parks-and-recreation/carpinteria-harbor-seal-rookery/"
+SOURCE_SEAL_WATCH = "https://carpinteriasealwatch.org/information/"
+SOURCE_ELEPHANT_SEAL_CYCLE = "https://elephantseal.org/birthing-and-breeding/"
+SOURCE_NPS_ELK = "https://www.nps.gov/thingstodo/tule-elk-viewing-point-reyes.htm"
+SOURCE_XERCES_MONARCH = "https://xerces.org/blog/everything-you-need-to-know-about-visiting-overwintering-monarchs"
+SOURCE_PISMO_GROVE = "https://www.parks.ca.gov/?page_id=30273"
+SOURCE_CACHUMA = "https://www.countyofsb.org/parks"
 
 # Inside this many days the calendar stops speaking in seasons and starts
 # giving concrete windows, locations, gear - and, above all, a plain statement
@@ -281,9 +299,9 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         requires_behavior=True,
         name="Pismo monarch butterfly roost",
         category=CATEGORY_RARE,
-        season_range="Late October to February",
-        peak_start=(11, 1),
-        peak_end=(12, 15),
+        season_range="November to mid-February; historically peaks Thanksgiving to Christmas",
+        peak_start=(11, 15),
+        peak_end=(12, 31),
         latitude=35.1310,
         longitude=-120.6350,
         primary_locations=("Pismo State Beach Monarch Butterfly Grove",),
@@ -295,33 +313,38 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
         ),
         best_time_of_day="Cold mornings before the roost warms and disperses",
         evidence=EVIDENCE_LIVE,
+        # A single Danaus plexippus observation near Pismo says a monarch was
+        # seen, not that the colony is clustered in meaningful numbers. The
+        # curated policy needs a dated count (see curation.py).
         live_taxa=("Danaus plexippus",),
-        verify_urls=(SOURCE_MONARCH_COUNT,),
+        verify_urls=(SOURCE_MONARCH_COUNT, SOURCE_PISMO_GROVE, SOURCE_XERCES_MONARCH),
     ),
     PeakWindow(
         key="sandhill_crane_flyin",
         requires_behavior=True,
         name="Sandhill crane sunset fly-in",
         category=CATEGORY_RARE,
-        season_range="October to February",
-        peak_start=(11, 15),
-        peak_end=(1, 15),
-        latitude=38.1560,
-        longitude=-121.4160,
+        season_range="October to February; USFWS says December to February is best",
+        peak_start=(12, 10),
+        peak_end=(1, 18),
+        latitude=37.1800,
+        longitude=-120.6000,
         primary_locations=(
+            "Merced National Wildlife Refuge auto tour",
             "Woodbridge Ecological Reserve, Lodi",
-            "Merced National Wildlife Refuge",
         ),
-        recommended_gear="400-600mm telephoto, gimbal head, high continuous burst",
+        recommended_gear="Sony FE 200-600mm G handheld; Sony FE 70-200mm GM II for flocks against the sky",
         photo_tips=(
-            "The birds come in to the flooded roost in waves through the last hour of light "
-            "and past it. Set up facing the sunset and shoot them against the colour rather "
-            "than trying to light them. Woodbridge runs docent tours; check access first."
+            "USFWS describes the sunset return to the roost as a predictable daily spectacle, "
+            "with up to 20,000 cranes and 60,000 geese wintering at Merced. Set up facing the "
+            "sunset and shoot the lines against the colour. Stay on the auto tour route."
         ),
-        best_time_of_day="Last hour of light and the half hour after",
-        evidence=EVIDENCE_LIVE,
+        best_time_of_day="Last hour of light and the half hour after; geese lift off at dawn",
+        # The daily fly-in is documented by the refuge as predictable in the
+        # winter core. The core window is kept under MAX_TRUE_PEAK_DAYS.
+        evidence=EVIDENCE_CALENDAR,
         live_taxa=("Antigone canadensis",),
-        verify_urls=(SOURCE_CDFW_WOODBRIDGE, SOURCE_EBIRD_CRANE),
+        verify_urls=(SOURCE_FWS_MERCED, SOURCE_CDFW_WOODBRIDGE, SOURCE_EBIRD_CRANE),
     ),
     # --- Marine -------------------------------------------------------------
     PeakWindow(
@@ -487,13 +510,13 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "the shot worth driving for."
         ),
         best_time_of_day="Dawn, 06:00-08:30",
-        # Promoted from a calendar estimate once the herd's species was actually
-        # being queried. Carrizo carries California's largest free-roaming tule
-        # elk herd on open grassland beside a public road, so sightings do get
-        # logged - which is the whole condition for calling a window live.
-        evidence=EVIDENCE_LIVE,
+        # NPS documents the rut as August-October, peaking late August to
+        # September, so the behaviour is calendar-reliable in this window. The
+        # encounter at Carrizo is not - the herd is dispersed - so the curated
+        # policy also wants a recent elk report near the site.
+        evidence=EVIDENCE_CALENDAR,
         live_taxa=("Cervus canadensis nannodes",),
-        verify_urls=(SOURCE_BLM_CARRIZO,),
+        verify_urls=(SOURCE_BLM_CARRIZO, SOURCE_NPS_ELK),
     ),
     PeakWindow(
         key="desert_bighorn_rut",
@@ -564,12 +587,56 @@ PEAK_WINDOWS: tuple[PeakWindow, ...] = (
             "Overcast is your friend; harsh sun blows out the wet hides."
         ),
         best_time_of_day="Any daylight; overcast preferred",
-        # The best-corroborated window in the table. Thousands of animals on one
-        # beach beside Highway 1, a boardwalk full of people photographing them,
-        # and interpreters posting what is on the sand week by week.
-        evidence=EVIDENCE_LIVE,
+        # Friends of the Elephant Seal publish the cycle: bulls from November,
+        # births mid-December to early February, peak births late January,
+        # fights December-January. This window is that documented core.
+        # Species presence is irrelevant - thousands are always there.
+        evidence=EVIDENCE_CALENDAR,
         live_taxa=("Mirounga angustirostris",),
-        verify_urls=(SOURCE_ELEPHANT_SEAL,),
+        verify_urls=(SOURCE_ELEPHANT_SEAL, SOURCE_ELEPHANT_SEAL_CYCLE),
+    ),
+    PeakWindow(
+        key="harbor_seal_pupping",
+        requires_behavior=True,
+        name="Harbor seal pupping, Carpinteria",
+        category=CATEGORY_MAMMALS,
+        season_range="Beach closed 1 December to 31 May; births mostly February and March",
+        peak_start=(2, 15),
+        peak_end=(3, 25),
+        latitude=34.3890,
+        longitude=-119.5020,
+        primary_locations=("Carpinteria Bluffs harbor seal rookery overlook",),
+        recommended_gear="Sony FE 200-600mm G from the bluff; Sony FE 70-200mm GM II for the colony on the beach",
+        photo_tips=(
+            "About sixty pups are born here each year, mostly in February and March, on a "
+            "beach closed by city ordinance and watched from a public blufftop overlook. "
+            "Come at low tide, when the colony hauls out. Quiet voices, no pointing over the rail."
+        ),
+        best_time_of_day="Low tide in daylight",
+        evidence=EVIDENCE_CALENDAR,
+        live_taxa=("Phoca vitulina",),
+        verify_urls=(SOURCE_CARPINTERIA_SEALS, SOURCE_SEAL_WATCH),
+    ),
+    PeakWindow(
+        key="bald_eagle_cachuma",
+        requires_behavior=True,
+        name="Bald eagles fishing, Cachuma Lake",
+        category=CATEGORY_BIRDS,
+        season_range="November to February (county naturalist eagle cruises)",
+        peak_start=(12, 1),
+        peak_end=(2, 10),
+        latitude=34.5850,
+        longitude=-119.9800,
+        primary_locations=("Cachuma Lake naturalist eagle cruise",),
+        recommended_gear="Sony FE 200-600mm G; skip the 2x on a moving boat",
+        photo_tips=(
+            "One resident pair plus wintering migrants. The photograph is an eagle fishing "
+            "or several together, which only a report can say. Book the naturalist cruise."
+        ),
+        best_time_of_day="Morning cruise",
+        evidence=EVIDENCE_LIVE,
+        live_taxa=("Haliaeetus leucocephalus",),
+        verify_urls=(SOURCE_CACHUMA,),
     ),
     PeakWindow(
         key="black_bear_cubs",

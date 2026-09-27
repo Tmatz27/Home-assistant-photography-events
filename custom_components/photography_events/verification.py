@@ -86,6 +86,11 @@ class TideEvent:
     moment: datetime
     feet: float
     high: bool
+    # Which station predicted it. Four stations are merged into one list, and
+    # a minus tide at Port San Luis says nothing about Santa Barbara.
+    station: str = ""
+    latitude: float | None = None
+    longitude: float | None = None
 
 
 @dataclass(frozen=True)
@@ -126,7 +131,7 @@ def build_tide_request(station: str, start: date, end: date) -> tuple[str, dict]
     }
 
 
-def parse_tide_predictions(payload, tz=None) -> list[TideEvent]:
+def parse_tide_predictions(payload, tz=None, station: dict | None = None) -> list[TideEvent]:
     """Turn a predictions payload into tide events.
 
     NOAA returns local station time without an offset (``lst_ldt``), so the
@@ -148,7 +153,10 @@ def parse_tide_predictions(payload, tz=None) -> list[TideEvent]:
         kind = (entry.get("type") or "").strip().upper()
         if moment is None or feet is None or kind not in ("H", "L"):
             continue
-        found.append(TideEvent(moment=moment, feet=feet, high=kind == "H"))
+        found.append(TideEvent(moment=moment, feet=feet, high=kind == "H",
+                               station=(station or {}).get("name", ""),
+                               latitude=(station or {}).get("latitude"),
+                               longitude=(station or {}).get("longitude")))
     return sorted(found, key=lambda item: item.moment)
 
 

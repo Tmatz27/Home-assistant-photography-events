@@ -22,7 +22,9 @@ IMPACTS = {
     "grunion": "Published grunion run dates cannot be refreshed.",
     "ndbc": "Offshore wave observations may be missing or old.",
     "cdip": "Experimental coastal wave forecasts may be missing or old.",
-    "surf_alerts": "Coastal advisories cannot be refreshed.",
+    "surf_alerts": "NWS warnings cannot be checked; Can't Miss rows say so instead of implying all clear.",
+    "sunsetwx": "Sunset quality falls back to the built-in local model.",
+    "ebird_species": "Condor, eagle, crane and goose counts may be missing from the bird views.",
     "condor_reports": "Dated whale-watch trip reports may be missing.",
     "aurora": "The short-term regional aurora assessment cannot be refreshed.",
     "tides": "Tide predictions for coastal events cannot be refreshed.",
@@ -59,7 +61,7 @@ def dependencies(item):
             return set()  # This builder currently computes geometry, not cloud.
         return {"aurora"} if "aurora" in item.key else {"weather"}
     if category == "sunset":
-        return {"weather", "air_quality"}
+        return {"weather", "air_quality", "sunsetwx"}
     if category == "waves":
         return {"ndbc", "cdip", "surf_alerts"}
     if category == "blooms":
@@ -69,7 +71,7 @@ def dependencies(item):
     if category == "parks":
         return {"park_alerts"}
     if category == "birds":
-        return {"ebird", "inaturalist"}
+        return {"ebird", "ebird_species", "inaturalist"}
     if category == "marine":
         return {"inaturalist", "condor_reports"}
     if category == "mammals":

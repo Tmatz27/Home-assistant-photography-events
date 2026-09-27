@@ -31,6 +31,7 @@ from .const import (
     CATEGORY_MARINE,
     DEFAULT_HOME,
     EBIRD_NOTABLE_URL,
+    EBIRD_SPECIES_URL,
     MARINE_TAXA,
     TARGET_ZONES,
 )
@@ -76,6 +77,14 @@ class Sighting:
     confirmed: bool = False
     url: str | None = None
     observers: list[str] = field(default_factory=list)
+    # Distinct observation dates, so "reported on three days" can be told
+    # apart from "three people at one moment".
+    dates: list[str] = field(default_factory=list)
+    # eBird's locationPrivate: a personal location (often a home or a nest
+    # watcher's spot). Kept as evidence, never published as a destination.
+    private_location: bool = False
+    # From the notable feed (rarity), as opposed to a species query.
+    notable: bool = False
 
     @property
     def cluster_key(self) -> tuple[str, str]:
@@ -177,7 +186,16 @@ def build_ebird_headers(api_key: str) -> dict:
     return {EBIRD_API_KEY_HEADER: api_key, "User-Agent": USER_AGENT}
 
 
-def parse_ebird(payload, tz: timezone | None = None) -> list[Sighting]:
+def build_ebird_species_url(region: str, species_code: str) -> str:
+    """Recent observations of one species in one region (eBird API 2.0)."""
+    return EBIRD_SPECIES_URL.format(region=region, species=species_code)
+
+
+def build_ebird_species_params(back_days: int = 7, max_results: int = 200) -> dict:
+    return {"back": back_days, "maxResults": max_results}
+
+
+def parse_ebird(payload, tz: timezone | None = None, notable: bool = True) -> list[Sighting]:
     """Turn a notable-observations payload into sightings.
 
     eBird reports ``obsDt`` in the *observation's* local time with no offset, so
@@ -221,6 +239,9 @@ def parse_ebird(payload, tz: timezone | None = None) -> list[Sighting]:
                 confirmed=confirmed,
                 url=f"https://ebird.org/checklist/{sub_id}" if sub_id else None,
                 observers=[sub_id] if sub_id else [],
+                dates=[observed.date().isoformat()],
+                private_location=bool(entry.get("locationPrivate")),
+                notable=notable,
             )
         )
     return found
@@ -249,8 +270,25 @@ def marine_bounding_box(margin_deg: float = 0.6) -> dict:
     instead of drifting out of date as a hardcoded rectangle would.
     """
     coastal = [zone for zone in TARGET_ZONES if CATEGORY_MARINE in zone["specialties"]] or list(TARGET_ZONES)
-    lats = [zone["latitude"] for zone in coastal]
-    lons = [zone["longitude"] for zone in coastal]
+    return _box(coastal, margin_deg)
+
+
+def observation_bounding_box(margin_deg: float = 0.3) -> dict:
+    """Every zone and curated window, not just the coast.
+
+    The marine box silently excluded Yosemite, Merced NWR and the Eastern
+    Sierra, so elk, bear and crane windows there could never be corroborated
+    however many people reported them. Deriving from the windows themselves
+    keeps the query honest as windows are added.
+    """
+    from .phenomena import PEAK_WINDOWS
+    points = [*TARGET_ZONES, *({"latitude": w.latitude, "longitude": w.longitude} for w in PEAK_WINDOWS)]
+    return _box(points, margin_deg)
+
+
+def _box(points, margin_deg):
+    lats = [zone["latitude"] for zone in points]
+    lons = [zone["longitude"] for zone in points]
     return {
         "nelat": round(max(lats) + margin_deg, 4),
         "nelng": round(max(lons) + margin_deg, 4),
@@ -276,7 +314,7 @@ def build_inaturalist_params(
         "order": "desc",
         "per_page": per_page,
     }
-    params.update(marine_bounding_box())
+    params.update(marine_bounding_box() if taxon_name in MARINE_TAXA else observation_bounding_box())
     return params
 
 
@@ -341,6 +379,10 @@ def parse_inaturalist(payload, tz: timezone | None = None) -> list[Sighting]:
                 confirmed=entry.get("quality_grade") == "research",
                 url=entry.get("uri") or (f"https://www.inaturalist.org/observations/{entry['id']}" if entry.get("id") else None),
                 observers=[identifier] if identifier else [],
+                dates=[observed.date().isoformat()],
+                # iNaturalist obscures sensitive taxa itself; an obscured point
+                # is not a place to send anyone.
+                private_location=bool(entry.get("obscured")),
             )
         )
     return found
@@ -426,6 +468,11 @@ def cluster(sightings: list[Sighting]) -> list[Sighting]:
         for observer in item.observers:
             if observer not in existing.observers:
                 existing.observers.append(observer)
+        for day in item.dates:
+            if day not in existing.dates:
+                existing.dates.append(day)
+        existing.private_location = existing.private_location or item.private_location
+        existing.notable = existing.notable or item.notable
     return list(merged.values())
 
 

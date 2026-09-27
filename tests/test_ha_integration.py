@@ -74,9 +74,13 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
 
     def opportunity(self, key="night", days=0):
         start = NOW + timedelta(days=days, hours=2)
+        # A curated, gate-passing phenomenon: since 0.16.0 only an eligible
+        # Can't Miss occurrence may notify or turn the action sensor on.
         return Opportunity(key, "Milky Way core", "astronomy", "test", "Test location", start,
                            start + timedelta(hours=2), 95, "Calculated window", 1,
-                           extra={"verification": "computed"}, roll=key)
+                           extra={"verification": "computed", "evidence_state": "computed",
+                                  "cloud_is_forecast": True, "cloud_cover": 5},
+                           roll=key, phenomenon="milky_way")
 
     def fake_cycle(self, opportunities=None):
         self.coordinator._fetch_forecasts = AsyncMock(return_value={"test": {"local": {}, "upstream": {}}})
@@ -177,13 +181,34 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["test"]["upstream"], {"sunset": parts[1], "sunrise": parts[2]})
         self.assertEqual(len(session.request.call_args.kwargs["params"]["latitude"].split(",")), 3)
 
-    async def test_build_passes_forecast_bundle_to_sunset_builder(self):
+    async def test_build_passes_the_home_forecast_bundle_to_sunset_builder(self):
+        """Sunsets are a home feature since 0.16.0: only the home bundle is scored."""
         local, upstream = {"hourly": {}}, {"sunset": {"hourly": {}}}
         zone = {"id": "test", "name": "Test", "latitude": 34.7, "longitude": -120.5}
+        bundles = {"home": {"local": local, "upstream": upstream}, "test": {"local": {"hourly": {"x": 1}}, "upstream": {}}}
         with patch.object(module.event_builder, "build_sunset_opportunities", return_value=[]) as build:
-            await self.coordinator._build(NOW, [zone], {"test": {"local": local, "upstream": upstream}}, {}, {"sunset"})
+            await self.coordinator._build(NOW, [zone], bundles, {}, {"sunset"})
+        self.assertEqual(build.call_count, 1, "no regional sunset rows")
+        self.assertEqual(build.call_args.args[0]["id"], "home")
         self.assertEqual(build.call_args.args[1], local)
         self.assertEqual(build.call_args.args[5], upstream)
+
+    async def test_cant_miss_sensor_publishes_a_healthy_empty_state(self):
+        from custom_components.photography_events.sensor import CantMissSensor
+        self.fake_cycle([])
+        self.coordinator.data = await self.coordinator._async_update_data()
+        sensor = CantMissSensor(self.coordinator, self.entry)
+        self.assertEqual(sensor.native_value, 0)
+        self.assertEqual(sensor.extra_state_attributes["headline"], "Nothing worth changing plans for this week.")
+
+    async def test_eligible_occurrence_reaches_cant_miss_and_the_action_sensor(self):
+        from custom_components.photography_events.sensor import CantMissSensor
+        self.fake_cycle([self.opportunity()])
+        self.coordinator.data = await self.coordinator._async_update_data()
+        self.assertEqual(CantMissSensor(self.coordinator, self.entry).native_value, 1)
+        attributes = PhotographyActionOpportunity(self.coordinator, self.entry).extra_state_attributes
+        self.assertTrue(attributes["why_now"])
+        self.assertIn("16-35mm", attributes["take"])
 
     async def test_incomplete_forecast_response_is_failure(self):
         zone = {"id": "test", "name": "Test", "latitude": 34.7, "longitude": -120.5}

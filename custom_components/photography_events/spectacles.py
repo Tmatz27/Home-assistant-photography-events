@@ -59,28 +59,50 @@ def condor_reports(raw, now):
 
 
 def report_opportunities(reports, now, home):
+    """Phenomena a dated report can activate on its own (no seasonal window).
+
+    A megapod, glowing surf, frazil ice or fresh snow has no dependable date,
+    so there is no window for the report to merge into; the report *is* the
+    occurrence. Each still needs the report's own observation date, a known
+    place, and freshness inside the phenomenon's evidence window.
+    """
+    from .curation import REPORT_ACTIVATED, definition
+
     result = []
     for report in reports:
-        if not report.phenomenon_key or report.observed_at is None:
+        key_name = report.phenomenon_key
+        if key_name not in REPORT_ACTIVATED or key_name in ("moonbow", "horsetail_firefall") or report.observed_at is None:
             continue
+        spec = definition(key_name)
         age = now - report.observed_at
-        if not timedelta(0) <= age <= timedelta(hours=36):
+        if not timedelta(0) <= age <= timedelta(days=spec.evidence_days if spec else 2):
             continue
         zone = ZONES_BY_ID.get(report.zone_id)
         if zone is None:
             continue
-        key = f"report-{report.phenomenon_key}-{report.zone_id}-{report.observed_at.date()}"
+        start, end = report.observed_at, report.observed_at + timedelta(hours=36)
+        extra = {"verification": "corroborated", "evidence_state": "behavior_confirmed", "special": True,
+                 "observed_at": report.observed_at.isoformat(), "source_name": report.source_name,
+                 "behavior_evidence": [{"source": report.source_name, "observed_at": report.observed_at.isoformat(),
+                                        "text": report.snippet[:220], "url": report.url or None}],
+                 "confidence_note": "Confirms a past observation in this region, not that it continues. Check the source before driving.",
+                 "evidence_note": "The source explicitly names the observation date and phenomenon. Location is regional."}
+        if key_name == "bioluminescent_surf":
+            # Glowing surf is a night subject: the next full darkness, and a
+            # Moon dim enough not to drown it.
+            lat, lon = math.radians(zone["latitude"]), math.radians(zone["longitude"])
+            dark = astronomy.dark_window(max(now, report.observed_at), lat, lon)
+            if dark is not None:
+                start, end = dark.start, dark.end
+                extra["moon_illumination"] = round(astronomy.moon_illumination(dark.start)[0], 3)
+        key = f"report-{key_name}-{report.zone_id}-{report.observed_at.date()}"
         result.append(Opportunity(
-            key=key, roll=key, title=report.headline, category=report.category,
-            zone_id=report.zone_id, zone_name=zone["name"],
-            start=report.observed_at, end=report.observed_at + timedelta(hours=36),
-            score=85, detail=report.snippet, source_url=report.url,
+            key=key, roll=key, title=spec.name if spec else report.headline, category=spec.category if spec else report.category,
+            zone_id=report.zone_id, zone_name=zone["name"], phenomenon=key_name,
+            start=start, end=end, score=85, detail=report.snippet, source_url=report.url,
             drive_hours=estimate_drive_hours(zone["latitude"], zone["longitude"], home),
             latitude=zone["latitude"], longitude=zone["longitude"], drive_source="estimate",
-            extra={"verification": "corroborated", "special": True,
-                   "observed_at": report.observed_at.isoformat(), "source_name": report.source_name,
-                   "confidence_note": "Confirms a past observation in this region, not that the animals remain there. Contact the operator before booking.",
-                   "evidence_note": "The source explicitly names the observation date and phenomenon. Location is regional."},
+            extra=extra,
         ))
     return result
 
@@ -115,13 +137,13 @@ an honest probability of photographing aurora from a particular tripod.
         state.episodes["aurora"] = {"start": first.isoformat(), "last": now.isoformat()}
         key = f"aurora-{first.date()}"
         result.append(Opportunity(
-            key=key + "-" + zone["id"], roll=key, title="Exceptional local aurora forecast",
+            key=key + "-" + zone["id"], roll=key, title="Exceptional local aurora forecast", phenomenon="aurora_local",
             category="astronomy", zone_id=zone["id"], zone_name=zone["name"],
             start=first, end=forecast + timedelta(minutes=30), score=88,
             detail=f"NOAA OVATION reaches {value:.0f}% at the nearest model cell for {forecast.isoformat()}. This is a model value, not your chance of seeing it.",
             drive_hours=zone["drive_hours"], latitude=lat, longitude=lon,
             source_url="https://www.swpc.noaa.gov/products/aurora-30-minute-forecast",
-            extra={"verification": "forecast", "special": True,
+            extra={"verification": "forecast", "special": True, "evidence_state": "nowcast",
                    "evidence_note": f"Solar-wind input timestamp: {observation.isoformat()}. Local aurora has not been visually confirmed.",
                    "confidence_note": "Short notice only. Clouds and horizon visibility remain separate; a weak local cell does not rule out distant aurora."},
         ))
@@ -266,7 +288,7 @@ MOONBOW_SOURCES = (
 )
 
 
-def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
+def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None, reports=None):
     """Nights the moonbow geometry actually permits, not a guess near a full Moon.
 
     This replaced a window of "the full Moon, plus or minus two days" in April,
@@ -284,6 +306,11 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
     found = []
     horizon = now + timedelta(days=MOONBOW_HORIZON_DAYS)
     night = now - timedelta(days=1)
+    # A dated report of a moonbow or roaring falls is the only thing that can
+    # stand in for "abundant spray"; the Merced gauge never does.
+    flow_reports = [report for report in reports or []
+                    if report.phenomenon_key == "moonbow" and report.observed_at is not None
+                    and timedelta(0) <= now - report.observed_at <= timedelta(days=7)]
     while night <= horizon:
         window = moonbow_window(night, MOONBOW_LATITUDE, MOONBOW_LONGITUDE)
         night += timedelta(days=1)
@@ -332,8 +359,10 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
             elif cloud >= 60:
                 score -= 15
 
+        confirmed = bool(flow_reports) and start - now <= timedelta(days=7)
         found.append(Opportunity(
             key=f"moonbow-{start.date()}", title="Yosemite moonbow window", category="rare_phenomena",
+            phenomenon="moonbow",
             zone_id="yosemite_valley", zone_name="Yosemite Falls - viewpoint still needs confirming",
             start=start, end=end, score=max(0, min(100, score)), planning_only=True,
             detail=detail, reasons=reasons,
@@ -347,7 +376,10 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
                 # azimuth is unmodelled and the water is only proxied. Two
                 # different facts, two different fields, and collapsing them
                 # into one is how a search lead starts reading as a promise.
-                "verification": "unverified",
+                "verification": "corroborated" if confirmed else "unverified",
+                "evidence_state": "behavior_confirmed" if confirmed else "computed_candidate",
+                "behavior_evidence": [{"source": r.source_name, "observed_at": r.observed_at.isoformat(),
+                                       "text": r.snippet[:220], "url": r.url or None} for r in flow_reports] if confirmed else [],
                 "timing_basis": "Generic sky geometry; not a viewpoint-specific prediction",
                 "season_range": "Waterfall spray is usually strongest in spring; sky candidates alone do not establish a flowing fall.",
                 "locations_detail": [
@@ -382,25 +414,14 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None):
     return found
 
 
-def watch_opportunities(now, home, streamflow=None, cloud_lookup=None):
-    result = []
-    for slug, title, category, zone_id, first, last, detail, url in WATCH_TARGETS:
-        # Waterfowl has its own sourced refuge coordinates, not Carrizo's.
-        zone = ZONES_BY_ID[zone_id]
-        lat, lon, name = (39.4208, -122.1647, "Sacramento National Wildlife Refuge") if slug == "waterfowl_flights" else (zone["latitude"], zone["longitude"], zone["name"])
-        for year in (now.year, now.year + 1):
-            start = datetime(year, first, 1, tzinfo=now.tzinfo)
-            end_year = year + (last < first)
-            end = datetime(end_year + (last == 12), last % 12 + 1, 1, tzinfo=now.tzinfo) - timedelta(seconds=1)
-            if end < now or start > now + timedelta(days=365):
-                continue
-            result.append(Opportunity(
-                key=f"watch-{slug}-{year}", title=title, category=category, zone_id=slug, zone_name=name,
-                start=start, end=end, score=45, planning_only=True, detail=detail,
-                drive_hours=estimate_drive_hours(lat, lon, home), latitude=lat, longitude=lon,
-                drive_source="estimate", source_url=url,
-                extra={"verification": "unverified", "awaiting": detail, "special": True,
-                       "confidence_note": "Search target; no automatic live confirmation source connected for this phenomenon."},
-            ))
-    result.extend(moonbow_opportunities(now, home, streamflow, cloud_lookup))
-    return result
+def watch_opportunities(now, home, streamflow=None, cloud_lookup=None, reports=None):
+    """Computed moonbow sky candidates.
+
+    The year-long "search target" rows this used to add (bioluminescent surf,
+    winter waterfowl, Pinnacles condors) were removed in 0.16.0: a row that is
+    true every day of the year is noise. Those subjects are now curated
+    phenomena activated by live evidence (``report_opportunities`` and
+    ``birds.classify``), and their search guidance lives in WATCH_TARGETS for
+    the documentation generator.
+    """
+    return moonbow_opportunities(now, home, streamflow, cloud_lookup, reports)

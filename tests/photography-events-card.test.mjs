@@ -1240,12 +1240,13 @@ test("outlook range options are clamped to a year", () => {
 
 
 
-test("the editor offers the two backend modes and asks different questions for each", () => {
+test("the editor offers the backend modes and asks different questions for each", () => {
   const editor = new Editor();
   editor.hass = {
     states: {
       "binary_sensor.photography_events_action_opportunity": { state: "off", attributes: {} },
       "sensor.photography_events_planning_outlook": { state: "12", attributes: {} },
+      "sensor.photography_events_can_t_miss": { state: "0", attributes: {} },
       "input_boolean.show_parks": { state: "on" },
     },
   };
@@ -1256,9 +1257,12 @@ test("the editor offers the two backend modes and asks different questions for e
 
   editor.setConfig({ mode: "action_hero" });
   const hero = editor.shadowRoot.innerHTML;
-  assert.match(hero, /Planning sensor/);
-  assert.match(hero, /sensor\.photography_events_planning_outlook/);
+  assert.match(hero, /Can't miss sensor/, "the default dashboard reads the Can't Miss gate");
+  assert.match(hero, /sensor\.photography_events_can_t_miss/);
   assert.doesNotMatch(hero, /Days to look ahead/, "the hero has no browser-side outlook to configure");
+
+  editor.setConfig({ mode: "birds" });
+  assert.match(editor.shadowRoot.innerHTML, /Bird Chase/);
 
   editor.setConfig({ mode: "calendar_outlook" });
   const outlook = editor.shadowRoot.innerHTML;
@@ -1877,13 +1881,141 @@ test("a calendar view and collapsed buckets survive subsequent renders", () => {
   card.disconnectedCallback();
 });
 
-test("compact week includes every intersecting event with its own details, not bare chips", () => {
+// 0.16.0 replaced the test "compact week includes every intersecting event
+// with its own details, not bare chips": listing everything that intersects a
+// week is the information overload the Can't Miss gate exists to stop. The
+// fallback it described survives only for an older backend without the gate.
+function cantMissState(events, extra = {}) {
+  return { state: String(events.length), attributes: {
+    events, watch: [], signals: [], signal_count: 0, birds: { spectacle: [], encounter: [], chase: [] },
+    headline: events.length ? null : "Nothing worth changing plans for this week.", show_limit: 5,
+    preferences: {}, sources: {}, generated: new Date().toISOString(), ...extra } };
+}
+
+function cantMissRow(i, extra = {}) {
+  const now = Date.now();
+  return { key: `cm-${i}`, event_id: `cm-${i}`, title: `Tule elk rut ${i}`, category: "mammals", zone: "Carrizo Plain",
+    where: "Carrizo Plain, Soda Lake Road foothills", drive_hours: 1.35, drive_source: "estimate",
+    start: new Date(now - 3600000).toISOString(), end: new Date(now + 3 * 86400000).toISOString(),
+    why_now: "Peak of the documented annual cycle, with a recent report near the site.",
+    best_time_of_day: "Dawn, 06:00-08:30", status: "Documented annual cycle, recent report nearby",
+    significance: 85, confidence: 78, priority: 80 - i, presentation: "cant_miss",
+    gear_plan: { take: "Sony FE 200-600mm f/5.6-6.3 G OSS", optional: ["Sony FE 70-200mm f/2.8 GM OSS II for animals in their landscape"],
+      skip: ["Sony FE 2x Teleconverter: dawn light and moving animals need shutter speed more than reach."],
+      drone: "DJI Mini 3: not appropriate - wildlife is the subject, and a drone disturbs it." },
+    ethics: "Stay in or beside the vehicle; keep well back from bulls.", ...extra };
+}
+
+test("Can't Miss shows a healthy empty state when nothing qualifies", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([]),
+    "sensor.photography_events_planning_outlook": outlookState([{ key: "park", title: "Sequoia NP - good window", category: "parks",
+      start: new Date().toISOString(), end: new Date(Date.now() + 86400000).toISOString() }]) } };
+  card.connectedCallback();
+  assert.match(card._root.innerHTML, /Nothing worth changing plans for this week\./);
+  assert.doesNotMatch(card._root.innerHTML, /Sequoia NP/, "a park is not a Can't Miss row");
+  assert.equal(card._root.querySelectorAll("[data-expand]").length, 0);
+  card.disconnectedCallback();
+});
+
+test("an outage never looks like a quiet week", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  const stale = cantMissState([], { generated: new Date(Date.now() - 3 * 3600000).toISOString() });
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": stale } };
+  card.connectedCallback();
+  assert.match(card._root.innerHTML, /not up to date/);
+  assert.doesNotMatch(card._root.innerHTML, /Nothing worth changing plans/);
+  card.disconnectedCallback();
+});
+
+test("Can't Miss shows at most five rows, with the rest one tap away", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState(Array.from({ length: 8 }, (_, i) => cantMissRow(i))) } };
+  card.connectedCallback();
+  assert.equal(card._root.querySelectorAll("[data-expand]").length, 5);
+  assert.match(card._root.innerHTML, /Show 3 more/);
+  card._root.querySelectorAll("[data-more]")[0].click();
+  assert.equal(card._root.querySelectorAll("[data-expand]").length, 8);
+  card.disconnectedCallback();
+});
+
+test("a collapsed Can't Miss row answers what, where, why now, when, evidence and lens", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([cantMissRow(0)]) } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /cm-title">Tule elk rut 0/);
+  assert.match(html, /Carrizo Plain, Soda Lake Road foothills · ~81 min drive/);
+  assert.match(html, /Peak of the documented annual cycle/);
+  assert.match(html, /Dawn, 06:00-08:30/);
+  assert.match(html, /Documented annual cycle, recent report nearby/);
+  assert.match(html, /Take: 200-600 G/, "owned lens, in its everyday name");
+  assert.doesNotMatch(html, /Species reported/, "raw source language is not the event");
+  assert.doesNotMatch(html, /not appropriate/, "the drone verdict waits in the details");
+  card._root.querySelectorAll("[data-expand]")[0].click();
+  const open = card._root.innerHTML;
+  assert.match(open, /Gear & technique/);
+  assert.match(open, /Access, safety & ethics/);
+  assert.match(open, /Evidence & sources/);
+  card.disconnectedCallback();
+});
+
+test("background signals stay in one collapsed, subordinate section", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  const signals = Array.from({ length: 12 }, (_, i) => ({ id: `s${i}`, subject: `Humpback whale ${i}`, basis: "observed",
+    place: "Avila", source: "iNaturalist", observed_at: new Date().toISOString() }));
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([], { signals, signal_count: 12,
+    watch: [{ title: "Humpback lunge feeding", status: "Species reported; behaviour unconfirmed", awaiting: "A dated behaviour report." }] }) } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /<details class="cm-background" data-section="cant-miss-background"><summary>Watching 13 background signals/);
+  assert.doesNotMatch(html, /data-section="cant-miss-background" open/);
+  assert.equal(card._root.querySelectorAll("[data-expand]").length, 0, "signals are never primary rows");
+  card.disconnectedCallback();
+});
+
+test("an expanded Can't Miss row survives a Home Assistant update", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  const rows = [cantMissRow(0), cantMissRow(1)];
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState(rows) } };
+  card.connectedCallback();
+  card._root.querySelectorAll("[data-expand]")[1].click();
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([cantMissRow(0, { why_now: "Updated" }), rows[1]]) } };
+  assert.match(card._root.innerHTML, /data-expand="cm-1" aria-expanded="true"/);
+  assert.match(card._root.innerHTML, /Updated/);
+  card.disconnectedCallback();
+});
+
+test("without the Can't Miss sensor an older backend keeps the seven-day view", () => {
   const card=new Card();const now=new Date();
   card.setConfig({mode:"action_hero",outlook_entity:"sensor.outlook"});
   card.hass={states:{"sensor.outlook":outlookState([1,4,9].map(d=>({key:`e-${d}`,title:`Subject ${d}`,category:"mammals",start:new Date(+now+d*86400000).toISOString(),end:new Date(+now+(d+1)*86400000).toISOString(),detail:`Details ${d}`})))}};
   card.connectedCallback();assert.equal(card._root.querySelectorAll("[data-expand]").length,2);
   assert.doesNotMatch(card._root.innerHTML,/Subject 9|Also peaking now|hero-grid/);
-  card._root.querySelectorAll("[data-expand]")[1].click();assert.match(card._root.innerHTML,/Details 4/);
+  card.disconnectedCallback();
+});
+
+test("the bird view separates spectacle, encounter and chase", () => {
+  const card = new Card();
+  card.setConfig({ mode: "birds" });
+  const birds = { spectacle: [cantMissRow(0, { title: "California condors at Pinnacles High Peaks", category: "birds" })],
+    encounter: [{ species: "Bald eagles", site: "Cachuma Lake", drive_hours: 0.9, why: "3 independent reports on 2 days" }],
+    chase: [{ species: "Painted Bunting", site: "Oso Flaco Lake", drive_hours: 0.6, encounter_confidence: 49, why: "1 report, last 5 h ago", url: "https://ebird.org/checklist/S1", photogenic: true }] };
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([], { birds }) } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /California condors at Pinnacles/);
+  assert.match(html, /Encounters · 1/);
+  assert.match(html, /Bird chase · 1/);
+  assert.match(html, /Painted Bunting/);
+  assert.match(html, /eBird checklist/);
+  assert.doesNotMatch(html, /data-section="birds-chase" open/, "the chase list is opt-in");
   card.disconnectedCallback();
 });
 

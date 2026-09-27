@@ -7,7 +7,13 @@ const SUPPRESSED = new Set(["skip", "seen"]);
 
 const CARD_MODES = {
   _bodyHtml() {
-    if (this._config.mode === MODE_HERO) return this._outlookEntityId() ? this._weekHtml() : this._heroHtml();
+    // The default dashboard is Can't Miss. Against an older backend without
+    // that sensor, the 0.15 seven-day view and then the legacy hero remain.
+    if (this._config.mode === MODE_HERO) {
+      if (this._cantMissEntityId()) return this._cantMissHtml();
+      return this._outlookEntityId() ? this._weekHtml() : this._heroHtml();
+    }
+    if (this._config.mode === MODE_BIRDS) return this._birdsHtml();
     if (this._config.mode === MODE_OUTLOOK || this._outlookEntityId()) return this._outlookHtml();
     // Installed integrations share one event truth, even for older dashboard
     // configs. The legacy calculator remains only for standalone installations.
@@ -584,6 +590,7 @@ const CARD_MODES = {
     const where = total > 1 ? `${total} locations` : locations[0] || "";
     const status = choice === "skip" ? "Skipped" : choice === "seen" ? "Seen this season" :
       choice === "follow" ? "Following" :
+      event.presentation === "cant_miss" ? "Can't miss" :
       VERIFICATION_META[event.verification]?.label || (event.precision === "season" || park ? "Season" : "Calculated / forecast");
     const title = event.roll ? event.title.replace(/ at .+$/, "") : event.title.replace(/ \(season\)$/, "");
     const accent = colorBy === "confidence" ? confidenceColor(event.score) : categoryColor(event.category);
@@ -598,11 +605,11 @@ const CARD_MODES = {
     </div>`;
   },
 
-  _freshnessHtml(outlook, now) {
+  _freshnessHtml(outlook, now, noun = "Calendar") {
     const age = outlook.generated ? now - outlook.generated : null;
-    const issue = this._hass.connected === false ? "Home Assistant disconnected" : outlook.unavailable ? "Planning sensor unavailable" : age === null ? "Update time unavailable" : age > 45 * 60000 ? "Calendar update overdue" : age < -5 * 60000 ? "Update clock mismatch" : "";
-    if (!issue) return `<p class="update-time">Calendar updated ${escapeHtml(absoluteLabel(outlook.generated))}</p>`;
-    return `<p class="freshness-warning" role="status"><strong>${issue}.</strong> ${outlook.generated ? `Last calendar update: ${escapeHtml(absoluteLabel(outlook.generated))}.` : "Waiting for a dated update."} ${outlook.events.length ? "Showing saved information; current conditions may have changed." : "An empty view does not mean nothing is happening."}</p>`;
+    const issue = this._hass.connected === false ? "Home Assistant disconnected" : outlook.unavailable ? `${noun === "Calendar" ? "Planning" : noun} sensor unavailable` : age === null ? "Update time unavailable" : age > 45 * 60000 ? `${noun} update overdue` : age < -5 * 60000 ? "Update clock mismatch" : "";
+    if (!issue) return `<p class="update-time">${noun} updated ${escapeHtml(absoluteLabel(outlook.generated))}</p>`;
+    return `<p class="freshness-warning" role="status"><strong>${issue}.</strong> ${outlook.generated ? `Last ${noun.toLowerCase()} update: ${escapeHtml(absoluteLabel(outlook.generated))}.` : "Waiting for a dated update."} ${outlook.events.length ? "Showing saved information; current conditions may have changed." : "An empty view does not mean nothing is happening."}</p>`;
   },
 
   _previewRowsHtml(events, outlook, now, key, colorBy = "category") {

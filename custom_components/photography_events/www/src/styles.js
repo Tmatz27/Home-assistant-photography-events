@@ -558,4 +558,28 @@ const CARD_STYLES = `
       .dialog-close { float:right; padding:8px 12px; cursor:pointer; }
       @media(max-width:450px) { .card-content { padding:16px; } .simple-row .outlook-badge { max-width:76px; } .outlook-detail-grid { grid-template-columns:1fr; } .outlook-detail-grid dd { margin:0 0 9px; } }
 
-    `;
+    
+      /* Can't Miss: few rows, each readable at a glance on a phone. */
+      .cm-heading { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 12px; font-weight:700; font-size:16px; margin-bottom:8px; }
+      .cm-sub { color:var(--secondary-text-color); font-size:12px; font-weight:400; }
+      .cm-row { border-left:3px solid var(--event-color); margin:0 0 8px; border-radius:0 8px 8px 0; background:rgba(127,127,127,.06); }
+      .cm-row.open { background:rgba(127,127,127,.10); }
+      .cm-head { display:flex; flex-direction:column; align-items:flex-start; gap:3px; width:100%; padding:12px 12px 12px 12px; border:0; background:transparent; color:var(--primary-text-color); font:inherit; text-align:left; cursor:pointer; }
+      .cm-title { font-weight:800; font-size:15px; letter-spacing:.02em; text-transform:uppercase; line-height:1.3; overflow-wrap:anywhere; }
+      .cm-where, .cm-when, .cm-status { font-size:13px; color:var(--secondary-text-color); overflow-wrap:anywhere; }
+      .cm-why { font-size:14px; line-height:1.4; overflow-wrap:anywhere; }
+      .cm-take { font-size:13px; font-weight:600; }
+      .cm-row .outlook-detail { padding:0 12px 12px; }
+      .cm-report { font-size:13px; margin:6px 0; overflow-wrap:anywhere; }
+      .cm-empty { display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:22px 12px; color:var(--secondary-text-color); }
+      .cm-empty strong { color:var(--primary-text-color); font-size:15px; }
+      .cm-empty ha-icon { color:var(--success-color, #4caf72); }
+      .cm-empty-stale strong { color:var(--warning-color, #dca54c); }
+      .cm-background { margin:10px 0 4px; font-size:13px; color:var(--secondary-text-color); }
+      .cm-background summary { cursor:pointer; padding:8px 0; }
+      .cm-background ul { margin:4px 0 8px; padding-left:18px; }
+      .cm-background li { margin:0 0 6px; overflow-wrap:anywhere; }
+      .cm-background h4, .cm-section { margin:10px 0 4px; font-size:13px; color:var(--primary-text-color); }
+      .cm-none { font-size:13px; color:var(--secondary-text-color); }
+      .cm-card a { color:var(--primary-color, #91bca0); text-underline-offset:2px; }
+`;

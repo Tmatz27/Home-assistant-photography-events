@@ -168,17 +168,17 @@ class TestCardEvidenceRegression(unittest.TestCase):
         self.assertIn(future, kept)
         self.assertIn(many_sites[0], kept)
 
-    def test_ordinary_birds_do_not_become_standalone_photography_targets(self):
-        from photography_events import wildlife, events
+    def test_no_bird_becomes_a_standalone_row_and_notable_birds_are_chase_only(self):
+        from photography_events import wildlife, birds
         sightings = wildlife.parse_ebird([
-            test_integration._ebird_entry(comName="Great-tailed Grackle", sciName="Quiscalus mexicanus"),
+            test_integration._ebird_entry(comName="Great-tailed Grackle", sciName="Quiscalus mexicanus", subId="G1"),
             test_integration._ebird_entry(comName="Vermilion Flycatcher", sciName="Pyrocephalus rubinus"),
         ], timezone.utc)
         now = datetime(2026, 3, 20, 20, tzinfo=timezone.utc)
-        found = events.build_wildlife_opportunities(sightings, now)
-        self.assertEqual(len(found), 1)
-        self.assertIn("Vermilion", found[0].title)
-        self.assertEqual(found[0].extra["verification"], "presence_only")
+        views = birds.classify(sightings, now, test_integration.const.DEFAULT_HOME, 6.0)
+        self.assertEqual(views["spectacle"], [])
+        self.assertEqual({row["species"] for row in views["chase"]}, {"Great-tailed Grackle", "Vermilion Flycatcher"},
+                         "eBird notable birds belong to the optional chase list, not the main feed")
         self.assertEqual(len(sightings), 2, "raw evidence is retained for seasonal corroboration")
 
     def test_newer_report_without_url_does_not_inherit_an_old_link(self):

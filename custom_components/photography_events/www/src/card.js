@@ -52,7 +52,7 @@ class PhotographyEventsCard extends HTMLElement {
 
   /** Every entity this card reads, so changes to them (and only them) redraw. */
   _trackedEntities() {
-    return [this._heroEntityId(), this._outlookEntityId()].filter(Boolean);
+    return [this._heroEntityId(), this._outlookEntityId(), this._cantMissEntityId()].filter(Boolean);
   }
 
   _trackedStatesChanged(previous, next) {
@@ -369,8 +369,9 @@ class PhotographyEventsCard extends HTMLElement {
   getCardSize() {
     // A hidden hero should not reserve space in a masonry column.
     if (this._config?.mode === MODE_HERO) {
-      return this._outlookEntityId() ? 3 : this._hass && heroFromState(this._hass.states[this._heroEntityId()]) ? 6 : 1;
+      return this._cantMissEntityId() || this._outlookEntityId() ? 3 : this._hass && heroFromState(this._hass.states[this._heroEntityId()]) ? 6 : 1;
     }
+    if (this._config?.mode === MODE_BIRDS) return 4;
     if (this._config?.mode === MODE_OUTLOOK) return 12;
     const categories = CATEGORY_TOGGLE_KEYS.filter((key) => this._config?.[key] !== false).length;
     return Math.max(4, 2 + categories * 2);

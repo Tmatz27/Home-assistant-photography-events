@@ -427,6 +427,13 @@ OPEN_METEO_HOURLY = (
     "relative_humidity_2m",
     "precipitation_probability",
     "visibility",
+    # Weather as a subject and as a hazard: thunder codes and snowfall feed
+    # watch signals only; temperature feeds the monarch cold-dawn condition;
+    # wind feeds the drone verdict.
+    "weather_code",
+    "snowfall",
+    "temperature_2m",
+    "wind_speed_10m",
 )
 
 
@@ -474,6 +481,8 @@ def build_open_meteo_params(latitude, longitude, days: int = FORECAST_DAYS) -> d
         "hourly": ",".join(OPEN_METEO_HOURLY),
         "forecast_days": str(days),
         "timezone": "UTC",
+        # The drone verdict compares against DJI's rating in m/s.
+        "wind_speed_unit": "ms",
     }
 
 

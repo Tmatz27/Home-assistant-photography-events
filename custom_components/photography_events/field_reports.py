@@ -41,7 +41,7 @@ import html as html_module
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from .const import CATEGORY_BLOOMS, CATEGORY_FOLIAGE
 
@@ -168,7 +168,47 @@ ZONE_HINTS: tuple[tuple[str, str], ...] = (
     ("tahoe", "lake_tahoe"),
     ("hope valley", "lake_tahoe"),
     ("truckee", "lake_tahoe"),
+    # Places the curated phenomena name, mapped to the nearest zone for the
+    # card's grouping. Their precise coordinates are in PLACE_POINTS, which is
+    # what corroboration distance is measured from.
+    ("avila", "piedras_blancas"),
+    ("port san luis", "piedras_blancas"),
+    ("shell beach", "piedras_blancas"),
+    ("pismo", "piedras_blancas"),
+    ("carpinteria", "channel_islands"),
+    ("cachuma", "channel_islands"),
+    ("merced national wildlife refuge", "yosemite_valley"),
+    ("merced nwr", "yosemite_valley"),
 )
+
+# Precise points for places a report can name. A report about Avila placed at
+# the Piedras Blancas zone would sit 70 km from the humpback window it is
+# about; placed here it sits on it.
+PLACE_POINTS: tuple[tuple[str, float, float], ...] = (
+    ("port san luis", 35.1690, -120.7540),
+    ("avila", 35.1800, -120.7320),
+    ("shell beach", 35.1560, -120.6720),
+    ("pismo", 35.1310, -120.6350),
+    ("carpinteria", 34.3890, -119.5020),
+    ("cachuma", 34.5850, -119.9800),
+    ("merced national wildlife refuge", 37.1800, -120.6000),
+    ("merced nwr", 37.1800, -120.6000),
+    ("piedras blancas", 35.6640, -121.2570),
+    ("carrizo", 35.1914, -119.7929),
+    ("bishop creek", 37.2270, -118.6260),
+    ("june lake", 37.7830, -119.0800),
+    ("yosemite valley", 37.7460, -119.5930),
+    ("pinnacles", 36.4870, -121.1950),
+)
+
+
+def place_point(text: str) -> tuple[float, float] | None:
+    """The most specific named place in a text, longest name first."""
+    lowered = (text or "").lower()
+    for name, latitude, longitude in sorted(PLACE_POINTS, key=lambda row: -len(row[0])):
+        if name in lowered:
+            return latitude, longitude
+    return None
 
 REPORT_SOURCES: tuple[dict, ...] = (
     {
@@ -204,6 +244,66 @@ _DROP_BLOCKS = re.compile(r"<(script|style|noscript)\b.*?</\1>", re.IGNORECASE |
 _WHITESPACE = re.compile(r"\s+")
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?])\s+")
 
+_MONTHS = {name: index for index, names in enumerate((
+    ("jan", "january"), ("feb", "february"), ("mar", "march"), ("apr", "april"), ("may",),
+    ("jun", "june"), ("jul", "july"), ("aug", "august"), ("sep", "sept", "september"),
+    ("oct", "october"), ("nov", "november"), ("dec", "december")), start=1) for name in names}
+_NAMED_DATE = re.compile(r"\b(" + "|".join(sorted(_MONTHS, key=len, reverse=True)) +
+                         r")\.?\s+(\d{1,2})(?:st|nd|rd|th)?(?:,?\s+(20\d\d))?\b", re.IGNORECASE)
+_NUMERIC_DATE = re.compile(r"\b(\d{1,2})/(\d{1,2})(?:/(20\d\d|\d\d))?\b")
+_COUNT = re.compile(r"\b(\d{1,3}(?:,\d{3})+|\d+)\s+(?:lesser\s+)?(?:sandhill\s+)?(?:monarchs?|monarch butterflies|butterflies|cranes|geese|eagles|condors|dolphins|elephant seals|pups)\b", re.IGNORECASE)
+
+# How far back an explicitly written date may be and still describe this
+# season's report rather than an archive paragraph.
+MAX_REPORT_AGE_DAYS = 30
+
+
+def explicit_date(text: str, reference: datetime | None):
+    """The date a report itself states, or None.
+
+    Hotline pages and blog posts often carry "Updated Sept. 25" or "9/25". That
+    is the report's own date and may be used as the observation date. The date
+    the page was downloaded may not: it would renew a week-old report every
+    morning. A stated date in the future, or more than a month old, is
+    rejected rather than guessed at.
+    """
+    if reference is None or not text:
+        return None
+    candidates = []
+    for match in _NAMED_DATE.finditer(text):
+        month = _MONTHS[match.group(1).lower()]
+        year = int(match.group(3)) if match.group(3) else reference.year
+        candidates.append((year, month, int(match.group(2)), match.group(3) is None))
+    for match in _NUMERIC_DATE.finditer(text):
+        year = match.group(3)
+        year = (2000 + int(year) if len(year) == 2 else int(year)) if year else reference.year
+        candidates.append((year, int(match.group(1)), int(match.group(2)), match.group(3) is None))
+    found = []
+    for year, month, day, inferred_year in candidates:
+        try:
+            moment = datetime(year, month, day, 12, tzinfo=reference.tzinfo)
+        except ValueError:
+            continue
+        if inferred_year and moment > reference + timedelta(days=1):
+            try:
+                moment = moment.replace(year=year - 1)
+            except ValueError:
+                continue
+        if reference - timedelta(days=MAX_REPORT_AGE_DAYS) <= moment <= reference + timedelta(days=1):
+            found.append(moment)
+    return max(found) if found else None
+
+
+def stated_count(text: str) -> int | None:
+    """The largest number the text gives for a counted subject."""
+    values = []
+    for match in _COUNT.finditer(text or ""):
+        try:
+            values.append(int(match.group(1).replace(",", "")))
+        except ValueError:
+            continue
+    return max(values) if values else None
+
 
 @dataclass
 class FieldReport:
@@ -224,6 +324,8 @@ class FieldReport:
     phenomenon_key: str = ""
     latitude: float | None = None
     longitude: float | None = None
+    # A number the text states for the named subject ("2,300 monarchs").
+    count: int | None = None
 
     def age_label(self, now: datetime) -> str:
         """When the page was *read*, which is all these pages tell us.
@@ -479,5 +581,8 @@ def parse_report(raw_html: str, source: dict, fetched: datetime | None = None) -
                 strength=strength,
                 fetched=fetched,
                 context=heading,
+                # Only a date the report itself states; never the fetch time.
+                observed_at=explicit_date(f"{heading} {text}", fetched),
+                count=stated_count(text),
             )
     return list(best.values())

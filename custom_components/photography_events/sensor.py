@@ -24,6 +24,7 @@ async def async_setup_entry(
             NextOpportunitySensor(coordinator, entry),
             BestSkyScoreSensor(coordinator, entry),
             PlanningOutlookSensor(coordinator, entry),
+            CantMissSensor(coordinator, entry),
         ]
     )
 
@@ -171,4 +172,49 @@ class PlanningOutlookSensor(_BaseSensor):
             "precision_horizon_days": PRECISION_HORIZON_DAYS,
             "truncated": len(self._opportunities) > self.MAX_EVENTS,
             "generated": (self.coordinator.data or {}).get("generated"),
+        }
+
+
+class CantMissSensor(_BaseSensor):
+    """The short list: only what passed the Can't Miss gate this week.
+
+    State is the number of eligible occurrences, which is often zero - and
+    zero is a healthy answer, not an outage. The card reads ``events`` for the
+    ranked rows, ``watch`` and ``signals`` for the collapsed background, and
+    ``birds`` for the optional bird view. The planner sensor keeps the full
+    year; nothing is deleted here, only classified.
+    """
+
+    _attr_name = "Can't miss"
+    _attr_icon = "mdi:camera-marker"
+    _attr_native_unit_of_measurement = "events"
+    _unrecorded_attributes = frozenset({"events", "watch", "signals", "birds", "sources", "preferences"})
+
+    def __init__(self, coordinator, entry) -> None:
+        super().__init__(coordinator, entry, "cant_miss")
+
+    @property
+    def _dashboard(self) -> dict:
+        return (self.coordinator.data or {}).get("cant_miss") or {}
+
+    @property
+    def native_value(self) -> int:
+        return int(self._dashboard.get("eligible_count") or 0)
+
+    @property
+    def extra_state_attributes(self) -> dict:
+        data = self.coordinator.data or {}
+        board = self._dashboard
+        return {
+            "events": board.get("events", []),
+            "headline": board.get("headline"),
+            "show_limit": board.get("show_limit", 5),
+            "suppressed_count": board.get("suppressed_count", 0),
+            "watch": board.get("watch", []),
+            "signals": board.get("signals", []),
+            "signal_count": board.get("signal_count", 0),
+            "birds": board.get("birds", {}),
+            "preferences": data.get("preferences", {}),
+            "sources": data.get("sources", {}),
+            "generated": data.get("generated"),
         }

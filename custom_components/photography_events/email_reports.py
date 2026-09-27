@@ -33,15 +33,21 @@ import logging
 import re
 from datetime import datetime
 
-from .const import CATEGORY_BLOOMS, CATEGORY_FOLIAGE, CATEGORY_MAMMALS, CATEGORY_MARINE, ZONES_BY_ID
+from .const import (
+    CATEGORY_BIRDS, CATEGORY_BLOOMS, CATEGORY_FOLIAGE, CATEGORY_MAMMALS, CATEGORY_MARINE, CATEGORY_RARE,
+    ZONES_BY_ID,
+)
 from .field_reports import (
     BLOOM_SIGNALS,
     FOLIAGE_SIGNALS,
     FieldReport,
     best_sentence,
     build_snippet,
+    explicit_date,
     is_negated,
+    place_point,
     signal_strength,
+    stated_count,
     zones_in,
 )
 
@@ -76,13 +82,47 @@ MARINE_SIGNALS: tuple[tuple[str, int], ...] = (
 MAMMAL_SIGNALS: tuple[tuple[str, int], ...] = (
     ("rut is underway", 18),
     ("bugling", 16),
+    ("sparring", 14),
     ("pupping", 16),
     ("pups on the beach", 16),
+    ("first pup", 16),
     ("bulls fighting", 16),
     ("sows with cubs", 16),
+    ("sow with cubs", 16),
+    ("sow and cub", 16),
     ("herd is", 10),
     ("sighted", 8),
     ("sightings", 8),
+)
+
+# Phenomena that are neither animals nor blooms: monarch clusters, glowing
+# surf, waterfall ice, flow on Horsetail Fall. The same fixed-vocabulary rule
+# applies - a matching phrase can attach a report to a curated phenomenon,
+# never invent one.
+RARE_SIGNALS: tuple[tuple[str, int], ...] = (
+    ("bioluminescence", 18),
+    ("bioluminescent", 18),
+    ("glowing waves", 18),
+    ("frazil ice", 18),
+    ("firefall", 18),
+    ("horsetail fall is flowing", 18),
+    ("moonbow", 16),
+    ("monarchs", 12),
+    ("clusters", 12),
+    ("fresh snow", 12),
+    ("fly-in", 14),
+)
+
+BIRD_SIGNALS: tuple[tuple[str, int], ...] = (
+    ("eagles fishing", 16),
+    ("eagle fishing", 16),
+    ("multiple eagles", 14),
+    ("several eagles", 14),
+    ("condors", 14),
+    ("rushing", 14),
+    ("lift-off", 14),
+    ("thousands of geese", 14),
+    ("thousands of cranes", 14),
 )
 
 SIGNALS_BY_CATEGORY: dict[str, tuple[tuple[str, int], ...]] = {
@@ -90,7 +130,14 @@ SIGNALS_BY_CATEGORY: dict[str, tuple[tuple[str, int], ...]] = {
     CATEGORY_MAMMALS: MAMMAL_SIGNALS,
     CATEGORY_BLOOMS: BLOOM_SIGNALS,
     CATEGORY_FOLIAGE: FOLIAGE_SIGNALS,
+    CATEGORY_RARE: RARE_SIGNALS,
+    CATEGORY_BIRDS: BIRD_SIGNALS,
 }
+
+# Words that date an observation relative to when the message was sent. A
+# daily digest saying "this morning" describes the day it arrived; anything
+# vaguer ("recently", "this week") leaves the observation undated.
+SAME_DAY = re.compile(r"\b(today|this morning|this afternoon|this evening|tonight)\b", re.IGNORECASE)
 
 # Used only when the caller does not say. Ordered most specific first, because
 # a whale newsletter that happens to mention a flower is still a whale
@@ -104,6 +151,15 @@ CATEGORY_HINTS: tuple[tuple[str, str], ...] = (
     (CATEGORY_MAMMALS, "tule elk"),
     (CATEGORY_MAMMALS, "bighorn"),
     (CATEGORY_MAMMALS, "black bear"),
+    (CATEGORY_MAMMALS, "harbor seal"),
+    (CATEGORY_RARE, "monarch"),
+    (CATEGORY_RARE, "bioluminescen"),
+    (CATEGORY_RARE, "frazil"),
+    (CATEGORY_RARE, "firefall"),
+    (CATEGORY_RARE, "moonbow"),
+    (CATEGORY_BIRDS, "eagle"),
+    (CATEGORY_BIRDS, "condor"),
+    (CATEGORY_BIRDS, "grebe"),
     (CATEGORY_FOLIAGE, "fall color"),
     (CATEGORY_FOLIAGE, "autumn colour"),
     (CATEGORY_FOLIAGE, "aspen"),
@@ -204,6 +260,15 @@ def parse_email_report(
 
     snippet = build_snippet(haystack, signals)
     source_id = "email_" + re.sub(r"[^a-z0-9]+", "_", (source_name or "inbox").lower()).strip("_")
+    # The observation date: an explicit date in the text, or the day it was
+    # sent when the text itself says "today"/"this morning". Otherwise None -
+    # arrival time alone never becomes an observation time.
+    observed = explicit_date(haystack, received)
+    if observed is None and received is not None and SAME_DAY.search(haystack):
+        observed = received
+    from .curation import phenomena_named
+    named = phenomena_named(haystack, category)
+    point = place_point(haystack) if not zone_id else None
     return [
         FieldReport(
             source_id=source_id,
@@ -219,6 +284,13 @@ def parse_email_report(
             # makes expiry meaningful here.
             fetched=received,
             context=source_name or "",
+            observed_at=observed,
+            # Only an unambiguous match is recorded; two candidate phenomena
+            # leave the vocabulary matching to the window's own check.
+            phenomenon_key=named[0] if len(named) == 1 else "",
+            count=stated_count(text),
+            latitude=point[0] if point else None,
+            longitude=point[1] if point else None,
         )
-        for zone in zone_ids
+        for zone in zone_ids[:1 if point else None]
     ]

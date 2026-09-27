@@ -21,7 +21,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent / "custom_components" / "photography_events"
 MODULES = ("const", "parks", "astronomy", "weather_scoring", "phenomena", "wildlife",
-           "field_reports", "routing", "verification", "throttle", "events", "spectacles")
+           "field_reports", "routing", "verification", "throttle", "events", "spectacles",
+           "gear", "curation")
 
 
 def load():
@@ -47,6 +48,7 @@ EVIDENCE_LABEL = {
     phenomena.EVIDENCE_COMPUTED: "computed",
     phenomena.EVIDENCE_LIVE: "live",
     phenomena.EVIDENCE_STATIC: "static",
+    phenomena.EVIDENCE_CALENDAR: "calendar_reliable",
 }
 out = print
 
@@ -72,8 +74,15 @@ out()
 out("| Evidence | What the dates rest on | May it raise an alert? |")
 out("| --- | --- | --- |")
 out("| **computed** | Orbital geometry. Verifiable to the minute against any ephemeris. | Yes, on its own. |")
-out("| **live** | A *search season* - when to start watching. The dates alone are an estimate. | Only once a live sighting corroborates it. |")
-out("| **static** | A calendar estimate. No feed anywhere publishes this. | **Never**, at any score. |")
+out("| **calendar_reliable** | A documented, highly repeatable annual cycle published by the site's managers or monitors. | Inside its documented core window only (≤ 40 days, sourced). |")
+out("| **live** | A *search season* - when to start watching. The dates alone are an estimate. | Only once evidence satisfies its trigger policy (species presence is not behaviour). |")
+out("| **static** | A calendar estimate. No feed anywhere publishes this. | Never by date or presence; only a dated, located report of the behaviour itself. |")
+out()
+out("Since 0.16.0 the evidence level is only half the rule. Each curated phenomenon also")
+out("has a **trigger policy** and a **product class** (section 3a), and nothing reaches the")
+out("Can't Miss dashboard without passing a hard gate: curated class, policy satisfied,")
+out("inside seven days, inside the drive limit (planning-only rows are not exempt),")
+out("significance at or above the floor, and no active NWS warning at the place.")
 out()
 out(f"Corroboration means a reported sighting of the named species within "
     f"**{round(phenomena.LIVE_CORROBORATION_KM)} km** in the last "
@@ -216,13 +225,17 @@ out(f"{len(phenomena.PEAK_WINDOWS)} entries. Each carries a background season (i
 out("and a concrete peak window (the only thing that scores).")
 out()
 for evidence, heading, blurb in (
+    (phenomena.EVIDENCE_CALENDAR, "Documented annual cycles",
+     "The core window of a cycle the site's managers publish. Species presence is not needed "
+     "for the behaviour; the tule elk rut additionally needs a recent report near the site "
+     "for the encounter."),
     (phenomena.EVIDENCE_LIVE, "Live-verified windows",
      "These may alert, but only once a sighting corroborates them. Until then they are "
      "shown as watch windows and capped at planning level."),
     (phenomena.EVIDENCE_STATIC, "Estimates nothing can confirm",
-     "**These never alert.** No feed publishes them. They are in the calendar so you can "
-     "plan around them, and they are flagged on the card as estimates - check the "
-     "sources yourself before booking anything."),
+     "**These never alert on a date or on species presence.** No feed publishes them. Only a "
+     "dated, located report of the behaviour itself (for example a sow with cubs) can "
+     "activate one; otherwise they stay in the planner as estimates."),
     (phenomena.EVIDENCE_COMPUTED, "Computed windows", "Geometry. Exact."),
 ):
     group = by_evidence.get(evidence, [])
@@ -250,6 +263,18 @@ for evidence, heading, blurb in (
         out(f"| {window.name}{flag} | {span} | {days} | {window.season_range} | {taxa} | {links} |")
     out()
 
+out("### 3a. Trigger policies and product classes")
+out()
+out(f"Curated in `curation.py`. Significance floor for Can't Miss: **{pkg.curation.SIGNIFICANCE_FLOOR}**.")
+out("Thresholds are sourced or labelled product thresholds; see DISCOVERY_AUDIT.md.")
+out()
+out("| Phenomenon | Significance | Policy | Best class | Why this policy |")
+out("| --- | --- | --- | --- | --- |")
+for item in sorted(pkg.curation.CATALOG.values(), key=lambda d: (-d.significance, d.name)):
+    reason = item.policy_reason.replace("|", "/")
+    out(f"| {item.name} | {item.significance} | `{item.policy}` | {item.product_class.replace('_', ' ')} | {reason} |")
+out()
+
 out("## 4. National parks and monuments")
 out()
 out("Trips rather than evenings: never gated on drive time, never eligible for a")
@@ -275,7 +300,9 @@ out("| --- | --- | --- | --- |")
 rows = [
     ("NOAA NDBC 46011", "Measured offshore significant wave height, period and direction", "none", "30 min"),
     ("CDIP B1500", "Experimental nearshore forecast; run age checked", "none", "3 h"),
-    ("NWS active alerts", "Santa Barbara coastal advisories", "none", "1 h"),
+    ("NWS active alerts (California)", "Safety gate on every Can't Miss row; coastal advisories for swell", "none", "1 h"),
+    ("SunsetWx Sunburst API", "Home sunset/sunrise quality (primary when configured)", "yours, optional",
+     f"every {const.MIN_INTERVAL_SUNSETWX // 60} h"),
     ("NOAA OVATION", "Conservative local aurora model signal", "none", "15 min"),
     ("Condor Express RSS", "Explicitly dated and sized megapod reports only", "none", "3 h"),
     ("CDFW grunion schedule", "Published expected intervals at Santa Barbara", "none", "24 h"),
@@ -283,8 +310,10 @@ rows = [
      f"every {const.MIN_INTERVAL_WEATHER} min"),
     ("Open-Meteo air quality", "Aerosol optical depth and dust - colour saturation", "none",
      f"every {const.MIN_INTERVAL_AIR_QUALITY // 60} h"),
-    ("eBird notable observations", "Rare birds, and crane corroboration", "free, instant",
+    ("eBird notable observations", "Bird Chase list; corroboration", "free, instant",
      f"every {const.MIN_INTERVAL_EBIRD} min"),
+    ("eBird species observations", "Condor, bald eagle, crane and goose counts for bird spectacles", "same key",
+     f"every {const.MIN_INTERVAL_EBIRD_SPECIES // 60} h"),
     ("iNaturalist observations", "Whale, dolphin and mammal corroboration", "none",
      f"every {const.MIN_INTERVAL_INATURALIST} min"),
     ("Theodore Payne Wildflower Hotline", "Whether a bloom is actually happening", "none (scraped)",
@@ -329,7 +358,10 @@ out("  about a day off. Fine for planning, not an ephemeris.")
 out("- Bloom timing depends on winter rainfall and cannot be computed at all. The three")
 out("  hotline scrapers are the only real source, and they describe the past.")
 
-out("\n## Additional special search targets\n")
+out("\n## Search guidance (no calendar rows)\n")
+out("These used to be year-long rows. They are now curated phenomena that only appear when live")
+out("evidence activates them; the guidance is kept here.")
+out()
 for target in pkg.spectacles.WATCH_TARGETS:
     out(f"- **{target[1]}** — {target[6]} Source: {target[7]}")
 out("- **Yosemite moonbows** — spring full-Moon candidate nights; no viewpoint-specific time or live waterfall confirmation.")

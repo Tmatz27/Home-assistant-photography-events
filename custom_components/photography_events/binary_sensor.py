@@ -100,6 +100,13 @@ class PhotographyActionOpportunity(CoordinatorEntity, BinarySensorEntity):
             "evidence": top.extra.get("evidence"),
             "verification": top.extra.get("verification"),
             "verify_urls": top.extra.get("verify_urls"),
+            # Why the Can't Miss gate let this through, in its own terms.
+            "why_now": (top.extra.get("assessment") or {}).get("why_now"),
+            "significance": (top.extra.get("assessment") or {}).get("significance"),
+            "evidence_status": (top.extra.get("assessment") or {}).get("status"),
+            "take": (top.extra.get("gear_plan") or {}).get("take"),
+            "drone": (top.extra.get("gear_plan") or {}).get("drone"),
+            "safety": top.extra.get("safety_summary"),
             "sources": (self.coordinator.data or {}).get("sources", {}),
         }
 

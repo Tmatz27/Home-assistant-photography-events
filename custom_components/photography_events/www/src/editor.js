@@ -112,8 +112,9 @@ class PhotographyEventsCardEditor extends HTMLElement {
           <select data-select="mode">
             ${this._timelineIsDistinct(cfg) ? `
             <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (browser calculator)</option>` : ""}
-            <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Next seven days (compact)</option>
-            <option value="${MODE_OUTLOOK}" ${cfg.mode === MODE_OUTLOOK ? "selected" : ""}>Planning calendar</option>
+            <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Can't miss (next seven days)</option>
+            <option value="${MODE_OUTLOOK}" ${cfg.mode === MODE_OUTLOOK ? "selected" : ""}>Year planner</option>
+            <option value="${MODE_BIRDS}" ${cfg.mode === MODE_BIRDS ? "selected" : ""}>Birds (spectacle, encounter, chase)</option>
           </select>
         </div>
         <div class="hint">${backendMode
@@ -202,20 +203,27 @@ class PhotographyEventsCardEditor extends HTMLElement {
    */
   _backendSectionsHtml(cfg) {
     const hero = cfg.mode === MODE_HERO;
+    const birds = cfg.mode === MODE_BIRDS;
     return `
       <div class="section">
-        <div class="title">Planning sensor</div>
+        <div class="title">${hero || birds ? "Can't miss sensor" : "Planning sensor"}</div>
         <div class="hint">Leave as auto-detect unless you run more than one Photography Events entry.</div>
         <div class="row"><span class="label">Entity</span>
-          <select data-select="outlook_entity">${this._entityOptionsHtml("sensor.", "planning_outlook", cfg.outlook_entity)}</select>
+          ${hero || birds
+            ? `<select data-select="cant_miss_entity">${this._entityOptionsHtml("sensor.", "can_t_miss", cfg.cant_miss_entity)}</select>`
+            : `<select data-select="outlook_entity">${this._entityOptionsHtml("sensor.", "planning_outlook", cfg.outlook_entity)}</select>`}
         </div>
       </div>
 
-      ${hero ? `
+      ${birds ? `
         <div class="section">
-          <div class="title">Next seven days</div>
+          <div class="title">Birds</div>
+          <div class="hint">Spectacles (behaviour or concentrations) first, then repeated encounters, then a collapsed Bird Chase list of notable individual birds. Needs an eBird key in the integration.</div>
+        </div>` : hero ? `
+        <div class="section">
+          <div class="title">Can't miss</div>
           ${this._toggleRow("show_gear", "Show the gear recommendation")}
-          <div class="hint">One brief per event, with its dates, locations and details. The planning sensor supplies the whole week.</div>
+          <div class="hint">Only what passed the integration's Can't Miss gate this week, usually zero to five rows. Everything else stays in the year planner and a collapsed background list.</div>
         </div>` : `
         <div class="section">
           <div class="title">Range</div>

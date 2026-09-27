@@ -17,6 +17,12 @@ CONF_NPS_API_KEY: Final = "nps_api_key"
 CONF_ROUTING_MODE: Final = "routing_mode"
 CONF_ENABLE_FIELD_REPORTS: Final = "enable_field_reports"
 CONF_ENABLED_CATEGORIES: Final = "enabled_categories"
+# Optional SunsetWx (Sunburst API) client credentials. With them, sunset and
+# sunrise quality comes from a purpose-built model; without, the local model.
+CONF_SUNSETWX_CLIENT_ID: Final = "sunsetwx_client_id"
+CONF_SUNSETWX_CLIENT_SECRET: Final = "sunsetwx_client_secret"
+MIN_INTERVAL_SUNSETWX: Final = 180
+MIN_INTERVAL_EBIRD_SPECIES: Final = 360
 
 DEFAULT_MAX_DRIVE_HOURS: Final = 6.0
 
@@ -264,6 +270,7 @@ OPEN_METEO_URL: Final = "https://api.open-meteo.com/v1/forecast"
 # and no weather forecast carries it.
 OPEN_METEO_AIR_QUALITY_URL: Final = "https://air-quality-api.open-meteo.com/v1/air-quality"
 EBIRD_NOTABLE_URL: Final = "https://api.ebird.org/v2/data/obs/{region}/recent/notable"
+EBIRD_SPECIES_URL: Final = "https://api.ebird.org/v2/data/obs/{region}/recent/{species}"
 INATURALIST_URL: Final = "https://api.inaturalist.org/v1/observations"
 
 # Marine species tracked through iNaturalist, keyed by taxon name.

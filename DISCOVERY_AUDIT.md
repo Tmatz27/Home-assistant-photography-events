@@ -62,7 +62,7 @@ phenomena exist within roughly six hours of Vandenberg SFB (34.7420,
 | Meteor peak, lunar eclipse, aurora nowcast | **Direct computed Opportunity**, still gated on significance and conditions |
 | Milky Way night | **Planner** by default; Can't Miss only on a drop-everything night |
 | Park season | **Planning only**, never Can't Miss |
-| Moonbow sky candidate | **Planner / watch**; Can't Miss only with a dated flow/spray report plus forecast |
+| Moonbow sky candidate | **Planner / watch**. A dated flow report makes a supported candidate (watch); Can't Miss would need a viewpoint-validated prediction, which no consumable source supplies yet |
 | Bioluminescent-surf year row | **Removed** as a row; kept as a phenomenon that activates only on a recent credible report |
 | Waterfowl / condor year rows | **Removed** as rows; replaced by bird-view classification from live signals |
 | Unmatched species presence (fin whale, harbor porpoise…) | **Background signal** |
@@ -130,7 +130,7 @@ encounter, access, condition quality, actionable, eligible, priority).
 
 | Key | Phenomenon | Old evidence | New policy | Product class |
 | --- | --- | --- | --- | --- |
-| horsetail_firefall | Yosemite firefall | static | conditions_required (dated flow report + clear west forecast) | Can't Miss when met; else planner |
+| horsetail_firefall | Yosemite firefall | static | conditions_required (dated water report + local sunset cloud + upstream light path + no closure of the viewing area) | Can't Miss when met; else planner/watch |
 | grunion_run | Grunion runs | static + CDFW schedule | live_confirmation_required | planner (watch) |
 | pismo_monarchs | Pismo monarch roost | live (species) | aggregation_required + conditions_required | Can't Miss when met |
 | sandhill_crane_flyin | Crane fly-in | live + behaviour | calendar_reliable (USFWS) at Merced NWR core window | Bird Spectacle |
@@ -152,7 +152,7 @@ encounter, access, condition quality, actionable, eligible, priority).
 | eclipses | Lunar/solar | computed | computed | total lunar Can't Miss; others planner |
 | aurora | Local OVATION | model | conditions_required (nowcast) | Can't Miss |
 | exceptional swell | Waves | measured/forecast | forecast_plus_confirmation | Can't Miss when measured |
-| moonbow | Yosemite moonbow | computed sky candidate | conditions_required (dated spray report + forecast) | planner unless met |
+| moonbow | Yosemite moonbow | computed sky candidate | conditions_required; actionable only when viewpoint-validated (not available) | planner / watch |
 | dolphin megapod | Operator report | report | aggregation_required | Can't Miss |
 | bioluminescent surf | Watch row | watch | live_confirmation_required + darkness + moon | Can't Miss only on report |
 | waterfowl flights | Watch row | watch | count_threshold / behaviour report | Bird Spectacle |

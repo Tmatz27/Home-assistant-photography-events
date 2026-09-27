@@ -11,10 +11,10 @@ successful answer. [Release notes](RELEASE_NOTES.md) · [Discovery audit](DISCOV
 
 | View | What it holds | How something gets there |
 | --- | --- | --- |
-| **Can't Miss** (`mode: action_hero`, the default) | Usually 0-5 rows for the next seven days | Passes a hard gate: a curated phenomenon, its trigger policy satisfied, inside the drive limit, significance at or above the floor, no NWS warning at the place. Then ranked. |
-| **Planner** (`mode: calendar_outlook`) | Everything with a date: seasons, parks, full Moons, tides, watch windows, the Can't Miss rows too | Classified, never deleted. Long trips are listed beyond the drive limit here. |
-| **Bird Spectacle** (`mode: birds`) | Iconic birds doing something: condors together, eagles fishing, the crane fly-in | Iconic subject + credible encounter + behaviour or concentration. May also reach Can't Miss. |
-| **Bird Encounter / Bird Chase** (`mode: birds`) | Repeated iconic-bird reports at a public site; notable individual birds | Encounter: repeated reports. Chase: eBird notable, ranked by how findable it still is. Never on Can't Miss. |
+| **Can't Miss** (`mode: action_hero`, the default) | Usually 0-5 rows for the next seven days | Passes a hard gate: a curated phenomenon, its trigger policy and place-specific conditions satisfied, inside the drive limit, significance at or above the floor, its *required* data sources current, and NWS safety **checked** at the place with no blocking warning. Then ranked. A row that needs travel but whose safety cannot be checked is listed as **held**, never as clear. |
+| **Planner** (`mode: calendar_outlook`) | Everything with a date: seasons, parks, full Moons (with their full rise/set/twilight geometry), published King Tide dates, NOAA minus tides, watch windows, the Can't Miss rows too | Classified, never deleted. Long trips are listed beyond the drive limit here. |
+| **Bird Spectacle** (`mode: birds`) | Iconic birds doing something: condors together, eagles fishing, the crane fly-in | A bird-spectacle phenomenon whose evidence policy is met, inside the drive limit and the next seven days - classified from the same rows as Can't Miss, so the Merced crane fly-in appears in both. |
+| **Bird Encounter / Bird Chase** (`mode: birds`) | Repeated iconic-bird reports at a public site; notable individual birds | Encounter: repeated reports. Chase: eBird notable, ranked by how findable it still is (a ranking, not a probability). Both inside the drive limit; never on Can't Miss. |
 | **Background signals** | One collapsed section on the Can't Miss card | Sightings, undated reports, forecasts, presence without behaviour. A sighting is a signal, not an event. |
 
 The data flow is **signal → phenomenon → opportunity**. Signals (`signals.py`)
@@ -24,23 +24,62 @@ phenomena at a time and place; `eligibility.py` gives each separate
 significance, confidence, urgency, encounter, access and condition-quality
 values, then the gate decides. One score no longer pretends to be all of them.
 
-### Gear from your bag
+### Gear: your bag, what is worth adding, what is required
 
-Recommendations name the owned kit - Sony A7R IV, FE 16-35mm GM, FE 70-200mm GM
-II, FE 200-600mm G, the 2x teleconverter, DJI Osmo Pocket 3 and DJI Mini 3 -
-with a *take / optional / skip* split. The 2x is optional at most (it costs two
-stops and autofocus; an APS-C crop of the 61 MP file often does as well). The
-drone verdict says **Prohibited** in national parks, national wildlife refuges
-and under Vandenberg's restricted airspace, **not appropriate** over wildlife,
-and **not safe** above its published 10.7 m/s wind rating.
+*Take / optional / skip* only ever name the owned kit - Sony A7R IV, FE 16-35mm
+GM, FE 70-200mm GM II, FE 200-600mm G, the 2x teleconverter, DJI Osmo Pocket 3
+and DJI Mini 3. The 2x is optional at most (it costs two stops and autofocus;
+an APS-C crop of the 61 MP file often does as well). Two separate lists sit
+beside them and are never mixed in:
+
+- **Worth adding or renting** - at most two unowned items, only where they make
+  a material difference, each with its reason: the FE 1.4x teleconverter for
+  eagles and condors; a 14mm f/1.8 GM or 20mm f/1.8 G for Milky Way, meteors,
+  aurora, moonbows and glowing surf; a dew heater; a rain cover for storm surf.
+- **Required** - safety equipment: a certified (ISO 12312-2) solar filter over
+  the **front** of the lens and eclipse glasses for any solar eclipse (only
+  totality, inside the path, is ever unfiltered; ND filters and polarisers are
+  never safe), and a red headlamp on a night beach or at the falls.
+
+The magnetic filter set you own is not declared yet, so nothing recommends a
+filter as owned. The drone verdict says **Prohibited** in national parks,
+national wildlife refuges and under Vandenberg's restricted airspace, **not
+appropriate** over wildlife, and **not safe** above its published 10.7 m/s wind
+rating.
 
 ### Sunsets are a home feature
 
 Only tonight's sunset and tomorrow's sunrise at home are assessed. With
-optional SunsetWx client credentials, SunsetWx's forecast is primary and only
-its top tier ("Great") reaches Can't Miss; the built-in model is the fallback
-and a comparison. A provider percentage is its forecast score, never presented
-as a probability.
+optional SunsetWx client credentials, SunsetWx's forecast is used while it is
+healthy and under six hours old, and only its top tier ("Great") reaches Can't
+Miss. When SunsetWx fails or goes stale, the built-in model decides on its own
+terms (a modelled light path and the week's standout) and the row says
+"SunsetWx unavailable; the built-in local model decided". Air quality only
+supports the score; its outage never removes a sunset. A provider percentage is
+its forecast score, never presented as a probability.
+
+### Safety: checked, caution, unsafe, unknown
+
+Every row is checked against NWS active alerts for its place and its exposure
+(home, beach, coastal overlook, boat, mountain, desert). Severe thunderstorm,
+flash flood, winter storm, fire, tsunami, extreme heat and similar warnings
+make it **unsafe**; advisories and watches, and a Red Flag Warning (fire
+*weather*, not a fire), are **caution** with the instruction they imply. A High
+Surf Warning blocks a night on the beach and turns an exceptional-swell row into
+"high, set-back ground only - never beaches, rocks or jetties". If the alert
+feed fails or is more than three hours old, or the place is not matched to an
+NWS county, safety is **unknown**: rows that need travel are held; the planner
+still lists them. Marine-zone warnings are not matched, so boat trips always say
+to check the coastal waters forecast.
+
+### Tides: published dates versus predictions
+
+King Tide rows appear for every published California Coastal Commission window
+of the season as soon as it is published - as planning dates. Exact times,
+heights, daylight/twilight and buoy swell are attached only once NOAA
+predictions cover those days (the integration fetches about 45 days ahead).
+Minus tides are operational NOAA predictions only, so they appear at most about
+45 days out; nothing here predicts a year of low tides.
 
 
 ![Photography Events](banner.svg)

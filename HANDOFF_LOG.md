@@ -95,3 +95,16 @@ Implemented (see RELEASE_NOTES.md for the user-facing summary):
 Validation: 288 portable Python tests; 27 real Home Assistant contract tests against HA 2024.11.3 in a local venv (Python 3.12); 112 JavaScript tests; pyflakes clean; card build and version checks pass. Browser checks in BROWSER_VALIDATION.md. Real HA caught one regression during the work (the `_build` return contract) which was fixed before commit.
 
 Not verified: no live network access to any data host from this container (all returned blocked), so SunsetWx, the eBird species endpoint and the all-California NWS alert shape were written against documentation and published client libraries, not a live response. The user's installed Home Assistant was not available. See BACKLOG.md for remaining work.
+
+
+## 2026-09-27: 0.16.0 hardening pass (same version; never tagged)
+
+The user supplied a 15-item correction brief (trust over coverage: "watch it, plan for it, or show nothing"). Version kept at 0.16.0 because tags stop at v0.15.0 and `main` is still 0.15.0. No Phase 2 work (Docker, databases, moving collection out of HA) was started; the new logic is in pure modules (`conditions.py`, `source_health.py`, `weather_hazards.py`, `eligibility.py`, `gear.py`, `lunar.py`, `birds.py`).
+
+Implemented: source roles (required/preferred/optional) with visible fallback; NWS safe/caution/unsafe/unknown by exposure with held travel rows; fresh snow = dated report + current clearing forecast; moonbow supported-candidate vs viewpoint-validated; firefall evening conditions; per-phenomenon evidence freshness; orca spatial clustering and operator reports; monarch dawn at the grove; King Tide published-date rows with NOAA enrichment; grunion nearest-station fix; bird views from the shared classification with drive limits; gear worth-adding and required lists; solar-eclipse profiles; planner Moon geometry and gear. Details: CHANGELOG.md and RELEASE_NOTES.md.
+
+Bugs found beyond the brief and fixed: the Can't Miss sensor did not publish `held`; solar eclipses used the lunar gear profile; several lunar fields (including `sunset`) never reached the payload; numeric fractions ("1/2 mile") could become report dates; tides were fetched only when rare phenomena were enabled.
+
+Validation: 394 Python tests including 28 real Home Assistant contracts (HA 2024.11.3, Python 3.12 venv; the portable run skips those 28), 115 JavaScript tests, pyflakes clean, card build and version checks pass, TRACKING.md regenerated. Browser checks in BROWSER_VALIDATION.md.
+
+Still not live-verified from this container: SunsetWx login/quality, the eBird species endpoint, the statewide NWS alert payload, Friends of the Elephant Seal's current page, Condor Express orca wording. The user's Home Assistant instance was not used.

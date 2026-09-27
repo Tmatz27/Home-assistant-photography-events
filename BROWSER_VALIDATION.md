@@ -34,3 +34,12 @@ Verified at all three:
 - No page errors.
 
 A contrast issue was found and fixed: default-blue links in the background and bird lists were hard to read on the dark theme; they now use the theme's primary colour.
+
+### 0.16.0 hardening pass — same day, same three viewports
+
+The fixture gained a synthetic solar-eclipse row (required kit, caution state, fallback note, condition states) and a "Toggle NWS outage (held)" control. Verified at desktop, phone and HA-Android widths:
+- The collapsed eclipse row shows "Required: Certified solar filter … over the FRONT of the lens" and a "Caution ·" status prefix.
+- Its "Gear & technique" section lists Required and Safety first, then the owned Take/Optional/Skip, and "Worth adding or renting (not in your bag)" last and separately labelled.
+- Evidence shows "Fallback in use" and each condition state as its own row.
+- With the alert feed "down", the card says "Nothing cleared to recommend: safety could not be checked for the rows held below." and lists the held rows with their reason; it does not show the green "Nothing worth changing plans" state.
+- No horizontal overflow in any of these states; no page errors.

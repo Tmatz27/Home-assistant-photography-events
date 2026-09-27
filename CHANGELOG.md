@@ -22,6 +22,20 @@ Regret prevention instead of an encyclopedia. See RELEASE_NOTES.md and DISCOVERY
 - Card: Can't Miss view (≤5 rows, healthy empty state, collapsed background signals), `birds` mode, planner badges; new browser fixture `tests/cant-miss-browser-fixture.html`.
 - iNaturalist corroboration now covers every curated window, not just the coast.
 
+Hardening pass before release (same version; 0.16.0 was never tagged):
+
+- Source roles (`source_health.dependency_roles`): a *required* source outage blocks Can't Miss; a *preferred* one falls back visibly (SunsetWx → local model); *optional* sources (air quality, sighting feeds) only annotate. A failing or >6 h old SunsetWx forecast is no longer used.
+- NWS safety has four states (`safe`, `caution`, `unsafe`, `unknown`) per exposure (home, beach, coastal, boat, mountain, desert). Unknown safety holds travel rows (`held` on the Can't Miss sensor) instead of reading as clear; alerts older than 3 h are unknown. Reviewed warning list; Red Flag is caution; a High Surf Warning blocks beaches and restricts swell viewpoints.
+- New `conditions.py`: fresh snow needs a dated report *and* a current clearing forecast at the same place; firefall checks the evening's local sky, the upstream light path, a dated water report and reported closures; the monarch dawn is read at the Pismo grove forecast point, never at home.
+- Moonbow: a flow report makes a *supported candidate* (watch). Only a viewpoint-validated prediction could make it actionable; none can be consumed yet.
+- Per-phenomenon evidence freshness (product thresholds, SOURCE_VALIDATION.md).
+- Orca presence clusters reports within 25 km; one observation, even research grade, stays a signal; a dated operator report qualifies. Orcas hunting subsumes orca presence.
+- King Tide rows for every published window from day one, enriched by NOAA times, heights, light and buoy swell inside the prediction horizon; tides fetched when waves are enabled. Fixed: the grunion hour used the highest of four merged stations instead of the beach's own.
+- Bird Spectacle is classified from the assessed rows (the Merced crane row now appears there), and every bird list obeys the drive limit.
+- Gear plans add *worth adding/renting* (unowned, at most two, with reasons) and *required* safety kit; solar eclipses always require a front-mounted certified filter and only totality removes it. Fixed: solar eclipses used the lunar-eclipse profile.
+- Planner detail shows the full Moon geometry and gear plan; lunar `sunset`, `moonset_azimuth`, `civil_dawn`, `supermoon_nolle`, `size_rank` and related fields were missing from the payload.
+- Fixed: numeric fractions ("1/2 mile offshore") could be read as a report date.
+
 ## 0.15.0
 
 Four changes, all from watching the cards in use.

@@ -188,7 +188,7 @@ class CantMissSensor(_BaseSensor):
     _attr_name = "Can't miss"
     _attr_icon = "mdi:camera-marker"
     _attr_native_unit_of_measurement = "events"
-    _unrecorded_attributes = frozenset({"events", "watch", "signals", "birds", "sources", "preferences"})
+    _unrecorded_attributes = frozenset({"events", "watch", "held", "signals", "birds", "sources", "preferences"})
 
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator, entry, "cant_miss")
@@ -211,6 +211,8 @@ class CantMissSensor(_BaseSensor):
             "show_limit": board.get("show_limit", 5),
             "suppressed_count": board.get("suppressed_count", 0),
             "watch": board.get("watch", []),
+            # Rows held because safety could not be checked; never dropped silently.
+            "held": board.get("held", []),
             "signals": board.get("signals", []),
             "signal_count": board.get("signal_count", 0),
             "birds": board.get("birds", {}),

@@ -39,9 +39,13 @@ an admitted unknown, every time.
 - A raw sighting must never become a row. Reports merge into the phenomenon they describe (fixed vocabulary, `curation.phenomena_named`); only unmatched hotline reports become planner rows. Duplicate rows for one phenomenon are a bug.
 - The Can't Miss drive gate is separate from the planner's `within_drive`; `planning_only` must not bypass it.
 - An observation date comes from the report's own text (an explicit date, or "today/this morning" in an email). Download or arrival time never does.
-- NWS warnings at a place block it from Can't Miss; a failed alert feed says "unavailable", never "all clear". Weather subjects are watch signals until observed.
-- Sunsets are assessed at home only. SunsetWx is primary when configured; its percentage is never presented as a probability.
-- Gear advice names only the owned kit (`gear.py`); the 2x teleconverter is never the default; the drone verdict follows land status, wildlife and wind.
+- Safety is `safe`/`caution`/`unsafe`/`unknown` per place and curated `exposure` (`weather_hazards.HAZARDS`). Unknown is never safe: a travel row with unknown safety is *held* (`held` on the Can't Miss sensor), not dropped and not recommended. A failed or >3 h old alert feed is unknown. Weather subjects are watch signals until observed.
+- Source roles (`source_health.dependency_roles`): only a *required* source's outage blocks; *preferred* sources fall back visibly (SunsetWx → local model); *optional* sources annotate. Do not go back to "any degraded source blocks".
+- Sunsets are assessed at home only. SunsetWx is primary while healthy and <6 h old; its percentage is never presented as a probability.
+- Place-specific conditions live in `conditions.py` and are read at the place (Pismo grove forecast point, Yosemite evening sky and light path). Never borrow the home forecast for a condition.
+- Gear: take/optional/skip name only the owned kit; `add` names unowned kit with a reason (at most two); `required` is safety kit. Every solar eclipse requires a front-mounted certified filter; only totality removes it. The 2x teleconverter is never the default.
+- Report freshness is per phenomenon (`PhenomenonDefinition.evidence_days`, capped at the 14-day corroboration limit): whales and glowing surf 3 days, snow 2, condors and foliage 7, seals, cranes and monarch counts 14.
+- Moonbow: a flow report is a *supported candidate*; only `viewpoint_validated` is actionable and nothing produces it yet. Orca presence needs a 25 km cluster of ≥2 observers or a dated operator report; one observation is a signal.
 - New thresholds must be sourced or labelled as product thresholds in `curation.py` and SOURCE_VALIDATION.md.
 - `_build` returns a list (real-HA contract); signals and bird views live on `_last_signals` / `_last_birds`. HA contract tests were run locally with a Python 3.12 venv; HA 2024.11 does not install on Python 3.11.
 
@@ -285,10 +289,11 @@ yet.").
 | `curation.py` | Curated phenomena: significance, trigger policy, product class, behaviour vocabulary, land status, ethics, safety. |
 | `eligibility.py` | The Can't Miss gate, separate assessment fields, dashboard assembly, evidence merging. |
 | `birds.py` | Bird Spectacle / Encounter / Chase; orca exceptional presence. |
-| `lunar.py` | Ranked full Moons with horizon geometry; King Tide and minus-tide planner rows. |
+| `lunar.py` | Ranked full Moons with horizon geometry; King Tide rows from published dates (NOAA-enriched in range) and NOAA minus tides. |
 | `sunburst.py` | SunsetWx request building and parsing. |
-| `weather_hazards.py` | NWS warning gate; forecast watch signals; monarch dawn temperature. |
-| `gear.py` | Owned-kit packing plans, teleconverter tradeoffs, drone verdicts. |
+| `weather_hazards.py` | NWS safety states by exposure; forecast watch signals. |
+| `conditions.py` | Place-specific conditions: snow clearing, firefall evening, monarch dawn at the grove. Pure. |
+| `gear.py` | Owned-kit packing plans, worth-adding and required safety kit, teleconverter tradeoffs, drone verdicts. |
 | `www/photography-events-card.js` | Four modes: `action_hero` (Can't Miss), `calendar_outlook`, `birds`, timeline. Generated vanilla artifact; sources under `www/src/`, assembled by `scripts/build-card.mjs`. |
 | `tools/generate_tracking_inventory.py` | Generates `TRACKING.md` from the code so the two cannot drift. |
 

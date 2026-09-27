@@ -76,16 +76,30 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
         start = NOW + timedelta(days=days, hours=2)
         # A curated, gate-passing phenomenon: since 0.16.0 only an eligible
         # Can't Miss occurrence may notify or turn the action sensor on.
+        # Located at Carrizo Plain so the NWS safety check can place it: an
+        # unplaceable travel row is held, not recommended (0.16.0).
         return Opportunity(key, "Milky Way core", "astronomy", "test", "Test location", start,
                            start + timedelta(hours=2), 95, "Calculated window", 1,
                            extra={"verification": "computed", "evidence_state": "computed",
                                   "cloud_is_forecast": True, "cloud_cover": 5},
-                           roll=key, phenomenon="milky_way")
+                           latitude=35.191, longitude=-119.793, roll=key, phenomenon="milky_way")
 
     def fake_cycle(self, opportunities=None):
         self.coordinator._fetch_forecasts = AsyncMock(return_value={"test": {"local": {}, "upstream": {}}})
         self.coordinator._fetch_aurora = AsyncMock(return_value={"coordinates": []})
         self.coordinator._build = AsyncMock(return_value=opportunities or [])
+        self.coordinator._fetch_surf_alerts = AsyncMock(return_value=[])
+
+    async def test_unchecked_safety_holds_travel_instead_of_recommending_it(self):
+        from custom_components.photography_events.sensor import CantMissSensor
+        self.fake_cycle([self.opportunity()])
+        self.coordinator._fetch_surf_alerts.side_effect = ValueError("NWS alerts unavailable")
+        self.coordinator.data = await self.coordinator._async_update_data()
+        sensor = CantMissSensor(self.coordinator, self.entry)
+        self.assertEqual(sensor.native_value, 0)
+        self.assertEqual([row["title"] for row in sensor.extra_state_attributes["held"]], ["Milky Way core"])
+        self.assertNotEqual(sensor.extra_state_attributes["headline"], "Nothing worth changing plans for this week.")
+        self.assertIsNone(self.coordinator.data["top_action"], "unknown safety cannot raise a drop-everything")
 
     async def test_one_source_failure_preserves_cycle_and_marks_affected_event(self):
         self.fake_cycle([self.opportunity()])

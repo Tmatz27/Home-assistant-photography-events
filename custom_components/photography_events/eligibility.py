@@ -14,9 +14,15 @@ gate before any ranking**:
 4. Is it within the Can't Miss drive limit? ``planning_only`` does not exempt
    anything here; that exemption belongs to the year planner alone.
 5. Does it matter enough (significance floor)?
-6. Is it safe? An active NWS warning where it is removes it outright.
+6. Is it safe? An active NWS warning where it is removes it outright; a row
+   that needs travel and whose safety *cannot be checked* (alert feed down,
+   place not matched) is held, never presented as clear.
+7. Are the sources its condition depends on working? Only a *required*
+   source's outage blocks; a preferred source with a fallback (SunsetWx ->
+   local model) and optional supporting sources (air quality, sightings) are
+   shown as degraded instead.
 
-Only what passes all six is ranked, by a priority derived from the separate
+Only what passes all seven is ranked, by a priority derived from the separate
 significance, confidence and urgency. An empty result is a healthy answer:
 "Nothing worth changing plans for this week."
 """
@@ -25,7 +31,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
-from . import curation, gear, weather_hazards
+from . import conditions, curation, gear, weather_hazards
 from .curation import (
     CLASS_BIRD_CHASE, CLASS_BIRD_ENCOUNTER, CLASS_BIRD_SPECTACLE, CLASS_CANT_MISS, CLASS_PLANNER,
     CLASS_WATCH, SIGNIFICANCE_FLOOR,
@@ -38,7 +44,7 @@ WATCH_DAYS = 14
 CONFIDENCE = {
     "computed": 90, "measured": 90, "behavior_confirmed": 80, "calendar_presence": 78,
     "calendar": 70, "nowcast": 70, "repeated_presence": 70, "forecast": 60, "schedule": 55,
-    "computed_candidate": 45, "presence_only": 40, "reported_undated": 35, "watching": 20,
+    "computed_candidate": 45, "candidate_supported": 50, "viewpoint_validated": 75, "presence_only": 40, "reported_undated": 35, "watching": 20,
     "unverified": 15, "season": 10,
 }
 BASIS = {
@@ -46,10 +52,13 @@ BASIS = {
     "calendar_presence": "Documented annual cycle, recent report nearby", "calendar": "Documented annual cycle",
     "nowcast": "Model nowcast", "repeated_presence": "Repeated recent reports", "forecast": "Forecast",
     "schedule": "Published schedule", "computed_candidate": "Calculated sky candidate only",
+    "candidate_supported": "Sky candidate with a dated flow report; viewpoint not validated",
+    "viewpoint_validated": "Viewpoint-validated prediction",
     "presence_only": "Species reported; behaviour unconfirmed", "reported_undated": "Reported, date unknown",
     "watching": "Watching - nothing reported yet", "unverified": "Estimate", "season": "Season",
 }
-WATCH_STATES = frozenset({"presence_only", "reported_undated", "watching", "forecast", "computed_candidate", "calendar"})
+WATCH_STATES = frozenset({"presence_only", "reported_undated", "watching", "forecast", "computed_candidate", "calendar",
+                          "candidate_supported"})
 
 
 def _time(value):
@@ -118,12 +127,36 @@ def _conditions(item, definition, now) -> tuple[bool, str]:
     if key == "pismo_monarchs":
         temp = extra.get("dawn_temp_f")
         if temp is None:
-            return False, "no dawn temperature forecast to confirm the colony stays clustered"
-        return temp <= 55, f"dawn forecast {temp:.0f} °F; monarchs fly above about 55 °F (Xerces)"
+            return False, "no dawn forecast at the grove to say the clusters will still be hanging"
+        return (temp <= conditions.MONARCH_DAWN_MAX_F,
+                f"dawn forecast {temp:.0f} °F at the grove; product heuristic from Xerces: monarchs generally cannot fly below about 55 °F")
     if key == "bioluminescent_surf":
         moon = extra.get("moon_illumination")
         return (moon is not None and moon < 0.5, "Moon too bright for glowing surf" if moon is not None else "night geometry unknown")
-    if key in ("horsetail_firefall", "moonbow"):
+    if key == "fresh_snow_clearing":
+        clearing = _time(extra.get("clearing_at"))
+        if clearing is None:
+            return False, "snow reported, but no clearing forecast at this place in the next 48 h"
+        if clearing + timedelta(hours=conditions.CLEARING_WINDOW_HOURS) < now:
+            return False, "the forecast clearing has passed"
+        return True, ""
+    if key == "horsetail_firefall":
+        if extra.get("access_blocked"):
+            return False, f"access: {extra['access_blocked']}"
+        if not extra.get("firefall_sunset"):
+            return False, "no sunset inside the alignment window this week"
+        cloud = extra.get("cloud_cover")
+        if cloud is None or extra.get("cloud_is_forecast") is not True:
+            return False, "no clear-sky forecast for sunset at Yosemite yet"
+        if cloud > conditions.FIREFALL_MAX_CLOUD:
+            return False, f"{cloud:.0f}% cloud forecast at sunset"
+        gate = extra.get("light_path_gate")
+        if gate is None:
+            return False, "western light path not modelled"
+        if gate < conditions.FIREFALL_MIN_LIGHT_GATE:
+            return False, "cloud upstream blocks the sunset light"
+        return True, ""
+    if key == "moonbow":
         cloud = extra.get("cloud_cover")
         if cloud is None or extra.get("cloud_is_forecast") is not True:
             return False, "no clear-sky forecast yet"
@@ -136,10 +169,12 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
     """Separate significance, confidence, urgency and eligibility for one row."""
     definition = curation.definition(item.phenomenon, item.category)
     state = item.extra.get("evidence_state") or ("season" if item.planning_only else "unverified")
-    safety = weather_hazards.safety(item, alerts, now)
+    safety = weather_hazards.safety(item, alerts, now,
+                                    exposure=definition.exposure if definition else weather_hazards.EXPOSURE_GENERAL)
     urgency, urgency_label = _urgency(item, now)
     blockers: list[str] = []
 
+    awaiting_conditions = False
     if definition is None:
         significance, product_class, actionable = 40, CLASS_PLANNER, False
         blockers.append("not a curated phenomenon")
@@ -158,6 +193,8 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
             ok, why = _conditions(item, definition, now)
             if not ok:
                 actionable = False
+                # Evidence in hand, conditions not: exactly what a watch is.
+                awaiting_conditions = state in ("behavior_confirmed", "measured")
                 blockers.append(why)
         if significance < SIGNIFICANCE_FLOOR:
             blockers.append("significance below the Can't Miss floor")
@@ -172,18 +209,27 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
         limit = min(limit, sunset_drive_hours)
     if item.drive_hours is not None and item.drive_hours > limit:
         blockers.append(f"beyond the {limit:g} h Can't Miss drive limit")
+    # A source this phenomenon's condition needs is down or stale: its last
+    # value is not a current assessment. Preferred and optional sources only
+    # annotate (source_health.dependency_roles).
+    required = item.extra.get("degraded_required") or []
+    if required:
+        blockers.append("required source unavailable: " + ", ".join(required))
     if safety["unsafe"]:
         blockers.append(safety["summary"])
-    # A forecast from a feed that stopped updating is not a current forecast.
-    if state == "forecast" and item.extra.get("degraded_sources"):
-        blockers.append("the forecast feed behind this is stale or failing")
+    held = False
+    if safety["state"] == weather_hazards.STATE_UNKNOWN and safety["travel"]:
+        # Unknown is not safe. Hold the trip; the planner still lists it.
+        held = not blockers
+        blockers.append(safety["summary"])
 
     eligible = not blockers
     if eligible:
         presentation = CLASS_CANT_MISS
     elif product_class in (CLASS_BIRD_SPECTACLE, CLASS_BIRD_ENCOUNTER, CLASS_BIRD_CHASE):
         presentation = product_class
-    elif state in WATCH_STATES and not item.planning_only or state in ("presence_only", "reported_undated"):
+    elif (state in WATCH_STATES and not item.planning_only or awaiting_conditions
+          or state in ("presence_only", "reported_undated", "candidate_supported")):
         presentation = CLASS_WATCH
     else:
         presentation = CLASS_PLANNER
@@ -204,6 +250,8 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
         "encounter": definition.encounter if definition else "unknown",
         "access": ("closure reported" if item.extra.get("closures") else
                    "unsafe" if safety["unsafe"] else "check access" if item.extra.get("access_note") else "public"),
+        "safety_state": safety["state"],
+        "held_for_safety": held,
         "condition_quality": item.extra.get("provider_percent") or (item.score if state in ("computed", "forecast") else None),
         "evidence_state": state,
         "actionable": actionable,
@@ -218,6 +266,7 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
     item.extra["assessment"] = result
     item.extra["safety_notes"] = safety["notes"]
     item.extra["safety_summary"] = safety["summary"]
+    item.extra["safety_state"] = safety["state"]
     if definition is not None:
         if definition.ethics:
             item.extra["ethics"] = definition.ethics
@@ -303,7 +352,7 @@ def cant_miss_row(item, alternatives: int = 0) -> dict:
     assessment = item.extra.get("assessment") or {}
     row.update({key: assessment.get(key) for key in (
         "significance", "confidence", "confidence_basis", "urgency", "urgency_label", "encounter",
-        "access", "condition_quality", "priority", "status", "why_now", "policy", "name")})
+        "access", "condition_quality", "priority", "status", "why_now", "policy", "name", "safety_state")})
     row["gear_plan"] = item.extra.get("gear_plan") or {}
     row["safety_notes"] = item.extra.get("safety_notes") or []
     if item.extra.get("ethics"):
@@ -346,6 +395,8 @@ def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: Fals
         row = cant_miss_row(best, alternatives=len(items) - 1)
         row["choice_ids"] = sorted({event_id(item) for item in items})
         rows.append((best, row))
+    shown = {item.phenomenon for item, _ in rows}
+    rows = [(item, row) for item, row in rows if curation.SUBSUMED_BY.get(item.phenomenon) not in shown]
     rows.sort(key=lambda pair: (-(pair[1]["priority"] or 0), pair[0].start))
 
     horizon = now + timedelta(days=WATCH_DAYS)
@@ -363,13 +414,27 @@ def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: Fals
                       "where": item.zone_name, "significance": assessment.get("significance")})
     watch = watch[:limit]
 
+    # Rows that passed everything except a safety check that could not be
+    # made. Shown as held, so an alert outage never looks like an empty week.
+    held = []
+    for item in sorted(opportunities, key=lambda item: item.start):
+        assessment = item.extra.get("assessment") or {}
+        if assessment.get("held_for_safety") and not suppressed(event_id(item)) \
+                and item.phenomenon not in {row["phenomenon"] for row in held}:
+            held.append({"title": item.title, "phenomenon": item.phenomenon, "where": item.zone_name,
+                         "start": item.start.isoformat(), "summary": item.extra.get("safety_summary")})
+
     return {
         "events": [row for _, row in rows],
         "eligible_count": len(rows),
         "suppressed_count": suppressed_count,
         "show_limit": SHOW_LIMIT,
-        "headline": None if rows else "Nothing worth changing plans for this week.",
+        # An outage must never read as a quiet week.
+        "headline": None if rows else (
+            "Nothing cleared to recommend: safety could not be checked for the rows held below." if held
+            else "Nothing worth changing plans for this week."),
         "watch": watch,
+        "held": held[:SHOW_LIMIT],
         "signals": background(signals or [], now),
         "signal_count": len(signals or []),
         "birds": {

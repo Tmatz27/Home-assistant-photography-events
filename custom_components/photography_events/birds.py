@@ -25,6 +25,7 @@ but never shown as a place to go.
 
 from __future__ import annotations
 
+import re
 from datetime import datetime, timedelta
 
 from .events import MARINE_DRAW, PHOTOGRAPHY_BIRDS, Opportunity
@@ -226,36 +227,120 @@ def _merge_chase(rows: list[dict]) -> list[dict]:
     return list(best.values())
 
 
-def marine_presence(sightings: list, now: datetime, home: tuple[float, float]) -> list:
-    """Orcas (and blue whales) reported repeatedly: exceptional presence.
+# Orcas move tens of kilometres a day, so reports only combine when they are
+# plausibly the same animals: within this distance of each other and inside
+# the window. Product thresholds; a pair 150 km apart is two sightings of
+# possibly different pods, not a stronger case for either place.
+ORCA_CLUSTER_KM = 25.0
+ORCA_WINDOW_HOURS = 72
+ORCA_OPERATOR_HOURS = 36
+ORCA_TERMS = ("orca", "killer whale")
+# The same negation rule the operator feed parser applies (spectacles.py).
+NEGATED = re.compile(r"\b(?:no|not|none|yesterday|previous|last week)\b", re.I)
 
-    Product threshold, documented in curation.py: two independent reports within
-    72 hours, or one research-grade report within 36 hours. Humpbacks and
-    dolphins never qualify here - their presence is ordinary.
+
+def _orca_clusters(items: list) -> list[list]:
+    """Single-linkage groups of sightings within ORCA_CLUSTER_KM of each other."""
+    groups: list[list] = []
+    for item in sorted(items, key=lambda row: row.latest):
+        near = [group for group in groups if any(
+            haversine_km(item.latitude, item.longitude, other.latitude, other.longitude) <= ORCA_CLUSTER_KM
+            for other in group)]
+        merged = [item]
+        for group in near:
+            merged.extend(group)
+            groups.remove(group)
+        groups.append(merged)
+    return groups
+
+
+def operator_orca_reports(reports: list | None, now: datetime) -> list:
+    """Dated operator or subscription reports that explicitly name orcas.
+
+    A trip report from an operator is a trusted observer: someone whose job is
+    finding these animals, writing the date down. The sentence must name
+    orcas and must not be negated ("no orcas today").
     """
+    from .const import ZONES_BY_ID
+
+
     found = []
-    for scientific in ("Orcinus orca",):
-        here = [item for item in sightings or [] if item.scientific_name == scientific
-                and now - item.latest <= timedelta(hours=72) and item.latest <= now + timedelta(hours=1)]
-        if not here:
+    for report in reports or []:
+        observed = getattr(report, "observed_at", None)
+        if observed is None or not timedelta(0) <= now - observed <= timedelta(hours=ORCA_OPERATOR_HOURS):
             continue
-        observers = {obs for item in here for obs in (item.observers or [item.url or item.place])}
-        confirmed_recent = any(item.confirmed and now - item.latest <= timedelta(hours=36) for item in here)
-        if len(observers) < 2 and not confirmed_recent:
+        if report.category != "marine" or not (report.source_id == "condor_express" or report.source_id.startswith("email_")):
             continue
-        latest = max(here, key=lambda item: item.latest)
-        drive = estimate_drive_hours(latest.latitude, latest.longitude, home)
-        found.append(Opportunity(
-            key=f"orca-presence-{latest.latest.date().isoformat()}", roll=f"orca-presence-{latest.latest.date().isoformat()}",
-            title="Orcas reported", category="marine", zone_id="orca_presence", zone_name=latest.place,
-            start=max(now, latest.latest), end=latest.latest + timedelta(hours=72), score=80 + MARINE_DRAW.get(scientific, 0) // 2,
-            detail=f"{len(observers)} independent report{'s' if len(observers) != 1 else ''} of orcas; latest at {latest.place}.",
-            drive_hours=round(drive, 2), latitude=latest.latitude, longitude=latest.longitude,
-            drive_source="estimate", source_url=latest.url, phenomenon="orca_presence",
-            reasons=[f"{len(observers)} independent reports in 72 h"],
-            extra={"verification": "corroborated", "evidence_state": "repeated_presence",
-                   "observed_at": latest.latest.isoformat(),
-                   "evidence_note": "Orca presence only; hunting behaviour is not confirmed. A boat trip is usually required.",
-                   "confidence_note": "Orcas travel fast; contact an operator before booking."},
-        ))
+        text = f"{report.headline}. {report.snippet}"
+        sentences = [part for part in text.replace("!", ".").split(".") if any(term in part.lower() for term in ORCA_TERMS)]
+        if not sentences or all(NEGATED.search(part) for part in sentences):
+            continue
+        zone = ZONES_BY_ID.get(report.zone_id)
+        latitude = report.latitude if report.latitude is not None else zone["latitude"] if zone else None
+        longitude = report.longitude if report.longitude is not None else zone["longitude"] if zone else None
+        if latitude is None:
+            continue  # An unlocatable report corroborates nothing.
+        found.append((report, latitude, longitude))
     return found
+
+
+def marine_presence(sightings: list, now: datetime, home: tuple[float, float], reports: list | None = None) -> list:
+    """Orcas reported coherently enough to be worth a boat trip.
+
+    Product thresholds, documented in curation.py: at least two independent
+    observers within ORCA_CLUSTER_KM of each other inside 72 hours, or one
+    dated operator report within 36 hours. A single community observation -
+    even research grade - stays a background signal and never becomes a row:
+    one photo of a dorsal fin says the pod passed, not where it is now. Humpbacks
+    and dolphins never qualify here - their presence is ordinary.
+    """
+    scientific = "Orcinus orca"
+    here = [item for item in sightings or [] if item.scientific_name == scientific
+            and now - item.latest <= timedelta(hours=ORCA_WINDOW_HOURS) and item.latest <= now + timedelta(hours=1)]
+    operators = operator_orca_reports(reports, now)
+    found = []
+    for group in _orca_clusters(here):
+        observers = {obs for item in group for obs in (item.observers or [item.url or item.place])}
+        latest = max(group, key=lambda item: item.latest)
+        backing = [row for row in operators if haversine_km(row[1], row[2], latest.latitude, latest.longitude)
+                   <= ORCA_CLUSTER_KM * 2]
+        for row in backing:
+            operators.remove(row)
+        if len(observers) < 2 and not backing:
+            continue
+        found.append(_orca_row(latest.latitude, latest.longitude, latest.latest, latest.place, latest.url, now, home,
+                               observers=len(observers), operator=backing[0][0] if backing else None))
+    for report, latitude, longitude in operators:
+        found.append(_orca_row(latitude, longitude, report.observed_at, report.source_name, report.url, now, home,
+                               observers=0, operator=report))
+    return found
+
+
+def _orca_row(latitude, longitude, seen, place, url, now, home, *, observers, operator):
+    drive = estimate_drive_hours(latitude, longitude, home)
+    parts = []
+    if observers:
+        parts.append(f"{observers} independent observer{'s' if observers != 1 else ''}")
+    if operator is not None:
+        parts.append(f"a dated report from {operator.source_name}")
+    summary = " and ".join(parts)
+    evidence = []
+    if operator is not None:
+        evidence.append({"source": operator.source_name, "observed_at": operator.observed_at.isoformat(),
+                         "text": operator.snippet[:220], "url": operator.url or None})
+    day = seen.date().isoformat()
+    key = f"orca-presence-{day}-{round(latitude, 1)}-{round(longitude, 1)}"
+    return Opportunity(
+        key=key, roll=key, title="Orcas reported",
+        category="marine", zone_id="orca_presence", zone_name=place,
+        start=max(now, seen), end=seen + timedelta(hours=ORCA_WINDOW_HOURS),
+        score=80 + MARINE_DRAW.get("Orcinus orca", 0) // 2,
+        detail=f"Orcas: {summary}; latest near {place}.",
+        drive_hours=round(drive, 2), latitude=latitude, longitude=longitude,
+        drive_source="estimate", source_url=url or (operator.url if operator else None), phenomenon="orca_presence",
+        reasons=[summary + (" within 25 km in 72 h" if observers > 1 else "")],
+        extra={"verification": "corroborated", "evidence_state": "repeated_presence",
+               "observed_at": seen.isoformat(), "behavior_evidence": evidence,
+               "evidence_note": "Orca presence only; hunting behaviour is not confirmed. A boat trip is usually required.",
+               "confidence_note": "Orcas travel fast; contact an operator before booking."},
+    )

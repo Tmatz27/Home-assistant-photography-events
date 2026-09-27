@@ -46,15 +46,28 @@ def condor_reports(raw, now):
         confirmed = next((s for s in sentences if re.search(
             r"\b(?:mega[ -]?pod|single pod)\b.{0,55}\b(?:[1-9]\d,\d{3}|[1-9],\d{3}|[1-9]\d{3,})\s+(?:common )?dolphins\b", s, re.I)
             and not re.search(r"\b(?:no|not|yesterday|previous|last week)\b", s, re.I)), None)
-        if not confirmed:
-            continue
-        reports.append(FieldReport(
-            "condor_express", "Condor Express trip report", item.findtext("link") or CONDOR_FEED,
-            "marine", "channel_islands", "Dolphin megapod reported", confirmed[:500], 90,
-            now, body[:1200], observed, "dolphin_megapod",
-            # The report names a region, never an exact vessel or animal position.
-            None, None,
-        ))
+        link = item.findtext("link") or CONDOR_FEED
+        if confirmed:
+            reports.append(FieldReport(
+                "condor_express", "Condor Express trip report", link,
+                "marine", "channel_islands", "Dolphin megapod reported", confirmed[:500], 90,
+                now, body[:1200], observed, "dolphin_megapod",
+                # The report names a region, never an exact vessel or animal position.
+                None, None,
+            ))
+        # Orcas are rare enough here that the operator naming them on a dated
+        # trip is itself the evidence (birds.marine_presence). Same negation
+        # rule; hunting language selects the behaviour phenomenon instead.
+        orcas = next((s for s in sentences if re.search(r"\b(?:orcas?|killer whales?)\b", s, re.I)
+                      and not re.search(r"\b(?:no|not|yesterday|previous|last week)\b", s, re.I)), None)
+        if orcas:
+            from .curation import phenomena_named
+            hunting = "transient_orca_hunt" in phenomena_named(orcas, "marine")
+            reports.append(FieldReport(
+                "condor_express", "Condor Express trip report", link,
+                "marine", "channel_islands", "Orcas hunting reported" if hunting else "Orcas reported", orcas[:500], 90,
+                now, body[:1200], observed, "transient_orca_hunt" if hunting else "orca_presence", None, None,
+            ))
     return reports
 
 
@@ -308,9 +321,12 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None, reports
     night = now - timedelta(days=1)
     # A dated report of a moonbow or roaring falls is the only thing that can
     # stand in for "abundant spray"; the Merced gauge never does.
+    from .curation import definition
+
+    fresh = timedelta(days=definition("moonbow").evidence_days)
     flow_reports = [report for report in reports or []
                     if report.phenomenon_key == "moonbow" and report.observed_at is not None
-                    and timedelta(0) <= now - report.observed_at <= timedelta(days=7)]
+                    and timedelta(0) <= now - report.observed_at <= fresh]
     while night <= horizon:
         window = moonbow_window(night, MOONBOW_LATITUDE, MOONBOW_LONGITUDE)
         night += timedelta(days=1)
@@ -359,9 +375,11 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None, reports
             elif cloud >= 60:
                 score -= 15
 
+        # A flow report supports the candidate; it does not validate the
+        # viewpoint. Both are needed before anything may say "go".
         confirmed = bool(flow_reports) and start - now <= timedelta(days=7)
         found.append(Opportunity(
-            key=f"moonbow-{start.date()}", title="Yosemite moonbow window", category="rare_phenomena",
+            key=f"moonbow-{start.date()}", title="Yosemite moonbow candidate", category="rare_phenomena",
             phenomenon="moonbow",
             zone_id="yosemite_valley", zone_name="Yosemite Falls - viewpoint still needs confirming",
             start=start, end=end, score=max(0, min(100, score)), planning_only=True,
@@ -377,7 +395,7 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None, reports
                 # different facts, two different fields, and collapsing them
                 # into one is how a search lead starts reading as a promise.
                 "verification": "corroborated" if confirmed else "unverified",
-                "evidence_state": "behavior_confirmed" if confirmed else "computed_candidate",
+                "evidence_state": "candidate_supported" if confirmed else "computed_candidate",
                 "behavior_evidence": [{"source": r.source_name, "observed_at": r.observed_at.isoformat(),
                                        "text": r.snippet[:220], "url": r.url or None} for r in flow_reports] if confirmed else [],
                 "timing_basis": "Generic sky geometry; not a viewpoint-specific prediction",
@@ -405,7 +423,8 @@ def moonbow_opportunities(now, home, streamflow=None, cloud_lookup=None, reports
                               ("favourable" if cloud <= 25 else "unfavourable" if cloud >= 60 else "mixed"))
                              if cloud is not None else "Unknown",
                     "Basin flow": "Current measured proxy; not waterfall spray" if streamflow else "Missing",
-                    "Waterfall spray": "Unconfirmed",
+                    "Waterfall spray": "Reported (dated flow report)" if confirmed else "Unconfirmed",
+                    "Viewpoint prediction": "Not available: no consumable viewpoint timetable",
                     "Viewpoint and terrain shadow": "Unmodelled; check published predictions",
                 },
                 "recommended_gear": "Fast wide lens, sturdy tripod, remote release and protection from spray",

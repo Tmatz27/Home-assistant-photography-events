@@ -49,50 +49,101 @@ def snapshot(sources, enabled, now):
     return result
 
 
-def dependencies(item):
-    """Only feeds that can actually help this opportunity; no imaginary wiring."""
+# A source's role for one opportunity decides what its outage may do.
+#
+# - required: the phenomenon's own condition cannot be assessed without it; an
+#   outage removes the row from Can't Miss (the planner still lists it).
+# - preferred: a better source with a working fallback. Its outage is shown as
+#   "fallback in use" and never blocks - SunsetWx failing must not erase a
+#   sunset the local model can still assess on its own terms.
+# - optional: supporting evidence. Dated reports expire by themselves, so a
+#   dead sighting feed only means fewer confirmations, never a false one.
+# - safety: the NWS alert feed. Its outage is handled by the safety gate
+#   (unknown safety), not here, so it is not double-counted.
+REQUIRED = "required"
+PREFERRED = "preferred"
+OPTIONAL = "optional"
+SAFETY = "safety"
+
+FALLBACK_NOTES = {
+    "sunsetwx": "SunsetWx unavailable; the built-in local model decided this sunset.",
+}
+
+
+def dependency_roles(item) -> dict[str, str]:
+    """{source: role} for the feeds that can actually help this opportunity."""
     category = item.category
-    if item.key.startswith("moonbow-"):
-        return {"weather", "streamflow"}
-    if item.extra.get("evidence") == EVIDENCE_STATIC:
-        return set()
+    phenomenon = getattr(item, "phenomenon", "") or ""
+    extra = item.extra
+    if item.key.startswith("moonbow-") or phenomenon == "moonbow":
+        # The clear-sky condition needs the forecast; the Merced reading is
+        # candidate context and never proves spray (see streamflow.py).
+        return {"weather": REQUIRED, "streamflow": OPTIONAL}
+    if phenomenon in ("horsetail_firefall", "fresh_snow_clearing"):
+        # Before the static check: firefall's window is a static estimate,
+        # but its sunset condition is read from the forecast.
+        return {"weather": REQUIRED}
+    if extra.get("evidence") == EVIDENCE_STATIC:
+        return {}
     if category == CATEGORY_ASTRO:
         if item.key.startswith("eclipse-"):
-            return set()  # This builder currently computes geometry, not cloud.
-        return {"aurora"} if "aurora" in item.key else {"weather"}
+            return {}  # This builder currently computes geometry, not cloud.
+        if "aurora" in item.key:
+            return {"aurora": REQUIRED}
+        return {"weather": REQUIRED}
     if category == "sunset":
-        return {"weather", "air_quality", "sunsetwx"}
+        if extra.get("provider_quality"):
+            # SunsetWx decided; the local model is comparison only.
+            return {"sunsetwx": REQUIRED, "weather": OPTIONAL, "air_quality": OPTIONAL}
+        return {"weather": REQUIRED, "air_quality": OPTIONAL, "sunsetwx": PREFERRED}
     if category == "waves":
-        return {"ndbc", "cdip", "surf_alerts"}
+        if phenomenon in ("king_tide", "minus_tide"):
+            return {"tides": OPTIONAL}
+        if extra.get("evidence_state") == "measured":
+            return {"ndbc": REQUIRED, "cdip": OPTIONAL, "surf_alerts": SAFETY}
+        return {"cdip": REQUIRED, "ndbc": OPTIONAL, "surf_alerts": SAFETY}
     if category == "blooms":
-        return {"theodore_payne", "desertusa"}
+        return {"theodore_payne": OPTIONAL, "desertusa": OPTIONAL}
     if category == "foliage":
-        return {"california_fall_color"}
+        return {"california_fall_color": OPTIONAL}
     if category == "parks":
-        return {"park_alerts"}
+        return {"park_alerts": OPTIONAL}
     if category == "birds":
-        return {"ebird", "ebird_species", "inaturalist"}
+        return {"ebird": OPTIONAL, "ebird_species": OPTIONAL, "inaturalist": OPTIONAL}
     if category == "marine":
-        return {"inaturalist", "condor_reports"}
+        return {"inaturalist": OPTIONAL, "condor_reports": OPTIONAL}
     if category == "mammals":
-        return {"inaturalist"}
+        return {"inaturalist": OPTIONAL}
     if category == "rare_phenomena" and "grunion" in item.key:
-        return {"grunion", "tides"}
+        return {"grunion": REQUIRED, "tides": OPTIONAL}
     if category == "rare_phenomena" and "monarch" in item.key:
-        return {"inaturalist"}
-    return set()
+        # The cold-dawn condition is a forecast at the grove.
+        return {"weather": REQUIRED, "inaturalist": OPTIONAL}
+    return {}
+
+
+def dependencies(item):
+    """Only feeds that can actually help this opportunity; no imaginary wiring."""
+    return set(dependency_roles(item))
 
 
 def annotate(opportunities, health):
     for item in opportunities:
-        broken = sorted(key for key in dependencies(item)
+        roles = dependency_roles(item)
+        broken = sorted(key for key in roles
                         if health.get(key, {}).get("state") in {"failed", "stale"})
         # Rebuilding normally creates fresh objects; clear these defensively
         # so a recovery cannot leave a retained object marked degraded.
-        item.extra.pop("degraded_sources", None)
-        item.extra.pop("source_health_note", None)
+        for key in ("degraded_sources", "source_health_note", "degraded_required", "fallback_note"):
+            item.extra.pop(key, None)
         if broken:
             item.extra["degraded_sources"] = broken
             item.extra["source_health_note"] = " ".join(
                 f"{health[key]['name']}: {health[key]['impact']}" for key in broken)
+            required = [key for key in broken if roles[key] == REQUIRED]
+            if required:
+                item.extra["degraded_required"] = required
+            fallback = [FALLBACK_NOTES[key] for key in broken if roles[key] == PREFERRED and key in FALLBACK_NOTES]
+            if fallback:
+                item.extra["fallback_note"] = " ".join(fallback)
     return opportunities

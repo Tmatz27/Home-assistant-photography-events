@@ -12,7 +12,7 @@ from zoneinfo import ZoneInfo
 import test_integration  # Load the pure package without Home Assistant.
 from photography_events import (
     birds, const, curation, eligibility, email_reports, events, field_reports, gear, lunar,
-    phenomena, signals, sunburst, weather_hazards, wildlife,
+    phenomena, signals, source_health, sunburst, weather_hazards, wildlife,
 )
 
 UTC = timezone.utc
@@ -29,7 +29,7 @@ def sighting(name, latin, lat, lon, when, category, observers=("a",), count=None
 
 def seasonal(now, sightings=None, reports=None):
     rows = events.build_seasonal_opportunities(now, 365, HOME, sightings, reports)
-    eligibility.annotate(rows, now, max_drive_hours=6.0)
+    eligibility.annotate(rows, now, max_drive_hours=6.0, alerts=[])
     return rows
 
 
@@ -55,7 +55,7 @@ class TestWildlifeSignalsAreNotEvents(unittest.TestCase):
                         const.CATEGORY_MARINE, observers=("a", "b", "c"), count=400)]
         rows = seasonal(now, pod)
         rows += birds.marine_presence(pod, now, HOME)
-        eligibility.annotate(rows, now, max_drive_hours=6.0)
+        eligibility.annotate(rows, now, max_drive_hours=6.0, alerts=[])
         # Elephant seals and cranes are in their documented windows in January;
         # nothing marine is eligible on dolphin presence.
         self.assertEqual([item.title for item in eligible(rows) if item.category == const.CATEGORY_MARINE], [])
@@ -169,7 +169,7 @@ class TestBirds(unittest.TestCase):
         views = birds.classify(condors, self.NOW, HOME, 6.0)
         self.assertEqual(len(views["spectacle"]), 1)
         spectacle = views["spectacle"][0]
-        eligibility.assess(spectacle, self.NOW, max_drive_hours=6.0)
+        eligibility.assess(spectacle, self.NOW, max_drive_hours=6.0, alerts=[])
         self.assertTrue(spectacle.extra["assessment"]["eligible"], spectacle.extra["assessment"]["blockers"])
         self.assertIn("Prohibited", spectacle.extra["gear_plan"]["drone"], "Pinnacles is a national park")
 
@@ -233,10 +233,10 @@ class TestReportsMergeIntoPhenomena(unittest.TestCase):
         rows = events.build_seasonal_opportunities(now, 365, HOME, None, high)
         grove = row(rows, "pismo_monarchs")
         grove.extra["dawn_temp_f"] = 61
-        eligibility.assess(grove, now, max_drive_hours=6.0)
+        eligibility.assess(grove, now, max_drive_hours=6.0, alerts=[])
         self.assertFalse(grove.extra["assessment"]["eligible"], "a warm dawn disperses the clusters")
         grove.extra["dawn_temp_f"] = 48
-        eligibility.assess(grove, now, max_drive_hours=6.0)
+        eligibility.assess(grove, now, max_drive_hours=6.0, alerts=[])
         self.assertTrue(grove.extra["assessment"]["eligible"], grove.extra["assessment"]["blockers"])
 
     def test_evidence_expires(self):
@@ -257,7 +257,7 @@ class TestReportsMergeIntoPhenomena(unittest.TestCase):
                        category=const.CATEGORY_RARE)
         rows = spectacles.report_opportunities(report, now, HOME)
         self.assertEqual([item.phenomenon for item in rows], ["bioluminescent_surf"])
-        eligibility.assess(rows[0], now, max_drive_hours=6.0)
+        eligibility.assess(rows[0], now, max_drive_hours=6.0, alerts=[])
         moon = rows[0].extra["moon_illumination"]
         self.assertEqual(rows[0].extra["assessment"]["eligible"], moon < 0.5)
 
@@ -267,7 +267,7 @@ class TestGate(unittest.TestCase):
 
     def test_generic_park_windows_never_reach_cant_miss(self):
         parks = events.build_park_opportunities(self.NOW, 60)
-        eligibility.annotate(parks, self.NOW, max_drive_hours=6.0)
+        eligibility.annotate(parks, self.NOW, max_drive_hours=6.0, alerts=[])
         self.assertTrue(parks)
         self.assertEqual(eligible(parks), [])
         self.assertTrue(all(item.extra["assessment"]["presentation"] == "planner" for item in parks))
@@ -276,7 +276,7 @@ class TestGate(unittest.TestCase):
         seals = row(seasonal(self.NOW), "elephant_seal_battles")
         self.assertTrue(seals.extra["assessment"]["eligible"])
         seals.drive_hours, seals.planning_only = 6.5, True
-        eligibility.assess(seals, self.NOW, max_drive_hours=6.0)
+        eligibility.assess(seals, self.NOW, max_drive_hours=6.0, alerts=[])
         self.assertFalse(seals.extra["assessment"]["eligible"])
         self.assertTrue(any("drive limit" in blocker for blocker in seals.extra["assessment"]["blockers"]))
         self.assertIn(seals, events.within_drive([seals], 6.0), "the planner keeps the long trip")
@@ -319,11 +319,11 @@ class TestGate(unittest.TestCase):
                                  zone_name="Home", start=self.NOW, end=self.NOW + timedelta(hours=1), score=92, detail="",
                                  drive_hours=0.0, phenomenon="sunset_local",
                                  extra={"evidence_state": "forecast", "standout": True, "light_path": "modelled"})
-        eligibility.assess(sky, self.NOW, max_drive_hours=6.0)
+        eligibility.assess(sky, self.NOW, max_drive_hours=6.0, alerts=[])
         self.assertTrue(sky.extra["assessment"]["eligible"])
-        sky.extra["degraded_sources"] = ["weather"]
-        eligibility.assess(sky, self.NOW, max_drive_hours=6.0)
-        self.assertFalse(sky.extra["assessment"]["eligible"])
+        source_health.annotate([sky], {"weather": {"state": "stale", "name": "Weather", "impact": ""}})
+        eligibility.assess(sky, self.NOW, max_drive_hours=6.0, alerts=[])
+        self.assertFalse(sky.extra["assessment"]["eligible"], "the local model's own forecast is required")
 
     def test_duplicate_rows_collapse_to_one_occurrence(self):
         zones = [const.ZONES_BY_ID["carrizo_plain"], const.ZONES_BY_ID["death_valley"]]
@@ -344,7 +344,7 @@ class TestGate(unittest.TestCase):
 
     def test_the_planner_keeps_everything_and_signals_are_not_lost(self):
         rows = seasonal(self.NOW) + events.build_park_opportunities(self.NOW, 365)
-        eligibility.annotate(rows, self.NOW, max_drive_hours=6.0)
+        eligibility.annotate(rows, self.NOW, max_drive_hours=6.0, alerts=[])
         planner = events.planning_slice(rows, 400)
         self.assertEqual(len(planner), len(rows))
         self.assertTrue(any(item.phenomenon == "park_season" for item in planner))
@@ -368,14 +368,14 @@ class TestSunset(unittest.TestCase):
         now = test_integration.NOW
         flat = test_integration._multiday(0, 5, 10, 70, 0)
         rows = events.build_sunset_opportunities(self._home(), flat, now, 85, 3, self._upstream(90))
-        eligibility.annotate(rows, now, max_drive_hours=6.0, sunset_drive_hours=1.0)
+        eligibility.annotate(rows, now, max_drive_hours=6.0, alerts=[], sunset_drive_hours=1.0)
         self.assertEqual(eligible(rows), [])
 
     def test_exceptional_local_sunset_can(self):
         now = test_integration.NOW
         canvas = test_integration._multiday(55, 20, 5, 55, 0)
         rows = events.build_sunset_opportunities(self._home(), canvas, now, 80, 2, self._upstream(5))
-        eligibility.annotate(rows, now, max_drive_hours=6.0, sunset_drive_hours=1.0)
+        eligibility.annotate(rows, now, max_drive_hours=6.0, alerts=[], sunset_drive_hours=1.0)
         sunsets = [item for item in rows if "Sunset" in item.title]
         self.assertTrue(sunsets)
         self.assertTrue(any(item.extra["assessment"]["eligible"] for item in sunsets),
@@ -393,7 +393,7 @@ class TestSunset(unittest.TestCase):
         great = [{"kind": "sunset", "quality": "Great", "percent": 88.0, "valid_at": sunset, "last_updated": None, "model": "GFS"}]
         rows = events.build_sunset_opportunities(home, lukewarm, now, 85, 2, self._upstream(5), provider=great)
         self.assertEqual(len([r for r in rows if "Sunset" in r.title]), 1, "SunsetWx's Great is listed despite a lukewarm local model")
-        eligibility.annotate(rows, now, max_drive_hours=6.0)
+        eligibility.annotate(rows, now, max_drive_hours=6.0, alerts=[])
         self.assertTrue(rows[0].extra["assessment"]["eligible"])
         self.assertIn("not a probability", rows[0].extra["provider_note"])
         # Provider down: nothing from it, and the local model decides alone.
@@ -444,7 +444,7 @@ class TestLunarEngine(unittest.TestCase):
         now = datetime(2026, 12, 20, 18, tzinfo=UTC)
         closest = next(row for row in lunar.opportunities(now, HOME, PACIFIC, horizon_days=10)
                        if row.phenomenon == "full_moon_closest")
-        eligibility.assess(closest, now, max_drive_hours=6.0)
+        eligibility.assess(closest, now, max_drive_hours=6.0, alerts=[])
         self.assertTrue(closest.extra["assessment"]["eligible"], closest.extra["assessment"]["blockers"])
         self.assertIn("200-600", closest.extra["gear_plan"]["take"])
 
@@ -452,7 +452,7 @@ class TestLunarEngine(unittest.TestCase):
         now = datetime(2026, 10, 22, 18, tzinfo=UTC)
         ordinary = next(row for row in lunar.opportunities(now, HOME, PACIFIC, horizon_days=10))
         self.assertEqual(ordinary.phenomenon, "full_moon")
-        eligibility.assess(ordinary, now, max_drive_hours=6.0)
+        eligibility.assess(ordinary, now, max_drive_hours=6.0, alerts=[])
         self.assertFalse(ordinary.extra["assessment"]["eligible"])
         self.assertEqual(ordinary.extra["assessment"]["presentation"], "planner")
 

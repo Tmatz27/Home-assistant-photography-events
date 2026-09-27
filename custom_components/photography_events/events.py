@@ -246,14 +246,14 @@ class Opportunity:
             "measurement_label", "forecast_note", "access_note", "locations_detail",
             "feed_status", "confidence_note", "coastal_advisories",
             "moon_illumination", "peak_altitude", "cloud_cover", "comparison_through",
-            "cloud_confidence", "cloud_is_forecast", "degraded_sources", "source_health_note",
+            "cloud_confidence", "cloud_is_forecast", "degraded_sources", "source_health_note", "degraded_required", "fallback_note",
             "evidence_state", "behavior_evidence", "presence_count", "count", "current_phase", "phases",
             "provider_quality", "provider_percent", "provider_model", "provider_valid_at", "provider_note",
             "sunset_at", "color_window_start", "color_window_end", "moonrise", "moonset",
             "moonrise_azimuth", "moonrise_compass", "moonset_compass", "moon_climb", "distance_km",
             "diameter_arcmin", "distance_rank", "full_moons_in_year", "moon_labels", "rise_after_sunset_minutes",
             "sunrise", "civil_dusk", "nautical_dusk", "astronomical_dusk", "king_tide", "tide_ft",
-            "dawn_temp_f", "safety_notes", "safety_summary", "ethics", "gear_plan",
+            "dawn_temp_f", "safety_notes", "safety_summary", "safety_state", "ethics", "gear_plan",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -876,7 +876,10 @@ def build_seasonal_opportunities(
         # already happening; the occurrence opens on the report, not the
         # calendar. Only a month early at most, so an off-season report cannot
         # drag next season's window into this one.
-        if near and evidence.state == "behavior_confirmed" and entry["start"] > now.date():
+        # Not for a conditions phenomenon whose window is geometry: water on
+        # Horsetail Fall in January does not move the February alignment.
+        if near and evidence.state == "behavior_confirmed" and entry["start"] > now.date() \
+                and not (definition and definition.policy == curation.POLICY_CONDITIONS):
             earliest = min(item.observed_at for item in evidence.behavior).date()
             if entry["start"] - earliest <= timedelta(days=30):
                 start_day = min(start_day, max(earliest, now.date() - timedelta(days=1)))

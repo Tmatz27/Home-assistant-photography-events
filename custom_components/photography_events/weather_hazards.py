@@ -2,12 +2,25 @@
 
 Two jobs, kept apart:
 
-1. **Safety.** An active NWS warning where an opportunity is - severe
-   thunderstorm, flash flood, winter storm, fire, extreme heat - removes it
-   from Can't Miss however good it is. This is a photography planner, not a
-   storm-chasing system: it must never say "go now" into a warned area. The
-   swell phenomenon is the one place a surf warning is expected, and there it
-   becomes a strict viewpoint instruction instead of a block.
+1. **Safety.** Every opportunity gets one of four states against the NWS
+   active-alert feed:
+
+   - ``safe`` - the place was checked and nothing relevant is in effect;
+   - ``caution`` - an advisory, watch or exposure-specific warning applies; the
+     row may still be shown, with the instruction it implies;
+   - ``unsafe`` - a warning that makes going a bad idea (severe thunderstorm,
+     flash flood, winter storm, fire, extreme heat, tsunami...). It removes the
+     row from Can't Miss however good it is. This is a photography planner, not
+     a storm-chasing system;
+   - ``unknown`` - the feed failed or went stale, or the place cannot be
+     matched to an alert area. **Unknown is not safe.** Can't Miss holds any
+     row that needs travel until the check can be made; the planner keeps it.
+
+   Hazards depend on exposure. A High Surf Warning blocks a night on the beach
+   and turns an exceptional-swell row into a strict viewpoint instruction
+   (high, set-back ground; never beaches, rocks or jetties); it says nothing
+   about a Carrizo elk morning. A Red Flag Warning is critical fire *weather*,
+   not a fire: a caution with fire-weather instructions, not a block.
 
 2. **Watch signals.** Forecast thunder or forecast snow followed by clearing
    can make a photograph, but a forecast is not an observation. These become
@@ -15,9 +28,10 @@ Two jobs, kept apart:
    curated phenomenon.
 
 Alerts are matched to a location by the alert polygon when NWS supplies one,
-otherwise by the county SAME code. A location this table cannot place says
-"alerts not checked" rather than implying all clear. A failed alert feed is
-reported through source health; it is never read as "no warnings".
+otherwise by the county SAME code. Marine-zone alerts (Gale, Small Craft,
+Special Marine) carry marine zone codes this table does not resolve; boat trips
+therefore always say "check the marine forecast" rather than implying a
+checked sea. A failed alert feed is never read as "no warnings".
 """
 
 from __future__ import annotations
@@ -27,23 +41,83 @@ from datetime import datetime, timedelta, timezone
 from .signals import BASIS_FORECAST, Signal
 from .wildlife import haversine_km
 
-BLOCKING_EVENTS = frozenset({
-    "Tornado Warning", "Severe Thunderstorm Warning", "Flash Flood Warning", "Flood Warning",
-    "Winter Storm Warning", "Blizzard Warning", "Ice Storm Warning", "High Wind Warning",
-    "Extreme Wind Warning", "Fire Warning", "Evacuation Immediate", "Excessive Heat Warning",
-    "Extreme Heat Warning", "Dust Storm Warning", "Tsunami Warning", "Coastal Flood Warning",
-    "Avalanche Warning", "Snow Squall Warning", "Civil Danger Warning", "Shelter In Place Warning",
-    "Tropical Storm Warning", "Hurricane Warning", "Special Marine Warning",
-})
-CAUTION_EVENTS = frozenset({
-    "High Surf Warning", "High Surf Advisory", "Beach Hazards Statement", "Rip Current Statement",
-    "Wind Advisory", "Dense Fog Advisory", "Heat Advisory", "Winter Weather Advisory",
-    "Red Flag Warning", "Air Quality Alert", "Dense Smoke Advisory", "Flood Advisory",
-    "Winter Storm Watch", "Flash Flood Watch", "Fire Weather Watch", "Severe Thunderstorm Watch",
-    "High Wind Watch", "Small Craft Advisory", "Gale Warning", "Coastal Flood Advisory",
-})
+# Exposures a curated phenomenon declares (curation.PhenomenonDefinition.exposure).
+EXPOSURE_HOME = "home"          # at or beside the house; no travel
+EXPOSURE_BEACH = "beach"        # on the sand or rocks, often at night
+EXPOSURE_COASTAL = "coastal"    # bluffs, overlooks, boardwalks, piers
+EXPOSURE_BOAT = "boat"          # on the water with an operator
+EXPOSURE_MOUNTAIN = "mountain"  # Sierra roads and trails
+EXPOSURE_DESERT = "desert"
+EXPOSURE_GENERAL = "general"
+_ALL = None
+
+STATE_SAFE = "safe"
+STATE_CAUTION = "caution"
+STATE_UNSAFE = "unsafe"
+STATE_UNKNOWN = "unknown"
+
+# event -> (exposures it makes unsafe, or _ALL; exposures it is a caution for,
+# or _ALL; what to say). An exposure in neither set ignores the alert.
+# Reviewed against the NWS product list (weather.gov/help-map, NWSI 10-511/10-515).
+_TRAVEL = frozenset({EXPOSURE_BEACH, EXPOSURE_COASTAL, EXPOSURE_BOAT, EXPOSURE_MOUNTAIN,
+                     EXPOSURE_DESERT, EXPOSURE_GENERAL})
+_SHORE = frozenset({EXPOSURE_BEACH, EXPOSURE_COASTAL})
+HAZARDS: dict[str, tuple] = {
+    # Life-threatening wherever you are: never send anyone into these.
+    **{event: (_ALL, _ALL, "Do not go; this is not a storm-chasing system.") for event in (
+        "Tornado Warning", "Severe Thunderstorm Warning", "Flash Flood Warning", "Flood Warning",
+        "Winter Storm Warning", "Blizzard Warning", "Ice Storm Warning", "High Wind Warning",
+        "Extreme Wind Warning", "Fire Warning", "Evacuation Immediate", "Dust Storm Warning",
+        "Tsunami Warning", "Snow Squall Warning", "Civil Danger Warning", "Shelter In Place Warning",
+        "Tropical Storm Warning", "Hurricane Warning", "Storm Surge Warning", "Hurricane Force Wind Warning")},
+    # Heat: dangerous to be out in, not to glance at from the porch.
+    "Excessive Heat Warning": (_TRAVEL, _ALL, "Dangerous heat; do not plan time outdoors away from shelter."),
+    "Extreme Heat Warning": (_TRAVEL, _ALL, "Dangerous heat; do not plan time outdoors away from shelter."),
+    "Avalanche Warning": (frozenset({EXPOSURE_MOUNTAIN}), _ALL, "Avalanche danger; stay off and below slopes."),
+    # Water and shoreline.
+    "Coastal Flood Warning": (_SHORE, _ALL, "Coastal flooding: stay off beaches, seawalls and low shore roads."),
+    "High Surf Warning": (frozenset({EXPOSURE_BEACH}), frozenset({EXPOSURE_COASTAL, EXPOSURE_BOAT, EXPOSURE_HOME}),
+                          "Photograph only from high, set-back ground - never on the beach, rocks or jetties."),
+    "High Surf Advisory": ((), _SHORE | {EXPOSURE_BOAT},
+                           "Large breaking waves: stay well above the wash line; never on rocks or jetties."),
+    "Beach Hazards Statement": ((), _SHORE, "Sneaker waves and rip currents: stay above the wash line."),
+    "Rip Current Statement": ((), _SHORE, "Rip currents: stay out of the water."),
+    "Coastal Flood Advisory": ((), _SHORE, "Minor coastal flooding: low beaches and paths may be awash."),
+    "Special Marine Warning": (frozenset({EXPOSURE_BOAT}), _SHORE, "Hazardous conditions on the water; trips will be cancelled."),
+    "Gale Warning": (frozenset({EXPOSURE_BOAT}), (), "Gale on the water; no boat trip."),
+    "Storm Warning": (frozenset({EXPOSURE_BOAT}), (), "Storm-force wind on the water; no boat trip."),
+    "Small Craft Advisory": ((), frozenset({EXPOSURE_BOAT}), "Rough water; expect a hard ride or a cancelled trip."),
+    # Fire weather is not a fire.
+    "Red Flag Warning": ((), _TRAVEL, "Critical fire weather: no flame or sparks, don't park on dry grass, and check for new fires and closures."),
+    "Fire Weather Watch": ((), _TRAVEL, "Fire weather possible; check for new fires and closures."),
+    # Advisories and watches: tell the photographer, do not hide the row.
+    **{event: ((), _ALL, note) for event, note in (
+        ("Wind Advisory", "Strong gusts: secure the tripod; no drone."),
+        ("Dense Fog Advisory", "Dense fog: slow, hazardous driving; the view may be gone."),
+        ("Heat Advisory", "Heat: carry water; avoid midday exertion."),
+        ("Winter Weather Advisory", "Snow or ice on the roads: carry chains; check road status."),
+        ("Air Quality Alert", "Poor air quality."),
+        ("Dense Smoke Advisory", "Dense smoke: poor air and visibility."),
+        ("Flood Advisory", "Minor flooding: avoid low crossings."),
+        ("Winter Storm Watch", "A winter storm is possible: recheck before leaving."),
+        ("Flash Flood Watch", "Flash flooding possible: avoid washes and slot canyons."),
+        ("Severe Thunderstorm Watch", "Severe storms possible: recheck before leaving."),
+        ("Tornado Watch", "Tornadoes possible: recheck before leaving."),
+        ("High Wind Watch", "High wind possible: recheck before leaving."),
+        ("Tropical Storm Watch", "Tropical storm possible: recheck before leaving."),
+        ("Hurricane Watch", "Hurricane possible: recheck before leaving."),
+        ("Freeze Warning", "Below-freezing temperatures: dress for it; watch for ice."),
+        ("Extreme Cold Warning", "Dangerous cold: dress for it; watch for ice."),
+        ("Extreme Cold Watch", "Dangerous cold possible."),
+    )},
+}
+# Kept for callers and tests that name the families directly.
+BLOCKING_EVENTS = frozenset(event for event, (unsafe, _, _) in HAZARDS.items() if unsafe is _ALL)
+CAUTION_EVENTS = frozenset(event for event, (unsafe, _, _) in HAZARDS.items() if unsafe is not _ALL)
 SURF_EVENTS = frozenset({"High Surf Warning", "High Surf Advisory", "Beach Hazards Statement",
                          "Rip Current Statement", "Coastal Flood Advisory", "Coastal Flood Warning"})
+# An alert older than this is not a current check (the feed refreshes hourly).
+ALERTS_MAX_AGE_HOURS = 3
 
 # Reference points for the places this integration sends people, with the
 # county's six-digit SAME code (0 + state FIPS 06 + county FIPS). Used only when
@@ -124,7 +198,12 @@ def _time(value) -> datetime | None:
 
 def alerts_at(alerts: list, latitude: float, longitude: float, start: datetime, end: datetime,
               now: datetime) -> tuple[list[dict], bool]:
-    """Active alerts overlapping a place and time, and whether the place was checkable."""
+    """Active alerts overlapping a place and time, and whether the place was checkable.
+
+    Checkable means the place resolves to an alert county: only then does an
+    empty result mean "no alerts here". A polygon from some other alert does
+    not make an unlisted place checkable - county-only alerts would be missed.
+    """
     county = county_for(latitude, longitude)
     found = []
     for alert in alerts or []:
@@ -141,33 +220,68 @@ def alerts_at(alerts: list, latitude: float, longitude: float, start: datetime, 
             hit = bool(county and county in (alert.get("same") or []))
         if hit:
             found.append(alert)
-    checkable = county is not None or any(alert.get("geometry") for alert in alerts or [])
-    return found, checkable
+    return found, county is not None
 
 
-def safety(item, alerts: list | None, now: datetime) -> dict:
-    """Whether an opportunity may be recommended, and what to say either way."""
+def _rule(alert: dict) -> tuple:
+    """The (unsafe, caution, note) rule for an alert, including unknown events."""
+    event = alert.get("event", "")
+    if event in HAZARDS:
+        return HAZARDS[event]
+    # An event this table has not reviewed: trust NWS's own severity.
+    if (alert.get("severity") or "") in ("Extreme", "Severe"):
+        return _ALL, _ALL, "Do not go until you have read it."
+    return (), _ALL, ""
+
+
+def _applies(exposures, exposure: str) -> bool:
+    return exposures is _ALL or exposure in exposures
+
+
+def safety(item, alerts: list | None, now: datetime, exposure: str = EXPOSURE_GENERAL) -> dict:
+    """SAFE, CAUTION, UNSAFE or UNKNOWN for one opportunity, and what to say.
+
+    ``alerts`` is None when the feed failed or is stale: that is UNKNOWN,
+    never SAFE. ``travel`` says whether going there means leaving home; the
+    eligibility gate holds a travel row whose safety is unknown.
+    """
+    travel = exposure != EXPOSURE_HOME and (getattr(item, "drive_hours", None) or 0) > 0.25
+    base = {"unsafe": False, "notes": [], "checked": False, "travel": travel, "state": STATE_UNKNOWN}
+    if exposure == EXPOSURE_BOAT:
+        base["notes"] = ["Marine-zone warnings are not matched here: check the NWS coastal waters forecast and the operator before going."]
     if alerts is None:
-        return {"unsafe": False, "notes": [], "checked": False,
-                "summary": "NWS alerts unavailable - check warnings before leaving."}
+        return {**base, "summary": "Safety not checked: NWS alerts are unavailable. Check warnings before leaving."}
     if item.latitude is None or item.longitude is None:
-        return {"unsafe": False, "notes": [], "checked": False, "summary": "Location not checked against NWS alerts."}
+        return {**base, "summary": "Safety not checked: this location cannot be matched to NWS alerts."}
     end = item.end or item.start + timedelta(hours=2)
     active, checkable = alerts_at(alerts, item.latitude, item.longitude, item.start, end, now)
-    swell = getattr(item, "phenomenon", "") == "exceptional_swell"
-    notes, unsafe = [], False
+    notes, unsafe, caution = list(base["notes"]), False, False
     for alert in active:
         event = alert.get("event", "")
-        if swell and event in SURF_EVENTS:
-            notes.append(f"{event}: photograph only from high, set-back ground - never on the beach, rocks or jetties.")
-        elif event in BLOCKING_EVENTS:
+        blocks, warns, note = _rule(alert)
+        if _applies(blocks, exposure):
             unsafe = True
-            notes.append(f"{event} in effect. Do not go; this is not a storm-chasing system.")
-        elif event in CAUTION_EVENTS:
-            notes.append(f"{event} in effect.")
-    summary = ("Unsafe: " + notes[0]) if unsafe else ("; ".join(notes) if notes else
-               ("No NWS warnings for this place and time." if checkable else "Location not matched to an NWS county; check warnings yourself."))
-    return {"unsafe": unsafe, "notes": notes, "checked": checkable, "summary": summary}
+            notes.insert(0, f"{event} in effect. {note}".strip())
+        elif _applies(warns, exposure):
+            caution = True
+            notes.append(f"{event} in effect. {note}".strip())
+    if unsafe:
+        state, summary = STATE_UNSAFE, "Unsafe: " + notes[0]
+    elif caution:
+        state, summary = STATE_CAUTION, "Caution: " + "; ".join(note for note in notes if " in effect" in note)
+    elif checkable:
+        state, summary = STATE_SAFE, "No NWS warnings for this place and time."
+    else:
+        state, summary = STATE_UNKNOWN, "Safety not checked: this location is not matched to an NWS county. Check warnings yourself."
+    return {"unsafe": unsafe, "notes": notes, "checked": checkable or unsafe or caution,
+            "travel": travel, "state": state, "summary": summary}
+
+
+def current_alerts(value, fetched_at: datetime | None, failures: int, now: datetime) -> list | None:
+    """The alert list only while it is a current check; otherwise None (unknown)."""
+    if fetched_at is None or failures or now - fetched_at > timedelta(hours=ALERTS_MAX_AGE_HOURS):
+        return None
+    return list(value or [])
 
 
 # --- Forecast watch signals ------------------------------------------------------

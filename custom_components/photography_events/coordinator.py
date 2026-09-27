@@ -42,7 +42,7 @@ from homeassistant.util import dt as dt_util
 from . import events as event_builder
 from .event_state import EventState, event_id
 from . import waves, spectacles, grunion, source_health, eclipses
-from . import birds as birds_module, eligibility, lunar, signals as signals_module, sunburst, weather_hazards
+from . import birds as birds_module, conditions, eligibility, lunar, signals as signals_module, sunburst, weather_hazards
 from homeassistant.helpers.storage import Store
 from . import field_reports as reports_module
 
@@ -133,6 +133,11 @@ GROUP_STAGGER_SECONDS = 2.0
 # already far outside the drive limit.
 ROUTING_HORIZON_HOURS = 48
 ROUTING_SLACK = 1.5
+
+
+# SunsetWx forecasts older than this are not used (product threshold: two
+# fetch intervals).
+SUNSETWX_MAX_AGE_HOURS = 6
 
 
 class PartialFetchError(ValueError):
@@ -317,7 +322,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
         # Group 1: weather. Everything that can raise a drop-everything alert in
         # the next 48 hours depends on it, so it goes first and alone.
-        forecast_zones = [*zones, self.home_zone]
+        # Plus the spots whose conditions are checked where they happen (the
+        # Pismo grove's dawn), never borrowed from the home forecast.
+        forecast_zones = [*zones, self.home_zone, *conditions.CONDITION_POINTS]
         if categories & {CATEGORY_SUNSET, CATEGORY_ASTRO, CATEGORY_RARE}:
             await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, forecast_zones, now))
         forecasts = self._sources["weather"].value or {}
@@ -384,7 +391,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         source_health.annotate(opportunities, health)
         self._update_repairs(health)
         alerts_source = self._sources["surf_alerts"]
-        alerts = alerts_source.value if alerts_source.fetched_at and not alerts_source.failures else None
+        # A failed or stale alert feed is "safety unknown", never "all clear".
+        alerts = weather_hazards.current_alerts(alerts_source.value, alerts_source.fetched_at,
+                                                alerts_source.failures, now)
         await self.hass.async_add_executor_job(lambda: eligibility.annotate(
             opportunities, now, max_drive_hours=self.max_drive_hours, alerts=alerts,
             sunset_drive_hours=self.category_drive_limits.get(CATEGORY_SUNSET)))
@@ -436,7 +445,13 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         # Sunsets are a home feature: tonight's sky over Vandenberg, not a
         # regional sky map nobody drives six hours for.
         if CATEGORY_SUNSET in categories and home_forecast:
-            provider = self._sources["sunsetwx"].value if self.sunsetwx_credentials else None
+            # A provider forecast only while the provider is healthy and recent:
+            # yesterday's "Great" must not decide tonight. Otherwise the local
+            # model decides and source health says the fallback is in use.
+            sunsetwx = self._sources["sunsetwx"]
+            provider = (sunsetwx.value if self.sunsetwx_credentials and not sunsetwx.failures
+                        and sunsetwx.fetched_at and now - sunsetwx.fetched_at <= timedelta(hours=SUNSETWX_MAX_AGE_HOURS)
+                        else None)
             opportunities.extend(
                 await self.hass.async_add_executor_job(
                     event_builder.build_sunset_opportunities,
@@ -498,7 +513,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                      and report.category in (CATEGORY_BLOOMS, CATEGORY_FOLIAGE) and not report.phenomenon_key]
         if unmatched:
             opportunities.extend(event_builder.build_field_report_opportunities(unmatched, now))
-        self._annotate_monarch_conditions(seasonal, home_forecast, now, local_tz)
+        conditions.annotate_monarchs(seasonal, forecasts, now, local_tz)
+        conditions.annotate_firefall(seasonal, forecasts, now, self._sources["park_alerts"].value
+                                     if "park_alerts" in self._enabled_sources() else None)
 
         bird_views = {"spectacle": [], "encounter": [], "chase": []}
         if CATEGORY_BIRDS in categories or CATEGORY_RARE in categories:
@@ -511,7 +528,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                         {row.phenomenon for row in bird_views["spectacle"]}]
             bird_views["spectacle"] = [*leftovers, *upgraded]
         if CATEGORY_MARINE in categories:
-            opportunities.extend(birds_module.marine_presence(corroboration, now, self.home))
+            opportunities.extend(birds_module.marine_presence(corroboration, now, self.home, reports))
 
         if CATEGORY_RARE in categories:
             opportunities.extend(grunion.opportunities(self._sources["grunion"].value or [], now, self.home))
@@ -532,7 +549,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 _make_cloud_lookup((forecasts.get("yosemite_valley") or {}).get("local")), reports
             )
         )
-        opportunities.extend(spectacles.report_opportunities(reports, now, self.home))
+        reported = spectacles.report_opportunities(reports, now, self.home)
+        conditions.annotate_snow(reported, forecasts, now)
+        opportunities.extend(reported)
         if "waves" in categories:
             # A failed download cannot keep a forecast authoritative indefinitely.
             source = self._sources["cdip"]
@@ -570,17 +589,6 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             copy.extra["cloud_confidence"] = weather_scoring.cloud_confidence(lead) if cloud is not None else None
             fresh.append(copy)
         return fresh
-
-    def _annotate_monarch_conditions(self, seasonal, home_forecast, now, tz):
-        """Tomorrow's dawn temperature for the Pismo grove (nearest forecast: home)."""
-        dawn = weather_hazards.dawn_temperature(home_forecast, now, tz)
-        for item in seasonal:
-            if item.phenomenon != "pismo_monarchs" or dawn is None:
-                continue
-            moment, celsius = dawn
-            item.extra["dawn_temp_f"] = round(celsius * 9 / 5 + 32, 1)
-            item.extra["best_time_of_day"] = (f"Dawn {moment.astimezone(tz):%a %H:%M}: forecast "
-                                              f"{item.extra['dawn_temp_f']:.0f} °F at the nearest forecast point (Vandenberg, ~40 km).")
 
     async def _refresh(self, source: Source, now: datetime, fetcher: Callable[[], Awaitable[Any]]) -> None:
         """Run a fetch if it is due, recording the outcome either way."""

@@ -345,22 +345,40 @@ def marine_presence(sightings: list, now: datetime, home: tuple[float, float], r
     for group in _orca_clusters(here):
         observers = {_observer_id(item) for item in group}
         latest = max(group, key=lambda item: item.latest)
+        # The same diameter as the community cluster: an operator's point
+        # joins only when it is within ORCA_CLUSTER_KM of *every* member.
+        # Otherwise it stands as its own occurrence at its own place, and
+        # never lends its trust to an observation somewhere else.
         backing = [row for row in operators if all(
-            haversine_km(row[1], row[2], item.latitude, item.longitude) <= ORCA_CLUSTER_KM * 2 for item in group)]
-        for row in backing:
-            operators.remove(row)
+            haversine_km(row[1], row[2], item.latitude, item.longitude) <= ORCA_CLUSTER_KM for item in group)]
+        backing = backing[:1]
         if len(observers) < 2 and not backing:
             continue
+        for row in backing:
+            operators.remove(row)
         found.append(_orca_row(latest.latitude, latest.longitude, latest.latest, latest.place, latest.url, now, home,
-                               observers=len(observers), operator=backing[0][0] if backing else None,
+                               observers=len(observers), operator=backing[0] if backing else None,
                                contributions=group))
-    for report, latitude, longitude in operators:
+    for row in operators:
+        report, latitude, longitude = row
         found.append(_orca_row(latitude, longitude, report.observed_at, report.source_name, report.url, now, home,
-                               observers=0, operator=report))
+                               observers=0, operator=row))
     return found
 
 
 def _orca_row(latitude, longitude, seen, place, url, now, home, *, observers, operator, contributions=()):
+    """``operator`` is ``(report, latitude, longitude)`` from operator_orca_reports."""
+    contributions = [{"source": item.source, "observer": _observer_id(item), "place": item.place,
+                      "latitude": item.latitude, "longitude": item.longitude,
+                      "observed_at": item.latest.isoformat(), "url": item.url}
+                     for item in contributions]
+    if operator is not None:
+        operator, op_latitude, op_longitude = operator
+        # Auditable like every other contribution: its own point and time.
+        contributions.append({"source": operator.source_name, "observer": f"operator:{operator.source_id}",
+                              "place": getattr(operator, "place", "") or operator.source_name,
+                              "latitude": op_latitude, "longitude": op_longitude,
+                              "observed_at": operator.observed_at.isoformat(), "url": operator.url or None})
     drive = estimate_drive_hours(latitude, longitude, home)
     parts = []
     if observers:
@@ -386,10 +404,7 @@ def _orca_row(latitude, longitude, seen, place, url, now, home, *, observers, op
         extra={"verification": "corroborated", "evidence_state": "repeated_presence",
                "observed_at": seen.isoformat(), "behavior_evidence": evidence,
                # Every contribution with its own place, time and identity.
-               "contributions": [{"source": item.source, "observer": _observer_id(item), "place": item.place,
-                                  "latitude": item.latitude, "longitude": item.longitude,
-                                  "observed_at": item.latest.isoformat(), "url": item.url}
-                                 for item in contributions],
+               "contributions": contributions,
                "evidence_note": "Orca presence only; hunting behaviour is not confirmed. A boat trip is usually required.",
                "confidence_note": "Orcas travel fast; contact an operator before booking."},
     )

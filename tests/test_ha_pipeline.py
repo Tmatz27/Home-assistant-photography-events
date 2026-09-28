@@ -27,6 +27,7 @@ if HAS_HA:
     from custom_components.photography_events.email_reports import parse_email_report
     from custom_components.photography_events.sensor import CantMissSensor, PlanningOutlookSensor
     from custom_components.photography_events.event_state import event_id
+    from custom_components.photography_events.const import ZONES_BY_ID
 
 NOW = datetime(2026, 9, 27, 17, tzinfo=timezone.utc)
 FORECAST_KEYS = ("cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high", "relative_humidity_2m",
@@ -77,12 +78,19 @@ class Router:
             "developer.nps.gov": lambda url, params: {"total": "0", "data": []},
         }
         self.forecast_failures = set()
+        # (zone latitude, part index) -> edit(part) for one component of one
+        # zone's three-part answer: 0 local, 1 sunset path, 2 sunrise path.
+        self.forecast_edits = {}
 
     def forecast(self, url, params):
         latitudes = [float(value) for value in str(params["latitude"]).split(",")]
         if any(round(lat, 3) in self.forecast_failures for lat in latitudes):
             return Response({"error": True, "reason": "test outage"}, 500)
-        return [hourly(self.now - timedelta(hours=2)) for _ in latitudes]
+        parts = [hourly(self.now - timedelta(hours=2)) for _ in latitudes]
+        for (latitude, index), edit in self.forecast_edits.items():
+            if round(latitudes[0], 3) == round(latitude, 3) and index < len(parts):
+                parts[index] = edit(parts[index])
+        return parts
 
     async def request(self, method, url, params=None, headers=None, json=None, data=None):
         self.calls.append((url, dict(params or {})))
@@ -166,6 +174,35 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("surf_alerts", [p["source"] for p in board["assessment"]["problems"]])
         self.assertNotEqual(board["headline"], "Nothing worth changing plans for this week.")
 
+    async def test_nws_geography_the_gate_cannot_place_is_never_safe(self):
+        # Second review, R2: a December elephant-seal cycle. Each warning is
+        # real and current; none can be placed, so safety is unknown.
+        self.set_now(datetime(2026, 12, 20, 18, tzinfo=timezone.utc))
+
+        def warning(**geo):
+            return {"type": "Feature", "geometry": geo.pop("geometry", None),
+                    "properties": {"event": "High Wind Warning", "headline": "High Wind Warning", "severity": "Severe",
+                                   "geocode": geo, "onset": (self.now - timedelta(hours=1)).isoformat(),
+                                   "expires": (self.now + timedelta(hours=12)).isoformat()}}
+        nan_ring = [[[-121.3, 35.6], [float("nan"), 35.7], [-121.2, 35.7], [-121.3, 35.6]]]
+        cases = {"UGC only": warning(UGC=["CAZ340"]), "bogus SAME": warning(SAME=["garbage"]),
+                 "scalar SAME": warning(SAME="006079"),
+                 "NaN polygon": warning(geometry={"type": "Polygon", "coordinates": nan_ring})}
+        for name, feature in cases.items():
+            with self.subTest(name):
+                alerts = self.coordinator._sources["surf_alerts"]
+                alerts.fetched_at, alerts.next_attempt = None, None
+                self.router.routes["api.weather.gov"] = lambda url, params, feature=feature: {
+                    "type": "FeatureCollection", "features": [feature]}
+                board = await self.cycle(["mammals"])
+                self.assertEqual(self.coordinator.data["sources"]["surf_alerts"]["state"], "failed")
+                self.assertEqual(board["assessment"]["state"], "incomplete")
+                self.assertNotIn("elephant_seal_battles", [row["phenomenon"] for row in board["events"]])
+                seals = [item for item in self.coordinator.data["opportunities"]
+                         if item.phenomenon == "elephant_seal_battles"]
+                self.assertTrue(seals)
+                self.assertTrue(all(item.extra["assessment"]["safety_state"] != "safe" for item in seals))
+
     async def test_valid_empty_nws_feed_is_a_healthy_check(self):
         board = await self.cycle(["mammals"])
         self.assertEqual(self.coordinator.data["sources"]["surf_alerts"]["state"], "ok")
@@ -189,10 +226,10 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Park access not checked", " ".join(item.extra["assessment"]["blockers"]))
 
     async def test_rare_on_parks_off_fetches_nps_for_firefall_with_pagination(self):
-        pages = {0: {"total": "60", "data": [{"parkCode": "yose", "title": f"Info {i}", "category": "Information"}
-                                              for i in range(50)]},
-                 50: {"total": "60", "data": [{"parkCode": "yose", "title": f"Info {i}", "category": "Information"}
-                                               for i in range(50, 60)]}}
+        pages = {0: {"total": "60", "data": [{"id": f"i{i}", "parkCode": "yose", "title": f"Info {i}",
+                                               "category": "Information"} for i in range(50)]},
+                 50: {"total": "60", "data": [{"id": f"i{i}", "parkCode": "yose", "title": f"Info {i}",
+                                                "category": "Information"} for i in range(50, 60)]}}
         self.router.routes["developer.nps.gov"] = lambda url, params: pages[int(params["start"])]
         item = await self.firefall_cycle(nps_api_key="test-only")
         self.assertEqual(item.extra["access_state"], "open")
@@ -201,7 +238,7 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_short_nps_read_keeps_access_unknown(self):
         self.router.routes["developer.nps.gov"] = lambda url, params: {"total": "60", "data": [
-            {"parkCode": "yose", "title": "Info", "category": "Information"}] * 50} if int(params["start"]) == 0 else \
+            {"id": f"i{i}", "parkCode": "yose", "title": "Info", "category": "Information"} for i in range(50)]} if int(params["start"]) == 0 else \
             {"total": "60", "data": []}
         item = await self.firefall_cycle(nps_api_key="test-only")
         self.assertEqual(item.extra["access_state"], "unknown")
@@ -209,11 +246,21 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
 
     async def test_real_nps_closure_category_blocks(self):
         self.router.routes["developer.nps.gov"] = lambda url, params: {"total": "1", "data": [
-            {"parkCode": "yose", "title": "Northside Drive closed for firefall", "category": "Park Closure",
+            {"id": "c1", "parkCode": "yose", "title": "Northside Drive closed for firefall", "category": "Park Closure",
              "description": "El Capitan picnic area closed."}]}
         item = await self.firefall_cycle(nps_api_key="test-only")
         self.assertEqual(item.extra["access_state"], "closed")
         self.assertTrue(any(b.startswith("access:") for b in item.extra["assessment"]["blockers"]))
+
+    async def test_duplicate_or_unreadable_nps_records_keep_access_unknown(self):
+        record = {"id": "i1", "parkCode": "yose", "title": "Info", "category": "Information"}
+        for data in ([record, record], [record, {**record, "id": "i2", "category": ""}]):
+            with self.subTest(data=data):
+                self.router.routes["developer.nps.gov"] = lambda url, params, data=data: {"total": "2", "data": data}
+                item = await self.firefall_cycle(nps_api_key="test-only")
+                self.assertEqual(item.extra["access_state"], "unknown")
+                self.assertFalse(item.extra["assessment"]["eligible"])
+                self.assertEqual(self.coordinator.data["sources"]["park_alerts"]["state"], "failed")
 
     # --- C5 ------------------------------------------------------------------------
 
@@ -226,6 +273,48 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
                         if item.phenomenon == "humpback_lunge_feeding" and item.extra.get("precision") == "peak")
         self.assertNotEqual(humpback.extra["evidence_state"], "behavior_confirmed")
         self.assertNotIn("humpback_lunge_feeding", [row["phenomenon"] for row in board["events"]])
+
+    async def test_another_species_behaviour_never_confirms_through_ha(self):
+        # Second review, R3, through ingest and a real cycle.
+        reports = parse_email_report("Whale report", "Humpbacks passed Avila today and dolphins were lunge feeding.",
+                                     "Whale list", None, None, self.now - timedelta(hours=2))
+        self.coordinator._ingested_reports = list(reports)
+        board = await self.cycle(["marine"])
+        humpback = next(item for item in self.coordinator.data["opportunities"]
+                        if item.phenomenon == "humpback_lunge_feeding" and item.extra.get("precision") == "peak")
+        self.assertNotEqual(humpback.extra["evidence_state"], "behavior_confirmed")
+        self.assertNotIn("humpback_lunge_feeding", [row["phenomenon"] for row in board["events"]])
+        self.assertNotIn("humpback_lunge_feeding", [row["phenomenon"] for row in board["held"]])
+
+    async def test_sea_lions_feeding_is_not_a_condor_spectacle_through_ha(self):
+        self.set_now(datetime(2026, 12, 20, 18, tzinfo=timezone.utc))
+        checklist = [{"speciesCode": "calcon", "comName": "California Condor", "sciName": "Gymnogyps californianus",
+                      "locName": "Pinnacles NP--High Peaks", "lat": 36.487, "lng": -121.195, "howMany": 1,
+                      "obsDt": (self.now - timedelta(hours=5)).astimezone(dt_util.DEFAULT_TIME_ZONE).strftime("%Y-%m-%d %H:%M"),
+                      "subId": "S2", "obsValid": True, "obsReviewed": False}]
+        self.router.routes["api.ebird.org"] = lambda url, params: checklist if "calcon" in url else []
+        self.coordinator._ingested_reports = list(parse_email_report(
+            "Pinnacles", "Condors at Pinnacles today and sea lions feeding.", "Park list", "birds", None,
+            self.now - timedelta(hours=3)))
+        board = await self.cycle(["birds"], ebird_api_key="test-only")
+        self.assertEqual([row for row in board["birds"]["spectacle"] if row["phenomenon"] == "condor_activity"], [])
+        self.assertNotIn("condor_activity", [row["phenomenon"] for row in board["events"]])
+
+    async def test_hotline_page_date_does_not_renew_an_old_bloom_through_ha(self):
+        # Second review, R4: HTML from the hotline URL through the real scraper,
+        # builder, gate and sensor.
+        self.set_now(datetime(2026, 3, 27, 18, tzinfo=timezone.utc))
+        page = ("<html><body><div class='entry-content'><h2>Carrizo March 27, 2026</h2><p>On March 1, 2026 Carrizo "
+                "was carpeted with wildflowers in full bloom. The road was repaired today.</p></div></body></html>")
+        self.router.routes["theodorepayne.org"] = lambda url, params: page
+        board = await self.cycle(["blooms"])
+        reports = self.coordinator._sources["field_reports"].value or []
+        carrizo = [report for report in reports if report.zone_id == "carrizo_plain"]
+        self.assertEqual([report.observed_at for report in carrizo], [datetime(2026, 3, 1, 12, tzinfo=timezone.utc)])
+        bloom = [item for item in self.coordinator.data["opportunities"] if item.phenomenon == "bloom_carrizo_plain"]
+        self.assertTrue(bloom)
+        self.assertFalse(any(item.extra["assessment"]["eligible"] for item in bloom))
+        self.assertNotIn("bloom_carrizo_plain", [row["phenomenon"] for row in board["events"]])
 
     # --- H5 / H6 --------------------------------------------------------------------
 
@@ -270,6 +359,122 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
         problems = [p["source"] for p in board["assessment"]["problems"]]
         self.assertIn("weather:lake_tahoe", problems)
         self.assertNotIn("weather:home", problems)
+
+    async def test_unused_sunrise_component_failure_keeps_a_valid_firefall(self):
+        # R6: Firefall reads the valley and its sunset light path. A broken
+        # sunrise probe in the same response must cost the sunrise input only.
+        valley = ZONES_BY_ID["yosemite_valley"]["latitude"]
+        self.router.forecast_edits[(valley, 2)] = lambda part: {"error": True, "reason": "bad probe"}
+        item = await self.firefall_cycle(nps_api_key="test-only")
+        self.assertTrue(item.extra["assessment"]["eligible"], item.extra["assessment"]["blockers"])
+        self.assertIsNotNone(item.extra.get("light_path_gate"))
+        points = module.source_health.point_health(self.coordinator._weather_points, self.now)
+        self.assertEqual(points["yosemite_valley:sunrise"], "failed")
+        self.assertEqual(points["yosemite_valley"], "ok")
+        self.assertEqual(points["yosemite_valley:sunset"], "ok")
+        self.assertNotIn("degraded_required", item.extra)
+        board = CantMissSensor(self.coordinator, self.entry).extra_state_attributes
+        self.assertNotIn("weather:yosemite_valley:sunrise", [p["source"] for p in board["assessment"]["problems"]])
+        self.assertIn("horsetail_firefall", [row["phenomenon"] for row in board["events"]])
+
+    async def test_used_sunset_component_failure_is_reported(self):
+        valley = ZONES_BY_ID["yosemite_valley"]["latitude"]
+        self.router.forecast_edits[(valley, 1)] = lambda part: {"hourly": {"time": []}}
+        item = await self.firefall_cycle(nps_api_key="test-only")
+        self.assertFalse(item.extra["assessment"]["eligible"])
+        board = CantMissSensor(self.coordinator, self.entry).extra_state_attributes
+        self.assertIn("weather:yosemite_valley:sunset", [p["source"] for p in board["assessment"]["problems"]])
+        self.assertEqual(board["headline"], "Can't Miss assessment incomplete: required data unavailable.")
+
+    async def test_unassessed_firefall_layers_are_an_incomplete_week_not_a_quiet_one(self):
+        # R5: every one of these blocks Firefall. None of them is an answer
+        # about the sky, so none of them may produce the quiet-week headline.
+        valley = ZONES_BY_ID["yosemite_valley"]["latitude"]
+
+        def layer(key, value=None, drop=False, shorten=False):
+            def edit(part):
+                block = part["hourly"]
+                if drop:
+                    block.pop(key)
+                elif shorten:
+                    block[key] = block[key][:10]
+                else:
+                    block[key] = [value] * len(block[key])
+                return part
+            return edit
+
+        cases = {
+            "upstream low missing": (1, layer("cloud_cover_low", drop=True)),
+            "upstream mid missing": (1, layer("cloud_cover_mid", drop=True)),
+            "upstream low null": (1, layer("cloud_cover_low", None)),
+            "upstream mid NaN": (1, layer("cloud_cover_mid", float("nan"))),
+            "upstream low infinite": (1, layer("cloud_cover_low", float("inf"))),
+            "upstream low negative": (1, layer("cloud_cover_low", -1)),
+            "upstream mid over 100": (1, layer("cloud_cover_mid", 101)),
+            "upstream low short": (1, layer("cloud_cover_low", shorten=True)),
+            "local cloud null": (0, layer("cloud_cover", None)),
+        }
+        for name, (index, edit) in cases.items():
+            with self.subTest(name):
+                self.coordinator._weather_points.clear()
+                weather = self.coordinator._sources["weather"]
+                weather.next_attempt, weather.fetched_at = None, None
+                self.router.forecast_edits = {(valley, index): edit}
+                item = await self.firefall_cycle(nps_api_key="test-only")
+                assessment = item.extra["assessment"]
+                self.assertFalse(assessment["eligible"])
+                self.assertTrue(assessment["conditions_unassessed"])
+                board = CantMissSensor(self.coordinator, self.entry).extra_state_attributes
+                self.assertEqual(board["assessment"]["state"], "incomplete")
+                self.assertIn("conditions:horsetail_firefall", [p["source"] for p in board["assessment"]["problems"]])
+                self.assertEqual(board["headline"], "Can't Miss assessment incomplete: required data unavailable.")
+                self.assertIn("horsetail_firefall", [row["phenomenon"] for row in board["held"]])
+
+    async def test_valid_blocked_light_path_is_an_answer(self):
+        valley = ZONES_BY_ID["yosemite_valley"]["latitude"]
+
+        def blocked(part):
+            for key in ("cloud_cover_low", "cloud_cover_mid"):
+                part["hourly"][key] = [100] * len(part["hourly"][key])
+            return part
+        self.router.forecast_edits[(valley, 1)] = blocked
+        item = await self.firefall_cycle(nps_api_key="test-only")
+        self.assertFalse(item.extra["assessment"]["eligible"])
+        self.assertEqual(item.extra["assessment"]["conditions_unassessed"], [])
+        self.assertIn("cloud upstream blocks the sunset light", item.extra["assessment"]["blockers"])
+        board = CantMissSensor(self.coordinator, self.entry).extra_state_attributes
+        self.assertEqual(board["assessment"]["state"], "complete")
+        self.assertEqual(board["headline"], "Nothing worth changing plans for this week.")
+
+    def provider(self, valid_at):
+        self.router.routes["sunsetwx.com/v1/login"] = lambda url, params: {"access_token": "t", "expires_in": 3600}
+        self.router.routes["sunsetwx.com/v1/quality"] = lambda url, params: {"type": "FeatureCollection", "features": [
+            {"properties": {"type": params["type"], "quality": "Great", "quality_percent": 95,
+                            "valid_at": valid_at(params["type"]).isoformat(),
+                            "last_updated": (self.now - timedelta(hours=1)).isoformat(), "source": "GFS"}}]}
+
+    async def test_provider_prediction_for_another_event_does_not_cover_home(self):
+        # R5: a current-model prediction four days past the next sunset
+        # assesses nothing this week, so the failed home forecast still shows.
+        self.router.forecast_failures.add(round(34.742, 3))
+        self.provider(lambda kind: self.now + timedelta(days=4, hours=9))
+        board = await self.cycle(["sunset"], sunsetwx_client_id="id", sunsetwx_client_secret="secret")
+        self.assertEqual(self.coordinator.data["sources"]["sunsetwx"]["state"], "ok")
+        self.assertEqual(board["assessment"]["state"], "incomplete")
+        self.assertTrue(any(p["source"].startswith("sunset:") for p in board["assessment"]["problems"]))
+        self.assertEqual(board["headline"], "Can't Miss assessment incomplete: required data unavailable.")
+
+    async def test_provider_covers_exactly_the_events_it_predicts(self):
+        self.router.forecast_failures.add(round(34.742, 3))
+        home = self.coordinator.home_zone
+        events = module.event_builder.home_sun_events(home, self.now)
+        first = {label.lower(): moment for moment, _, label in events[::-1]}  # earliest of each kind wins
+        self.provider(lambda kind: first[kind])
+        board = await self.cycle(["sunset"], sunsetwx_client_id="id", sunsetwx_client_secret="secret")
+        gaps = {p["source"] for p in board["assessment"]["problems"] if p["source"].startswith("sunset:")}
+        self.assertNotIn(f"sunset:{first['sunset'].isoformat()}", gaps)
+        self.assertNotIn(f"sunset:{first['sunrise'].isoformat()}", gaps)
+        self.assertEqual(len(gaps), len(events) - 2, "later sunsets had no forecast at all")
 
     async def test_home_point_failure_makes_the_assessment_incomplete(self):
         self.router.forecast_failures.add(round(34.742, 3))
@@ -331,6 +536,59 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(item.drive_in_traffic)
         self.assertTrue(any("not current traffic" in reason for reason in item.reasons))
 
+    ROUTE_FIXTURE = os.path.join(os.path.dirname(__file__), "fixtures", "cant-miss-route-rows.json")
+
+    async def routed_rows(self):
+        """Current, recent and disputed routes through the real routing, gate and row builder."""
+        eligibility = module.eligibility
+        self.entry.options = {"google_api_key": "test-only", "max_drive_hours": 6}
+        self.router.routes["googleapis.com"] = lambda url, params: Response(None, 500)
+        items = {}
+        for name, age, routed, estimate, latitude in (("current", timedelta(minutes=30), 2.0, 2.2, 35.2),
+                                                      ("recent", timedelta(days=6), 5.8, 5.5, 35.4),
+                                                      ("disputed", timedelta(days=6), 5.8, 7.0, 35.6)):
+            item = module.event_builder.Opportunity(
+                f"route-{name}", f"Milky Way core ({name} route)", "astronomy", "z", "Dark site",
+                self.now + timedelta(hours=5), self.now + timedelta(hours=7), 95, "", estimate,
+                latitude=latitude, longitude=-119.8, phenomenon="milky_way",
+                extra={"evidence_state": "computed", "verification": "computed", "cloud_cover": 5.0,
+                       "cloud_is_forecast": True})
+            self.coordinator._routing_cache[self.coordinator._route_key(module._point(item))] = (
+                SimpleNamespace(hours=routed, minutes=round(routed * 60), source="Routes API", in_traffic=True),
+                self.now - age)
+            items[name] = item
+        await self.coordinator._apply_routing(self.router, self.now, list(items.values()))
+        for item in items.values():
+            eligibility.assess(item, self.now, max_drive_hours=6, alerts=[])
+        return items
+
+    async def test_old_route_cannot_alone_clear_a_trip_the_estimate_puts_over_the_limit(self):
+        # R9: a six-day-old 5.8 h route under a 6 h cap, against a 7 h estimate.
+        items = await self.routed_rows()
+        disputed = items["disputed"].extra["assessment"]
+        self.assertFalse(disputed["eligible"])
+        self.assertTrue(disputed["held"])
+        self.assertIn("route from 6 days ago; the distance estimate is 7.0 h", " ".join(disputed["held_reasons"]))
+        self.assertTrue(items["recent"].extra["assessment"]["eligible"], "estimate agrees: the recent route may decide")
+        self.assertTrue(items["current"].extra["assessment"]["eligible"])
+
+    async def test_route_basis_reaches_the_card_payload(self):
+        # The JS card test renders exactly these backend rows
+        # (tests/fixtures/cant-miss-route-rows.json). Regenerate with
+        # PE_WRITE_FIXTURES=1 when the row shape changes on purpose.
+        items = await self.routed_rows()
+        rows = [module.eligibility.cant_miss_row(items[name]) for name in ("current", "recent")]
+        payload = json.loads(json.dumps({"generated": self.now.isoformat(), "rows": rows}, default=str))
+        self.assertEqual([row["drive_basis"] for row in rows], ["current", "recent"])
+        self.assertEqual(rows[1]["estimated_drive_hours"], 5.5)
+        self.assertIn("route_fetched_at", rows[1])
+        if os.environ.get("PE_WRITE_FIXTURES"):
+            with open(self.ROUTE_FIXTURE, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=1, sort_keys=True)
+                handle.write("\n")
+        with open(self.ROUTE_FIXTURE, encoding="utf-8") as handle:
+            self.assertEqual(json.load(handle), payload, "the card fixture no longer matches the backend")
+
     # --- M1 -------------------------------------------------------------------------
 
     async def test_grunion_and_moonbow_are_timed_calendar_entries_in_pacific_time(self):
@@ -358,6 +616,24 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
                          if item.phenomenon == "sandhill_crane_flyin" and item.start <= self.now <= item.end)
         self.assertEqual(event_id(crane_now), event_id(crane))
         self.assertTrue(self.coordinator.event_state.suppressed(event_id(crane_now)))
+        self.assertNotIn("sandhill_crane_flyin", [row["phenomenon"] for row in board["events"]])
+
+    async def test_a_skip_survives_a_restart_through_the_store(self):
+        # M2 with a real shutdown: a new coordinator reads the choice back
+        # from Home Assistant's Store, not from the old object's memory.
+        self.set_now(datetime(2026, 12, 31, 20, tzinfo=timezone.utc))
+        await self.cycle(["rare_phenomena"])
+        crane = next(item for item in self.coordinator.data["opportunities"]
+                     if item.phenomenon == "sandhill_crane_flyin" and item.start <= self.now <= item.end)
+        await self.coordinator.async_set_event_choice(event_id(crane), "skip")
+        await self.coordinator.async_shutdown()
+        await self.hass.async_block_till_done()
+        self.coordinator = module.PhotographyEventsCoordinator(self.hass, self.entry)
+        await self.coordinator.async_initialize()
+        self.coordinator._cold_start = False
+        self.set_now(datetime(2027, 1, 1, 9, tzinfo=timezone.utc))
+        board = await self.cycle(["rare_phenomena"])
+        self.assertTrue(self.coordinator.event_state.suppressed(event_id(crane)))
         self.assertNotIn("sandhill_crane_flyin", [row["phenomenon"] for row in board["events"]])
 
     # --- M4 -------------------------------------------------------------------------
@@ -413,19 +689,28 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
         await self.cycle(everything_but_waves)
         self.assertNotIn("waves", self.coordinator.enabled_categories, "reading a setting never changes it")
 
-    async def test_legacy_entry_is_migrated_once(self):
+    async def test_legacy_entry_keeps_its_explicit_selection(self):
+        # R10: a version-1 list cannot say whether Waves was left out by
+        # default or on purpose, so it is never rewritten.
         legacy = [c for c in module.ALL_CATEGORIES if c != "waves"]
-        entry = SimpleNamespace(version=1, data={"enabled_categories": legacy}, options={})
         updates = []
         hass = SimpleNamespace(config_entries=SimpleNamespace(
             async_update_entry=lambda target, **changes: updates.append(changes) or target.__dict__.update(changes)))
+        for data, options in (({"enabled_categories": legacy}, {}), ({}, {"enabled_categories": legacy}),
+                              ({"enabled_categories": []}, {}), ({}, {})):
+            with self.subTest(data=data, options=options):
+                entry = SimpleNamespace(version=1, data=dict(data), options=dict(options))
+                self.assertTrue(await async_migrate_entry(hass, entry))
+                self.assertEqual(entry.version, 2)
+                self.assertEqual((entry.data, entry.options), (data, options), "stored choices unchanged")
+        self.entry.data, self.entry.options = {"enabled_categories": legacy}, {}
+        self.assertNotIn("waves", self.coordinator.enabled_categories)
+        self.entry.data = {}
+        self.assertIn("waves", self.coordinator.enabled_categories, "no stored list: current defaults")
+        entry = SimpleNamespace(version=2, data={"enabled_categories": legacy}, options={})
+        count = len(updates)
         self.assertTrue(await async_migrate_entry(hass, entry))
-        self.assertIn("waves", entry.data["enabled_categories"])
-        self.assertEqual(entry.version, 2)
-        entry.data = {"enabled_categories": legacy}  # a version-2 choice is left alone
-        self.assertTrue(await async_migrate_entry(hass, entry))
-        self.assertNotIn("waves", entry.data["enabled_categories"])
-        self.assertEqual(len(updates), 1)
+        self.assertEqual(len(updates), count, "a version-2 entry is not touched")
 
     # --- Payload and recorder -------------------------------------------------------
 

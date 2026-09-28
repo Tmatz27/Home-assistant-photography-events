@@ -128,3 +128,24 @@ Additional bugs found: NPS "Park Closure" never matched the blocking categories;
 Validation (local): 441 portable Python tests; 52 Home Assistant tests (28 contracts + 24 new pipeline tests) against HA 2024.11.3 in a Python 3.12 venv - 493 Python in total; 117 JavaScript tests; pyflakes clean; card build/check and version checks pass; TRACKING.md regenerated. Browser checks in BROWSER_VALIDATION.md.
 
 Still not live-verified: SunsetWx login/current quality and `last_updated`; eBird species responses; the statewide NWS payload; Friends of the Elephant Seal; Condor Express real wording; real Open-Meteo bundles; NPS pagination/access; current CDFW parsing; NOAA station/timezone enrichment. The user's Home Assistant instance was not used.
+
+## 2026-09-28: 0.16.0 residual pass after the second independent review (same version; never tagged)
+
+Base f3a6561. The second review (uploaded by the user, not in the repository) rated 13 findings verified fixed and 11 partial, with residuals R1-R11, and returned the work. Each residual was reproduced first. `main` is still 0.15.0; nothing was tagged, released, merged or opened as a PR, and no Phase 2 work was started.
+
+- R1 NPS records validated one by one; distinct ids must equal `total`.
+- R2 NWS geography must be something `alerts_at` can place.
+- R3 behaviour/count bound to their own animal; conservative header rule; multi-place context unplaced.
+- R4 hotline reports built per normalized observation.
+- R5 unassessed condition inputs hold the row and make coverage incomplete; per-event sunset coverage (provider covers only what it predicts).
+- R6 forecast parts tracked as `zone`, `zone:sunset`, `zone:sunrise`.
+- R7 explicit zones keep the observed point; region-only glowing surf is not a destination.
+- R8 operator orca backing within the 25 km diameter; operator point in contributions.
+- R9 drive basis and route age on the card; an old route alone cannot clear a trip the estimate puts over the limit.
+- R10 the version 1 to 2 migration no longer rewrites saved categories (release notes tell pre-Waves users to switch Waves on once).
+- R11 snow policy, README notification text, BACKLOG and release-note completion claims reconciled.
+
+Validation (local): 457 portable Python tests (66 HA tests skipped without HA); HA contracts and pipeline suites run against HA 2024.11.3 in a Python 3.12 venv; 118 JavaScript tests; pyflakes clean; card build/check, version checks and `git diff --check` pass; TRACKING.md regenerated. Browser checks in BROWSER_VALIDATION.md.
+
+Still not live-verified: unchanged from the previous entry (SunsetWx, eBird species, statewide NWS payload, Friends of the Elephant Seal, Condor Express wording, real Open-Meteo bundles, NPS pagination/access, CDFW parsing, NOAA enrichment, Google routing). The user's Home Assistant instance was not used.
+

@@ -129,27 +129,109 @@ def statements(text: str) -> list[list[str]]:
     return out
 
 
-HEADER_MAX_WORDS = 6
+# Every animal a clause might be about, so a behaviour can be tied to the
+# animal it is written against. Subject nouns map to their phenomenon's
+# canonical animal; the rest are "other animals" that only ever *block* a
+# binding ("sea lions feeding" is not condors feeding). Longest match first.
+_CANONICAL = {"killer whale": "orca", "grey whale": "gray whale", "harbour seal": "harbor seal",
+              "geese": "goose", "butterfl": "monarch"}
+_OTHER_ANIMALS = (r"sea\s+lions?", r"(?:fur\s+)?seals?", r"otters?", r"porpoises?", r"fin\s+whales?",
+                  r"minke\s+whales?", r"whales?", r"pelicans?", r"gulls?", r"birds?", r"ducks?", r"hawks?",
+                  r"vultures?", r"ravens?", r"sharks?", r"fish", r"deer", r"coyotes?", r"bobcats?", r"pups?",
+                  r"cormorants?", r"egrets?", r"herons?", r"swans?", r"sardines?", r"anchov(?:y|ies)", r"krill")
+
+
+def _animal_patterns():
+    rows = [(term, _CANONICAL.get(term, term), pattern) for term, pattern in COUNT_NOUNS.items()]
+    rows += [(pattern, "other:" + pattern, pattern) for pattern in _OTHER_ANIMALS]
+    return [(canonical, re.compile(r"\b" + pattern + r"\b", re.IGNORECASE)) for _term, canonical, pattern in rows]
+
+
+_ANIMALS = _animal_patterns()
+
+
+def animal_mentions(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, canonical animal) for every animal named, overlaps resolved longest-first."""
+    found = []
+    for canonical, pattern in _ANIMALS:
+        for match in pattern.finditer(text):
+            found.append((match.start(), match.end(), canonical))
+    found.sort(key=lambda row: (row[0], -(row[1] - row[0])))
+    kept, last_end = [], -1
+    for start, end, canonical in found:
+        if start >= last_end:
+            kept.append((start, end, canonical))
+            last_end = end
+        elif end - start > kept[-1][1] - kept[-1][0] and start == kept[-1][0]:
+            kept[-1] = (start, end, canonical)
+            last_end = end
+    return kept
+
+
+def _canonical_subjects(key: str) -> set[str]:
+    return {_CANONICAL.get(term, term) for term in SUBJECT_TERMS.get(key, ())}
+
+
+def _bound_animal(lowered: str, start: int, end: int) -> str | None:
+    """The animal a phrase at [start, end) is written against: the nearest one
+    before it in its clause, else the nearest after, else None."""
+    mentions = animal_mentions(lowered)
+    inside = [m for m in mentions if m[0] >= start and m[1] <= end]
+    if inside:
+        return inside[0][2]
+    before = [m for m in mentions if m[1] <= start]
+    if before:
+        return before[-1][2]
+    after = [m for m in mentions if m[0] >= end]
+    return after[0][2] if after else None
+
+
+# A header is pure context: places, dates and a few report words. "Trip
+# cancelled at Avila today" is a statement, not a header, and lends nothing.
+HEADER_MAX_WORDS = 8
+HEADER_WORDS = frozenset({
+    "report", "reports", "update", "updates", "sighting", "sightings", "log", "daily", "weekly", "summary",
+    "trip", "conditions", "from", "at", "for", "the", "in", "on", "of", "near", "off", "news", "notes",
+    "observations", "whale", "watch", "wildlife", "digest", "edition", "am", "pm", "today", "tonight",
+    "yesterday", "this", "morning", "afternoon", "evening", "last", "night", "monday", "tuesday", "wednesday",
+    "thursday", "friday", "saturday", "sunday", "mon", "tue", "wed", "thu", "fri", "sat", "sun",
+})
 
 
 def _is_header(clause: str, catalog) -> bool:
-    """A short statement that sets context and reports nothing itself."""
+    """A short statement of only places, dates and report words."""
+    from .field_reports import PLACE_POINTS, ZONE_HINTS, _MONTHS
+
     lowered = clause.lower()
     if len(clause.split()) > HEADER_MAX_WORDS:
         return False
-    if any(term in lowered for terms in SUBJECT_TERMS.values() for term in terms):
+    if animal_mentions(lowered) or any(term in lowered for item in catalog.values() for term in item.behavior_terms):
         return False
-    return not any(term in lowered for item in catalog.values() for term in item.behavior_terms)
+    for name in sorted({*(row[0] for row in PLACE_POINTS), *(hint for hint, _ in ZONE_HINTS)}, key=len, reverse=True):
+        lowered = lowered.replace(name, " ")
+    words = re.findall(r"[a-z]+", lowered)
+    return all(word in HEADER_WORDS or word in _MONTHS for word in words)
+
+
+_JOINERS = re.compile(r"\b(?:and|or|with|plus|nor|but|than)\b|&|,", re.IGNORECASE)
 
 
 def _subject_count(clause: str, term: str) -> int | None:
-    """A number written against this subject's noun, e.g. "50 monarchs", "2,000 sandhill cranes"."""
+    """A number written against this subject's noun, e.g. "50 monarchs", "2,000 sandhill cranes".
+
+    Up to two adjectives may sit between the number and the noun, never a
+    conjunction or another animal: in "2,000 geese and monarchs" the 2,000 is
+    geese.
+    """
     noun = COUNT_NOUNS.get(term)
     if not noun:
         return None
-    pattern = re.compile(_NUMBER + r"\s+(?:[a-z][a-z-]*\s+){0,2}?" + noun + r"\b", re.IGNORECASE)
+    pattern = re.compile(_NUMBER + r"(\s+(?:[a-z][a-z-]*\s+){0,2}?)" + noun + r"\b", re.IGNORECASE)
     values = []
     for match in pattern.finditer(clause):
+        gap = match.group(2)
+        if _JOINERS.search(gap) or animal_mentions(gap):
+            continue
         try:
             values.append(int(match.group(1).replace(",", "")))
         except ValueError:
@@ -183,16 +265,41 @@ def _clause_date(clause: str, received: datetime | None):
     return None, False
 
 
-def _clause_place(clause: str):
-    from .field_reports import PLACE_POINTS, place_point, zones_in
+AMBIGUOUS = {"ambiguous": True}
 
-    point = place_point(clause)
+
+def _clause_place(clause: str):
+    """The one place a clause names, AMBIGUOUS when it names several zones, or None.
+
+    "Avila and Monterey Bay today" names two regions: nothing in it may be
+    placed at either. Two points inside one zone keep the zone but no point.
+    """
+    from .field_reports import PLACE_POINTS, zones_in
+
+    lowered = clause.lower()
     zones = zones_in(clause)
-    if point is None and not zones:
+    names = []
+    for name, latitude, longitude in sorted(PLACE_POINTS, key=lambda row: -len(row[0])):
+        if name in lowered and not any(name in longer for longer, *_ in names):
+            names.append((name, latitude, longitude))
+    if not zones and not names:
         return None
-    name = next((name for name, *_ in sorted(PLACE_POINTS, key=lambda row: -len(row[0]))
-                 if name in clause.lower()), "")
-    return {"point": point, "zone": zones[0] if zones else "", "name": name}
+    if len(set(zones)) > 1:
+        return AMBIGUOUS
+    points = {(lat, lon) for _, lat, lon in names}
+    point = next(iter(points)) if len(points) == 1 else None
+    return {"point": point, "zone": zones[0] if zones else "", "name": names[0][0] if len(points) == 1 else ""}
+
+
+def _one_place(places):
+    """The single place among several clause places, AMBIGUOUS, or None."""
+    real = [place for place in places if place]
+    if any(place is AMBIGUOUS for place in real):
+        return AMBIGUOUS
+    zones = {place["zone"] for place in real}
+    if len(zones) > 1:
+        return AMBIGUOUS
+    return real[0] if real else None
 
 
 def observe(text: str, received: datetime | None, *, category: str | None = None,
@@ -219,12 +326,7 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
     animals_named = {terms for terms in SUBJECT_TERMS.values() if any(term in whole for term in terms)}
     context = [clause for clauses in statements(subject_hint) for clause in clauses]
     context += [clause for clauses in parsed for clause in clauses if _is_header(clause, CATALOG)]
-    message_places = []
-    for clause in context:
-        place = _clause_place(clause)
-        if place and place["zone"] not in [p["zone"] for p in message_places]:
-            message_places.append(place)
-    message_place = message_places[0] if len(message_places) == 1 else None
+    message_place = _one_place([_clause_place(clause) for clause in context])
     if default_zone:
         from .const import ZONES_BY_ID
         if ZONES_BY_ID.get(default_zone) and message_place is None:
@@ -234,7 +336,7 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
 
     found: list[Observation] = []
     for clauses in parsed:
-        sentence_place = next((p for p in (_clause_place(c) for c in clauses) if p), None)
+        sentence_place = _one_place([_clause_place(c) for c in clauses])
         sentence_date, sentence_explicit = None, False
         for clause in clauses:
             moment, explicit = _clause_date(clause, received)
@@ -250,7 +352,12 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
                 observed = sentence_date
             else:
                 observed = message_date
-            place = _clause_place(clause) or sentence_place or message_place
+            own = _clause_place(clause)
+            # A clause that names several regions is placed nowhere, and never
+            # inherits a place from its sentence or the message.
+            place = None if own is AMBIGUOUS else own or (
+                None if sentence_place is AMBIGUOUS else sentence_place) or (
+                None if message_place is AMBIGUOUS else message_place)
             for definition in CATALOG.values():
                 if category and definition.category != category and not (
                         category == CATEGORY_RARE and definition.category in (CATEGORY_RARE, CATEGORY_BIRDS)):
@@ -263,18 +370,33 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
                     hits = [(lowered.find(term), term) for term in definition.behavior_terms if term in lowered]
                 if not hits:
                     continue
-                if subjects and not subject:
-                    where = f"{lowered} {(place or {}).get('name') or ''}"
-                    if any(term in SELF_IDENTIFYING.get(definition.key, ()) for _, term in hits):
-                        subject = subjects[0]
-                    elif any(site in where for site in SITE_SUBJECTS.get(definition.key, ())):
-                        subject = subjects[0]
-                    elif len(animals_named) == 1 and subjects in animals_named:
-                        # One animal in the whole message: a clause without a
-                        # noun is about it ("Humpbacks off Avila. Lunge feeding at 9.").
-                        subject = next(term for term in subjects if term in whole)
-                if subjects and not subject:
-                    continue
+                if subjects and definition.key not in PRESENCE_EVIDENCE:
+                    # Each behaviour phrase must be written against *this*
+                    # animal: the nearest animal before it in the clause (else
+                    # the nearest after). "Humpbacks passed Avila and dolphins
+                    # were lunge feeding" is dolphins feeding; "Condors at
+                    # Pinnacles and sea lions feeding" is sea lions feeding.
+                    wanted = _canonical_subjects(definition.key)
+                    bound = []
+                    for position, term in hits:
+                        if any(noun in term for noun in subjects) or term in SELF_IDENTIFYING.get(definition.key, ()):
+                            bound.append((position, term))
+                            continue
+                        animal = _bound_animal(lowered, position, position + len(term))
+                        if animal is None:
+                            where = f"{lowered} {(place or {}).get('name') or ''}"
+                            if any(site in where for site in SITE_SUBJECTS.get(definition.key, ())) or (
+                                    len(animals_named) == 1 and subjects in animals_named):
+                                # A monitored colony names its animal; one animal
+                                # in the whole message is what an unnamed clause
+                                # is about ("Humpbacks off Avila. Lunge feeding at 9.").
+                                bound.append((position, term))
+                        elif animal in wanted:
+                            bound.append((position, term))
+                    hits = bound
+                    if not hits:
+                        continue
+                    subject = subject or next((term for term in subjects if term in whole), subjects[0])
                 if definition.location_terms and not any(t in lowered or (place and t in (place.get("name") or ""))
                                                          for t in definition.location_terms):
                     # Sibling phenomena sharing vocabulary are told apart by place.
@@ -294,7 +416,33 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
                     latitude=point[0] if point else None, longitude=point[1] if point else None,
                     place=(place or {}).get("name") or "", zone_id=(place or {}).get("zone") or "",
                 ))
-    return found
+    return _resolve_siblings(found)
+
+
+def _resolve_siblings(found: list[Observation]) -> list[Observation]:
+    """Phenomena that share one vocabulary (the four bloom sites) are told apart by place.
+
+    A located statement keeps only the siblings whose site is within the
+    corroboration radius of it; an unlocated one keeps them all (and will
+    corroborate nothing, being nowhere).
+    """
+    from .curation import CATALOG
+    from .phenomena import LIVE_CORROBORATION_KM, WINDOWS_BY_KEY
+    from .wildlife import haversine_km
+
+    out = []
+    for item in found:
+        definition = CATALOG[item.phenomenon]
+        siblings = [other for other in CATALOG.values() if other.key != item.phenomenon
+                    and other.behavior_terms and other.behavior_terms == definition.behavior_terms
+                    and not other.location_terms]
+        window = WINDOWS_BY_KEY.get(item.phenomenon)
+        point = report_point(item)
+        if siblings and window is not None and point is not None and haversine_km(
+                window.latitude, window.longitude, point[0], point[1]) > LIVE_CORROBORATION_KM:
+            continue
+        out.append(item)
+    return out
 
 
 def positive(observations: list[Observation]) -> list[Observation]:

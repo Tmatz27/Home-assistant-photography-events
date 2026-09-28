@@ -1,0 +1,146 @@
+{
+ "generated": "2026-09-27T17:00:00+00:00",
+ "rows": [
+  {
+   "access": "public",
+   "category": "astronomy",
+   "cloud_cover": 5.0,
+   "cloud_is_forecast": true,
+   "condition_quality": 95,
+   "confidence": 90,
+   "confidence_basis": "Calculated",
+   "detail": "",
+   "drive_basis": "current",
+   "drive_hours": 2.0,
+   "drive_in_traffic": true,
+   "drive_source": "Routes API",
+   "eligible": true,
+   "encounter": "high",
+   "end": "2026-09-28T00:00:00+00:00",
+   "estimated_drive_hours": 2.2,
+   "event_id": "route-current",
+   "evidence_state": "computed",
+   "gear_plan": {
+    "add": [
+     {
+      "item": "Sony FE 14mm f/1.8 GM or FE 20mm f/1.8 G",
+      "why": "About 1\u2153 stops faster than f/2.8: half the ISO, or shorter exposures and rounder stars, on a faint night subject."
+     },
+     {
+      "item": "USB lens dew heater",
+      "why": "Coastal and desert nights dew the front element within an hour; a heater keeps the whole session sharp."
+     }
+    ],
+    "drone": "DJI Mini 3: not needed for this subject.",
+    "drone_status": "not_recommended",
+    "skip": [
+     "Sony FE 70-200mm f/2.8 GM OSS II",
+     "Sony FE 200-600mm f/5.6-6.3 G OSS",
+     "Sony FE 2x Teleconverter"
+    ],
+    "start": "16mm f/2.8, ISO 3200-6400, 15-20 s; focus manually on a bright star.",
+    "support": "Sturdy tripod, remote release",
+    "take": "Sony FE 16-35mm f/2.8 GM",
+    "technique": "Stack several frames for noise; shoot a separate blue-hour foreground."
+   },
+   "held_reasons": [],
+   "key": "route-current",
+   "name": "Milky Way core night",
+   "phenomenon": "milky_way",
+   "policy": "computed",
+   "presentation": "cant_miss",
+   "priority": 79,
+   "reasons": [
+    "120 min by road in current traffic"
+   ],
+   "route_age_hours": 0.5,
+   "route_fetched_at": "2026-09-27T16:30:00+00:00",
+   "safety_notes": [],
+   "safety_state": "safe",
+   "safety_summary": "No NWS warnings for this place and time.",
+   "score": 95,
+   "significance": 70,
+   "start": "2026-09-27T22:00:00+00:00",
+   "status": "Calculated",
+   "time_precision": "interval",
+   "title": "Milky Way core (current route)",
+   "urgency": 85,
+   "urgency_label": "Within 24 h",
+   "verification": "computed",
+   "where": "Dark site",
+   "why_now": "New-Moon darkness with a clear forecast at a dark site.",
+   "zone": "Dark site",
+   "zone_id": "z"
+  },
+  {
+   "access": "public",
+   "category": "astronomy",
+   "cloud_cover": 5.0,
+   "cloud_is_forecast": true,
+   "condition_quality": 95,
+   "confidence": 90,
+   "confidence_basis": "Calculated",
+   "detail": "",
+   "drive_basis": "recent",
+   "drive_hours": 5.8,
+   "drive_source": "Routes API",
+   "eligible": true,
+   "encounter": "high",
+   "end": "2026-09-28T00:00:00+00:00",
+   "estimated_drive_hours": 5.5,
+   "event_id": "route-recent",
+   "evidence_state": "computed",
+   "gear_plan": {
+    "add": [
+     {
+      "item": "Sony FE 14mm f/1.8 GM or FE 20mm f/1.8 G",
+      "why": "About 1\u2153 stops faster than f/2.8: half the ISO, or shorter exposures and rounder stars, on a faint night subject."
+     },
+     {
+      "item": "USB lens dew heater",
+      "why": "Coastal and desert nights dew the front element within an hour; a heater keeps the whole session sharp."
+     }
+    ],
+    "drone": "DJI Mini 3: not needed for this subject.",
+    "drone_status": "not_recommended",
+    "skip": [
+     "Sony FE 70-200mm f/2.8 GM OSS II",
+     "Sony FE 200-600mm f/5.6-6.3 G OSS",
+     "Sony FE 2x Teleconverter"
+    ],
+    "start": "16mm f/2.8, ISO 3200-6400, 15-20 s; focus manually on a bright star.",
+    "support": "Sturdy tripod, remote release",
+    "take": "Sony FE 16-35mm f/2.8 GM",
+    "technique": "Stack several frames for noise; shoot a separate blue-hour foreground."
+   },
+   "held_reasons": [],
+   "key": "route-recent",
+   "name": "Milky Way core night",
+   "phenomenon": "milky_way",
+   "policy": "computed",
+   "presentation": "cant_miss",
+   "priority": 79,
+   "reasons": [
+    "about 348 min by road (routed 6 days ago; not current traffic)"
+   ],
+   "route_age_hours": 144.0,
+   "route_fetched_at": "2026-09-21T17:00:00+00:00",
+   "safety_notes": [],
+   "safety_state": "safe",
+   "safety_summary": "No NWS warnings for this place and time.",
+   "score": 95,
+   "significance": 70,
+   "start": "2026-09-27T22:00:00+00:00",
+   "status": "Calculated",
+   "time_precision": "interval",
+   "title": "Milky Way core (recent route)",
+   "urgency": 85,
+   "urgency_label": "Within 24 h",
+   "verification": "computed",
+   "where": "Dark site",
+   "why_now": "New-Moon darkness with a clear forecast at a dark site.",
+   "zone": "Dark site",
+   "zone_id": "z"
+  }
+ ]
+}

@@ -425,9 +425,14 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         await self.hass.async_add_executor_job(lambda: eligibility.annotate(
             opportunities, now, max_drive_hours=self.max_drive_hours, alerts=alerts,
             sunset_drive_hours=self.category_drive_limits.get(CATEGORY_SUNSET)))
+        sunset_gaps = None
+        if CATEGORY_SUNSET in categories:
+            home_bundle = forecasts.get("home") or {}
+            sunset_gaps = event_builder.sunset_assessment_gaps(
+                self.home_zone, home_bundle.get("local"), home_bundle.get("upstream"), now,
+                provider=self._current_sunsetwx(now)[0], points=points)
         coverage = source_health.assessment_coverage(
-            health, self.enabled_categories, points,
-            sunset_provider_current=bool(self._current_sunsetwx(now)[0]))
+            health, self.enabled_categories, points, sunset_gaps=sunset_gaps)
         self._last_coverage = coverage
         cant_miss = eligibility.dashboard(
             opportunities, now, suppressed=self.event_state.suppressed, signals=signals, birds=bird_views,
@@ -901,30 +906,36 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             async with semaphore:
                 payload = await self._get_json(session, OPEN_METEO_URL, params=params, label=zone["name"])
             parts = weather_scoring.split_multi_location(payload)
-            if not parts or len(parts) != 1 + len(order) or any(
-                not isinstance(part.get("hourly"), dict) or not part["hourly"].get("time")
-                for part in parts
-            ):
-                return zone["id"], None
+            if not parts or len(parts) != 1 + len(order):
+                return zone["id"], None, {name: False for name in ["", *order]}
+            # Each component is checked on its own: a Firefall reads the local
+            # sky and the sunset light path, so a broken sunrise probe in the
+            # same response must not take its valid inputs with it.
+            valid = {name: _usable_forecast(part) for name, part in zip(["", *order], parts)}
+            if not valid[""]:
+                return zone["id"], None, valid
             bundle = {"local": parts[0], "upstream": {}}
             for index, key in enumerate(order, start=1):
-                if index < len(parts):
+                if valid[key]:
                     bundle["upstream"][key] = parts[index]
-            return zone["id"], bundle
+            return zone["id"], bundle, valid
 
         results = await asyncio.gather(*(fetch(zone) for zone in zones))
-        # Per-point health: each point keeps its own last success, so one bad
-        # response degrades the rows that read that point and no others.
+        # Per-point health: each point, and each upstream component of it,
+        # keeps its own last success, so one bad response degrades the rows
+        # that read that input and no others.
         stamp = dt_util.utcnow()
-        for key, payload in results:
-            record = self._weather_points.setdefault(key, {"fetched_at": None, "failed": False})
-            if payload:
-                record.update(fetched_at=stamp, failed=False)
-            else:
-                record["failed"] = True
+        for key, payload, valid in results:
+            for name, ok in valid.items():
+                record = self._weather_points.setdefault(f"{key}:{name}" if name else key,
+                                                         {"fetched_at": None, "failed": False})
+                if ok:
+                    record.update(fetched_at=stamp, failed=False)
+                else:
+                    record["failed"] = True
         return self._finish_batch("weather",
-            {key: payload for key, payload in results if payload},
-            [key for key, payload in results if not payload], mapping=True)
+            {key: payload for key, payload, _ in results if payload},
+            [key for key, payload, _ in results if not payload], mapping=True)
 
     async def _fetch_streamflow(self, session) -> dict:
         """Measured discharge for the gauges a phenomenon depends on.
@@ -1182,6 +1193,11 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 continue
             routed, fetched = entry
             current = basis == "current"
+            if item.drive_source in ("estimate", "baseline"):
+                # Kept beside the route: an old route and a fresh estimate
+                # that disagree across the drive limit is not a clearance.
+                item.extra["estimated_drive_hours"] = round(item.drive_hours, 2)
+            item.extra["route_age_hours"] = round((now - fetched).total_seconds() / 3600, 1)
             item.drive_hours = round(routed.hours, 2)
             item.drive_source = routed.source
             item.drive_in_traffic = bool(routed.in_traffic and current)
@@ -1313,35 +1329,53 @@ def _point(item) -> tuple[float, float] | None:
     return round(float(item.latitude), 3), round(float(item.longitude), 3)
 
 
+def _usable_forecast(part) -> bool:
+    """One Open-Meteo location: an hourly block with a time axis."""
+    return isinstance(part, dict) and isinstance(part.get("hourly"), dict) and bool(part["hourly"].get("time"))
+
+
 def _make_cloud_lookup(forecast: dict | None):
-    """Total cloud cover nearest a moment, or None when there is no forecast."""
+    """Total cloud cover nearest a moment, or None when there is no forecast.
+
+    ``lookup.covers(moment)`` says whether the forecast's time axis reaches
+    that moment at all. A lookup that returns None for a covered moment is a
+    missing or invalid value - a condition that could not be assessed - and
+    not a night beyond the forecast.
+    """
     if not forecast:
         return None
     hourly = forecast.get("hourly", {})
     times = hourly.get("time") or []
     clouds = hourly.get("cloud_cover") or []
-    if not times or not clouds:
+    if not times:
         return None
 
+    def parse(stamp):
+        try:
+            moment = datetime.fromisoformat(stamp)
+        except (TypeError, ValueError):
+            return None
+        return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
+
+    axis = [moment.timestamp() for moment in map(parse, times) if moment is not None]
     parsed: list[tuple[float, float]] = []
     for stamp, value in zip(times, clouds):
         if (not isinstance(value, (int, float)) or isinstance(value, bool)
                 or not math.isfinite(value) or not 0 <= value <= 100):
             continue
-        try:
-            moment = datetime.fromisoformat(stamp)
-        except (TypeError, ValueError):
-            continue
-        if moment.tzinfo is None:
-            moment = moment.replace(tzinfo=timezone.utc)
-        parsed.append((moment.timestamp(), float(value)))
+        moment = parse(stamp)
+        if moment is not None:
+            parsed.append((moment.timestamp(), float(value)))
 
-    if not parsed:
+    if not axis:
         return None
 
     def lookup(moment: datetime) -> float | None:
+        if not parsed:
+            return None
         target = moment.timestamp()
         stamp, value = min(parsed, key=lambda item: abs(item[0] - target))
         return value if abs(stamp - target) <= 5400 else None
 
+    lookup.covers = lambda moment: any(abs(stamp - moment.timestamp()) <= 5400 for stamp in axis)
     return lookup

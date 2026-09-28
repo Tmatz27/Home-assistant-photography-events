@@ -139,17 +139,36 @@ WEATHER_POINT_STALE_MINUTES = 180
 
 
 def weather_points(item) -> list[str]:
-    """The forecast points an opportunity's condition was read from."""
+    """The forecast inputs an opportunity's condition was read from.
+
+    A point is a zone's own forecast (``yosemite_valley``) or one of its
+    upstream light-path components (``yosemite_valley:sunset``). A row is
+    gated only on the inputs it consumed: a Firefall reads the valley and the
+    sunset light path, never the sunrise one.
+    """
     phenomenon = getattr(item, "phenomenon", "") or ""
-    if phenomenon in ("sunset_local", "full_moon_closest", "full_moon"):
+    if phenomenon == "sunset_local":
+        if item.extra.get("light_path") == "provider":
+            return []  # scored by the provider alone
+        return ["home", "home:sunrise" if item.key.endswith("-sunrise") else "home:sunset"]
+    if phenomenon in ("full_moon_closest", "full_moon"):
         return ["home"]
-    if phenomenon in ("horsetail_firefall", "moonbow") or item.key.startswith("moonbow-"):
+    if phenomenon == "horsetail_firefall":
+        return ["yosemite_valley", "yosemite_valley:sunset"]
+    if phenomenon == "moonbow" or item.key.startswith("moonbow-"):
         return ["yosemite_valley"]
     if phenomenon == "pismo_monarchs" or (item.category == "rare_phenomena" and "monarch" in item.key):
         return ["pismo_grove"]
     if phenomenon in ("milky_way", "meteor_major", "meteor_minor", "fresh_snow_clearing"):
         return [item.zone_id]
     return []
+
+
+def point_label(point: str) -> str:
+    """"Forecast for yosemite valley" or "Sunset light path for yosemite valley"."""
+    place, _, component = point.partition(":")
+    place = place.replace("_", " ")
+    return f"{component.capitalize()} light path for {place}" if component else f"Forecast for {place}"
 
 
 def point_health(points: dict, now) -> dict:
@@ -188,15 +207,19 @@ ASSESSMENT_SOURCES = {
 }
 ASSESSMENT_ALWAYS = ("surf_alerts", "park_alerts")
 # Forecast points each category's assessment reads.
-ASSESSMENT_POINTS = {"sunset": ("home",), "rare_phenomena": ("yosemite_valley", "pismo_grove")}
+ASSESSMENT_POINTS = {"sunset": ("home", "home:sunset", "home:sunrise"),
+                     "rare_phenomena": ("yosemite_valley", "yosemite_valley:sunset", "pismo_grove")}
 
 
 def assessment_coverage(health: dict, categories, points: dict | None = None,
-                        sunset_provider_current: bool = False) -> dict:
+                        sunset_gaps: list | None = None) -> dict:
     """``{"state": "complete"|"incomplete", "problems": [...]}`` for the dashboard.
 
-    ``sunset_provider_current``: a current SunsetWx forecast assessed the home
-    sunsets, so the home forecast point is not required for that category.
+    ``sunset_gaps`` is ``events.sunset_assessment_gaps``: the home sunsets and
+    sunrises that neither a current provider prediction for that event nor
+    the local model with current, valid inputs assessed. When given, it
+    replaces the blanket home-point requirement for the sunset category, so a
+    provider covers exactly the events it predicted and nothing more.
     """
     wanted = set(ASSESSMENT_ALWAYS)
     for category in categories or ():
@@ -219,16 +242,24 @@ def assessment_coverage(health: dict, categories, points: dict | None = None,
     if weather_wanted and per_point:
         needed_points = set()
         for category in categories or ():
-            if category == "sunset" and sunset_provider_current:
+            if category == "sunset" and sunset_gaps is not None:
                 continue
             needed_points.update(ASSESSMENT_POINTS.get(category, ()))
         if CATEGORY_ASTRO in (categories or ()):
-            needed_points.update(point for point in (points or {}) if point not in ("home", "pismo_grove"))
+            # Night-sky rows read each dark site's own sky, not its light paths.
+            needed_points.update(point for point in (points or {})
+                                 if ":" not in point and point not in ("home", "pismo_grove"))
         for point in sorted(needed_points):
             state = (points or {}).get(point)
             if state in ("failed", "stale", "waiting"):
-                problems.append({"source": f"weather:{point}", "name": f"Forecast for {point.replace('_', ' ')}",
+                problems.append({"source": f"weather:{point}", "name": point_label(point),
                                  "state": state, "impact": "Conditions at this place could not be assessed."})
+    if "sunset" in (categories or ()) and health.get("weather", {}).get("enabled"):
+        for gap in sunset_gaps or ():
+            problems.append({"source": f"sunset:{gap['at'].isoformat()}",
+                             "name": f"Home {gap['label'].lower()} {gap['at']:%a %d %b}",
+                             "state": "unassessed",
+                             "impact": " and ".join(gap["missing"]).capitalize() + " unavailable or invalid."})
     return {"state": "incomplete" if problems else "complete", "problems": problems}
 
 

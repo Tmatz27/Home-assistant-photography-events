@@ -294,7 +294,10 @@ class TestFreshSnowClearing(unittest.TestCase):
         self.assertFalse(snow.extra["assessment"]["eligible"])
         snow.extra["clearing_at"] = (self.NOW - timedelta(hours=conditions.CLEARING_WINDOW_HOURS + 1)).isoformat()
         eligibility.assess(snow, self.NOW, max_drive_hours=8.0, alerts=[])
-        self.assertIn("the forecast clearing has passed", snow.extra["assessment"]["blockers"])
+        # The model run no longer reaches the next 48 h: the clearing is not
+        # assessed, which is held and reported, not read as "no clearing".
+        self.assertIn("the forecast clearing has passed", " ".join(snow.extra["assessment"]["blockers"]))
+        self.assertEqual(snow.extra["assessment"]["conditions_unassessed"], ["clearing forecast"])
 
     def test_winter_storm_warning_blocks(self):
         (snow,) = self.rows(self.NOW - timedelta(hours=6), cloud=10)
@@ -363,7 +366,10 @@ class TestFirefall(unittest.TestCase):
         self.assertIn("cloud upstream blocks the sunset light", item.extra["assessment"]["blockers"])
 
     def test_unmodelled_light_path_blocks(self):
-        self.assertIn("western light path not modelled", self.row(upstream=False).extra["assessment"]["blockers"])
+        assessment = self.row(upstream=False).extra["assessment"]
+        self.assertFalse(assessment["eligible"])
+        self.assertIn("western light path not modelled", " ".join(assessment["blockers"]))
+        self.assertEqual(assessment["conditions_unassessed"], ["western light path"])
 
     def test_viewing_area_closure_blocks(self):
         closure = type("Alert", (), {"park_code": "yose", "blocking": True, "title": "Northside Drive closed",

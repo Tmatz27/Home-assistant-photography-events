@@ -281,7 +281,10 @@ def parse_email_report(
         zone = explicit_zone or item.zone_id
         if not zone or zone not in ZONES_BY_ID:
             continue
-        point = (item.latitude, item.longitude) if item.latitude is not None and not explicit_zone else None
+        # The observed place is independent of the zone an automation files
+        # the mail under: a Pismo sighting sent with zone "piedras_blancas"
+        # happened at Pismo, and is evaluated there.
+        point = (item.latitude, item.longitude) if item.latitude is not None else None
         key = (item.phenomenon, zone, point)
         current = reports.get(key)
         if current is not None and (current.observed_at or received) >= (item.observed_at or received) \
@@ -301,5 +304,5 @@ def parse_email_report(
     if observed is None and received is not None and SAME_DAY.search(sentence):
         observed = received
     snippet = build_snippet(haystack, signals)
-    point = place_point(sentence) if not explicit_zone else None
+    point = place_point(sentence)
     return [make(zone, snippet, observed, point=point) for zone in zone_ids[:1 if point else None]]

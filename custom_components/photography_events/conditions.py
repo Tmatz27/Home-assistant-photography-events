@@ -81,6 +81,27 @@ def _value(forecast, key, index):
     return float(value)
 
 
+def _unassessed(item, missing: list[str]) -> None:
+    """Record the conditions that could not be read (never ones read as poor)."""
+    if missing:
+        item.extra["conditions_unassessed"] = list(missing)
+    else:
+        item.extra.pop("conditions_unassessed", None)
+
+
+def _window_readable(forecast, start: datetime, now: datetime, hours: int = CLEARING_HORIZON_HOURS) -> bool:
+    """Every hour of the clearing window is present with a valid cloud value."""
+    end = now + timedelta(hours=hours)
+    seen = [moment for index, moment in enumerate(_times(forecast))
+            if moment is not None and start <= moment <= end and _cloud(forecast, index) is not None]
+    return bool(seen) and len(seen) >= int((end - start).total_seconds() // 3600)
+
+
+def _cloud(forecast, index):
+    value = _value(forecast, "cloud_cover", index)
+    return value if value is not None and 0 <= value <= 100 else None
+
+
 def clearing_after(forecast, after: datetime, now: datetime, hours: int = CLEARING_HORIZON_HOURS,
                    cloud_max: float = CLEARING_CLOUD) -> tuple[datetime, float] | None:
     """First forecast hour after ``after`` (and not in the past) that is clear.
@@ -92,7 +113,7 @@ def clearing_after(forecast, after: datetime, now: datetime, hours: int = CLEARI
     for index, moment in enumerate(_times(forecast)):
         if moment is None or moment < start or moment > now + timedelta(hours=hours):
             continue
-        cloud = _value(forecast, "cloud_cover", index)
+        cloud = _cloud(forecast, index)
         if cloud is not None and cloud <= cloud_max:
             return moment, cloud
     return None
@@ -111,6 +132,9 @@ def annotate_snow(rows, forecasts: dict, now: datetime) -> None:
         observed = item.extra.get("observed_at")
         after = datetime.fromisoformat(observed) if observed else item.start
         found = clearing_after(forecast, after, now) if forecast else None
+        # No clear hour is only an answer when every hour could be read.
+        _unassessed(item, [] if found or (forecast and _window_readable(forecast, max(after, now), now))
+                    else ["clearing forecast"])
         item.extra["condition_states"] = {
             "Fresh snow": f"Reported {after:%d %b}" if observed else "Not reported",
             "Clearing": (f"Forecast {found[0]:%a %H:%M} UTC, {found[1]:.0f}% cloud" if found
@@ -162,6 +186,7 @@ def annotate_firefall(rows, forecasts: dict, now: datetime, park_alerts=None) ->
                                              "Unconfirmed: needs a dated report. Merced discharge is a different drainage and is not used.")
         for key in ("cloud_cover", "cloud_is_forecast", "light_path_gate", "firefall_sunset"):
             item.extra.pop(key, None)
+        _unassessed(item, [])
         if sunset is not None:
             item.extra["firefall_sunset"] = sunset.isoformat()
             cloud = weather_scoring.layer_at(local, "cloud_cover", sunset)
@@ -172,6 +197,7 @@ def annotate_firefall(rows, forecasts: dict, now: datetime, park_alerts=None) ->
                 states["Local sky at sunset"] = f"{cloud:.0f}% cloud forecast"
             else:
                 states["Local sky at sunset"] = "No valid forecast for sunset"
+            scorable = weather_scoring.cloud_is_scorable(lead)
             low = weather_scoring.layer_at(upstream, "cloud_cover_low", sunset)
             mid = weather_scoring.layer_at(upstream, "cloud_cover_mid", sunset)
             gate = weather_scoring.light_path_gate_checked(low, mid)
@@ -182,6 +208,10 @@ def annotate_firefall(rows, forecasts: dict, now: datetime, park_alerts=None) ->
                 missing = [name for name, value in (("low", low), ("mid", mid)) if value is None]
                 states["Western light path"] = ("Not modelled: no upstream forecast" if not upstream else
                                                 f"Unknown: upstream {' and '.join(missing)} cloud missing or invalid at sunset")
+            if scorable:
+                # Valid and unfavourable is an answer; missing is not.
+                _unassessed(item, ([] if cloud is not None else ["local sky at sunset"])
+                            + ([] if gate is not None else ["western light path"]))
         item.extra["condition_states"] = states
     if park_alerts is not None:
         annotate_access([row for row in rows if row.phenomenon == "horsetail_firefall"],
@@ -224,6 +254,9 @@ def annotate_monarchs(rows, forecasts: dict, now: datetime, tz) -> None:
             continue
         for key in ("dawn_temp_f", "dawn_wind_ms", "dawn_precip_probability"):
             item.extra.pop(key, None)
+        # Cleared on success below; any path that leaves no dawn temperature
+        # means the grove was not assessed.
+        _unassessed(item, ["dawn temperature at the grove"])
         if not forecast:
             item.extra["condition_states"] = {"Dawn at the grove": "No forecast for the grove"}
             continue
@@ -238,6 +271,7 @@ def annotate_monarchs(rows, forecasts: dict, now: datetime, tz) -> None:
                 item.extra["condition_states"] = {"Dawn at the grove": "No temperature in the forecast"}
                 break
             item.extra["dawn_temp_f"] = round(celsius * 9 / 5 + 32, 1)
+            _unassessed(item, [])
             wind = _value(forecast, "wind_speed_10m", index)
             rain = _value(forecast, "precipitation_probability", index)
             if wind is not None:

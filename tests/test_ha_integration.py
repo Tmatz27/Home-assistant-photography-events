@@ -161,7 +161,12 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
     async def test_cloud_lookup_rejects_malformed_percentages(self):
         for value in (float('nan'), float('inf'), -1, 101, True, None):
             with self.subTest(value=value):
-                self.assertIsNone(module._make_cloud_lookup({'hourly': {'time': [NOW.isoformat()], 'cloud_cover': [value]}}))
+                lookup = module._make_cloud_lookup({'hourly': {'time': [NOW.isoformat()], 'cloud_cover': [value]}})
+                # No value for the hour, and the hour *is* covered: an invalid
+                # value is an unassessed condition, not a night beyond range.
+                self.assertIsNone(lookup(NOW))
+                self.assertTrue(lookup.covers(NOW))
+                self.assertFalse(lookup.covers(NOW + timedelta(hours=3)))
 
     async def test_cached_failure_retries_on_backoff_and_retains_payload(self):
         source = self.coordinator._sources["field_reports"]

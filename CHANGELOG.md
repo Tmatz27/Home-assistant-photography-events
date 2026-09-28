@@ -45,8 +45,22 @@ Correction pass after an independent review (same version; still unreleased):
 - C5 New `observations.py` statement normalizer (subject, behaviour, polarity, count, place, date per clause) for email and hotline text; one admissibility gate (`observations.admissible`) for every ingress path. Megapod minimum 1,000.
 - C6 `parse_alert_collection` validates every NWS feature; malformed features make an incomplete check that cannot conclude safe.
 - H1-H11: per-evidence timestamps for bird spectacles; site identity for merges; exact report coordinates; validated light-path layers; SunsetWx model freshness; input roles resolved before scoring; per-point weather health; assessment coverage on the dashboard and card; presentation vs ownership categories; bounded live occurrences outside the window; aging, origin-keyed routing cache with `drive_basis`.
-- M1-M6: explicit `time_precision`; year-crossing windows are one occurrence; suppression before group representative; qualify-then-rank opportunity events; explicit secret clearing; literal category selection with a one-time version 2 migration for Waves.
+- M1-M6: explicit `time_precision`; year-crossing windows are one occurrence; suppression before group representative; qualify-then-rank opportunity events; explicit secret clearing; literal category selection (version 2 entries).
 - Tests: `tests/test_codex_review.py` (portable) and `tests/test_ha_pipeline.py` (real coordinator cycle with HTTP faked at the session). CI runs every `test_ha_*.py`.
+
+Residual pass after a second independent review (same version; still unreleased):
+
+- R1 `verification.nps_record_problem`: NPS records need an id, park code, title and category; `collect_nps_pages` requires equal totals, distinct ids and `len(ids) == total`.
+- R2 `weather_hazards.validate_feature` accepts only geography `alerts_at` can resolve (finite, in-range polygons or a list of six-digit SAME codes); UGC-only, malformed or scalar SAME and non-list UGC make the check incomplete.
+- R3 `observations.observe` binds behaviour to the animal it is written against, rejects counts across conjunctions or other animals, treats a leading sentence as a header only when it has nothing but place/date words, and leaves multi-place context unplaced.
+- R4 `field_reports.parse_report` builds one report per normalized observation, keeping its own date, count, place and phenomenon.
+- R5 Condition inputs that are missing or invalid (`extra["conditions_unassessed"]`) hold the row and make the dashboard assessment incomplete; `events.sunset_assessment_gaps` checks each home sunset/sunrise against the provider prediction for that event or current, valid local inputs (replaces `sunset_provider_current`). `_make_cloud_lookup` exposes `covers()`.
+- R6 `_fetch_forecasts` validates the local, sunset-path and sunrise-path parts separately and records each as its own point (`zone`, `zone:sunset`, `zone:sunrise`); `source_health.weather_points` returns the inputs a row consumed.
+- R7 Email reports keep the observed point even with an explicit zone; `needs_site` (bioluminescent surf) blocks a region-only report.
+- R8 Operator orca backing uses the 25 km diameter to every cluster member; the operator's point is in `contributions`.
+- R9 Routed rows carry `estimated_drive_hours` and `route_age_hours`; a recent route that is the only reason a trip is under the limit holds the row. The Can't Miss card shows drive basis and route age. New fixture `tests/fixtures/cant-miss-route-rows.json`, pinned to the backend by an HA test and rendered by a JS test.
+- R10 The version 1 to 2 migration no longer rewrites a saved category list.
+- R11 Snow policy text, README notification text, BACKLOG and release notes reconciled with behaviour.
 
 ## 0.15.0
 

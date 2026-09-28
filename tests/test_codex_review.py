@@ -158,16 +158,27 @@ class TestC2ParkAccess(unittest.TestCase):
         self.assertEqual(curation.access_requirement(opp("moonbow", "rare_phenomena"))[0], "yose")
 
     def test_nps_pagination_must_add_up_to_total(self):
-        page = lambda n, total: {"total": str(total), "data": [  # noqa: E731
-            {"parkCode": "yose", "title": f"Alert {i}", "category": "Information"} for i in range(n)]}
-        self.assertEqual(len(verification.collect_nps_pages([page(50, 60), page(10, 60)])), 60)
+        page = lambda n, total, first=0: {"total": str(total), "data": [  # noqa: E731
+            {"id": f"a{i}", "parkCode": "yose", "title": f"Alert {i}", "category": "Information"}
+            for i in range(first, first + n)]}
+        self.assertEqual(len(verification.collect_nps_pages([page(50, 60), page(10, 60, 50)])), 60)
         with self.assertRaises(verification.IncompleteAlertsError):
             verification.collect_nps_pages([page(50, 60)])  # the first 50 say nothing about the 51st
         with self.assertRaises(verification.IncompleteAlertsError):
-            verification.collect_nps_pages([page(50, 60), page(10, 61)])
+            # 60 records, but the second page repeats ten of the first: only 50 distinct alerts.
+            verification.collect_nps_pages([page(50, 60), page(10, 60, 40)])
+        with self.assertRaises(verification.IncompleteAlertsError):
+            verification.collect_nps_pages([page(50, 60), page(10, 61, 50)])
         with self.assertRaises(verification.IncompleteAlertsError):
             verification.collect_nps_pages([{"data": []}])  # no total
         self.assertEqual(verification.collect_nps_pages([page(0, 0)]), [])
+
+    def test_nps_records_that_cannot_be_read_make_the_check_incomplete(self):
+        good = {"id": "a1", "parkCode": "yose", "title": "Info", "category": "Information"}
+        for broken in ("not a record", {**good, "id": ""}, {**good, "category": None},
+                       {**good, "title": 7}, {k: v for k, v in good.items() if k != "parkCode"}):
+            with self.subTest(broken=broken), self.assertRaises(verification.IncompleteAlertsError):
+                verification.collect_nps_pages([{"total": "1", "data": [broken]}])
 
 
 class TestC3SolarFilterStandard(unittest.TestCase):
@@ -240,6 +251,37 @@ class TestC4OrcaLocality(unittest.TestCase):
         rows = birds.marine_presence([], NOW + timedelta(hours=3), HOME, [report])
         self.assertEqual(len(rows), 1)
         self.assertTrue(rows[0].extra["behavior_evidence"])
+
+    def operator_and_one_observer(self, km):
+        import math
+        later = NOW + timedelta(hours=3)
+        (report,) = spectacles.condor_reports(
+            "<rss><channel><item><link>https://example.test/t</link><description>"
+            f"{NOW:%Y %m-%d} SB Channel trip. A pod of orcas passed the boat near Anacapa.</description></item>"
+            "</channel></rss>", later)
+        ((_, lat, lon),) = birds.operator_orca_reports([report], later)
+        east = lon + km / (111.32 * math.cos(math.radians(lat)))
+        community = orca(lat, east, later - timedelta(hours=1), "a", place="Community point")
+        return birds.marine_presence([community], later, HOME, [report]), (lat, lon), (lat, east)
+
+    def test_operator_forty_km_away_does_not_promote_a_lone_observation(self):
+        # R8: the operator's trust stays at the operator's point. The lone
+        # community observation 40 km away remains background only.
+        rows, operator_point, _ = self.operator_and_one_observer(40)
+        self.assertEqual(len(rows), 1)
+        self.assertAlmostEqual(rows[0].latitude, operator_point[0], places=4)
+        self.assertAlmostEqual(rows[0].longitude, operator_point[1], places=4)
+        self.assertEqual([c["observer"] for c in rows[0].extra["contributions"]], ["operator:condor_express"])
+
+    def test_operator_within_the_diameter_backs_the_cluster_with_its_point_recorded(self):
+        rows, operator_point, community_point = self.operator_and_one_observer(10)
+        self.assertEqual(len(rows), 1)
+        points = [(c["latitude"], c["longitude"]) for c in rows[0].extra["contributions"]]
+        self.assertIn(operator_point, points, "the operator's own point is auditable")
+        self.assertEqual(len(points), 2)
+        for a in points:
+            for b in points:
+                self.assertLessEqual(wildlife.haversine_km(*a, *b), birds.ORCA_CLUSTER_KM)
 
     def test_one_research_grade_observation_is_background_only(self):
         self.assertEqual(birds.marine_presence([orca(36.8, -121.9, NOW - timedelta(hours=2), "a")], NOW, HOME), [])
@@ -316,6 +358,87 @@ class TestC5StatementNormalization(unittest.TestCase):
                          "dated in the future")
 
 
+class TestR3SubjectBinding(unittest.TestCase):
+    """Second review, R3: behaviour and count bind to their own subject; headers inherit only when they are headers."""
+
+    def humpback(self, body):
+        reports = email(body, subject="Whale report")
+        rows = events.build_seasonal_opportunities(NOW, 365, HOME, None, reports)
+        row = next(r for r in rows if r.phenomenon == "humpback_lunge_feeding" and r.extra["precision"] == "peak")
+        eligibility.assess(row, NOW, max_drive_hours=6.0, alerts=[])
+        return reports, row
+
+    def test_another_species_lunge_feeding_does_not_confirm_humpbacks(self):
+        reports, row = self.humpback("Humpbacks passed Avila today and dolphins were lunge feeding.")
+        self.assertEqual([r.phenomena for r in reports], [()], "no phenomenon was confirmed by this sentence")
+        self.assertNotEqual(row.extra["evidence_state"], "behavior_confirmed")
+        self.assertFalse(row.extra["assessment"]["eligible"])
+
+    def test_the_same_sentence_about_humpbacks_does_confirm(self):
+        reports, row = self.humpback("Humpbacks were lunge feeding off Avila today.")
+        (report,) = reports
+        self.assertEqual(report.phenomena, ("humpback_lunge_feeding",))
+        self.assertEqual(report.observed_at, NOW)
+        self.assertEqual(report.place, "avila")
+        self.assertEqual(row.extra["evidence_state"], "behavior_confirmed")
+
+    def test_conjoined_species_count_is_not_the_monarch_count(self):
+        now = datetime(2026, 12, 5, 16, tzinfo=UTC)
+        reports = email("Pismo today: 2,000 geese and monarchs in clusters.", received=now)
+        self.assertEqual([(r.phenomena, r.count) for r in reports], [(("pismo_monarchs",), None)])
+        rows = events.build_seasonal_opportunities(now, 365, HOME, None, reports)
+        monarchs = next(r for r in rows if r.phenomenon == "pismo_monarchs" and r.extra["precision"] == "peak")
+        self.assertNotEqual(monarchs.extra.get("count"), 2000)
+
+    def test_a_short_first_sentence_is_not_a_header(self):
+        (found,) = observations.observe("Trip cancelled at Avila today. Humpbacks lunge feeding.", NOW, category="marine")[-1:]
+        self.assertIsNone(found.observed_at, "the date belonged to the cancelled trip")
+        self.assertIsNone(found.latitude, "and so did the place")
+        reports, row = self.humpback("Trip cancelled at Avila today. Humpbacks lunge feeding.")
+        self.assertNotEqual(row.extra["evidence_state"], "behavior_confirmed")
+
+    def test_a_header_naming_two_places_gives_no_place(self):
+        found = observations.positive(observations.observe("Avila and Monterey Bay today. Humpbacks lunge feeding.",
+                                                           NOW, category="marine"))
+        self.assertTrue(all(item.latitude is None for item in found))
+        reports, row = self.humpback("Avila and Monterey Bay today. Humpbacks lunge feeding.")
+        self.assertNotEqual(row.extra["evidence_state"], "behavior_confirmed")
+
+    def test_a_real_header_still_carries_place_and_date(self):
+        found = observations.positive(observations.observe("Avila, September 27:\nHumpbacks lunge feeding.",
+                                                           NOW, category="marine"))
+        (item,) = [f for f in found if f.phenomenon == "humpback_lunge_feeding"]
+        self.assertEqual(item.place, "avila")
+        self.assertEqual(item.observed_at.date(), NOW.date())
+
+    def test_sea_lions_feeding_is_not_condor_behaviour(self):
+        now = datetime(2026, 12, 20, 18, tzinfo=UTC)
+        reports = email("Condors at Pinnacles today and sea lions feeding.", received=now - timedelta(hours=3),
+                        category="birds")
+        self.assertFalse(any("condor_activity" in r.phenomena for r in reports))
+        views = birds.classify([bird("Gymnogyps californianus", 36.487, -121.195, now - timedelta(hours=5), 1, "a",
+                                     name="California condor")], now, HOME, 6.0, reports)
+        self.assertEqual(views["spectacle"], [])
+
+
+class TestR4HotlineStatementDates(unittest.TestCase):
+    """Second review, R4: the page heading's date never renews an older statement."""
+
+    PAGE = ("<h2>Carrizo March 27, 2026</h2>\n<p>On March 1, 2026 Carrizo was carpeted with wildflowers in full bloom.\n"
+            "The road was repaired today.</p>")
+    NOW = datetime(2026, 3, 27, 18, tzinfo=UTC)
+
+    def test_stale_bloom_under_a_current_heading_is_not_eligible(self):
+        reports = field_reports.parse_report(self.PAGE, field_reports.REPORT_SOURCES[0], self.NOW)
+        self.assertEqual([(r.zone_id, r.observed_at, r.phenomena) for r in reports],
+                         [("carrizo_plain", datetime(2026, 3, 1, 12, tzinfo=UTC), ("bloom_carrizo_plain",))])
+        rows = events.build_seasonal_opportunities(self.NOW, 365, HOME, None, reports)
+        bloom = next(r for r in rows if r.phenomenon == "bloom_carrizo_plain" and r.extra.get("precision", "peak") == "peak")
+        eligibility.assess(bloom, self.NOW, max_drive_hours=6.0, alerts=[])
+        self.assertNotEqual(bloom.extra["evidence_state"], "behavior_confirmed")
+        self.assertFalse(bloom.extra["assessment"]["eligible"])
+
+
 class TestC6MalformedAlerts(unittest.TestCase):
     """An HTTP success with unusable features is not a healthy empty feed."""
 
@@ -363,6 +486,34 @@ class TestC6MalformedAlerts(unittest.TestCase):
                 self.assertIsNone(weather_hazards.validate_feature(feature)[0])
         with self.assertRaises(weather_hazards.AlertFeedError):
             weather_hazards.parse_alert_collection({"features": "nope"}, NOW)
+
+    def test_geography_the_resolver_cannot_place_is_incomplete(self):
+        # Second review, R2: every one of these used to be accepted and match
+        # nowhere, which read as SAFE.
+        polygon_nan = {"type": "Polygon", "coordinates": [[[-121.0, 35.0], [float("nan"), 35.5], [-120.5, 35.5],
+                                                           [-121.0, 35.0]]]}
+        cases = {
+            "UGC only": nws_feature(geocode={"UGC": ["CAZ340"]}),
+            "bogus SAME": nws_feature(same=("garbage",)),
+            "scalar SAME": nws_feature(geocode={"SAME": "006079"}),
+            "UGC not a list": nws_feature(geocode={"SAME": ["006079"], "UGC": "CAZ340"}),
+            "NaN polygon": {**nws_feature(same=()), "geometry": polygon_nan},
+            "latitude out of range": {**nws_feature(same=()), "geometry": {"type": "Polygon", "coordinates": [
+                [[-121.0, 95.0], [-120.5, 35.5], [-120.0, 35.0], [-121.0, 95.0]]]}},
+        }
+        for name, feature in cases.items():
+            with self.subTest(name):
+                self.assertIsNone(weather_hazards.validate_feature(feature)[0])
+                value, check = self.check([feature])
+                self.assertFalse(value["complete"])
+                self.assertEqual(weather_hazards.safety(self.seals(), check, NOW, "coastal")["state"], "unknown")
+
+    def test_a_placeable_warning_with_ugc_codes_too_is_used(self):
+        feature = nws_feature("High Wind Warning", same=("006079",))
+        feature["properties"]["geocode"]["UGC"] = ["CAZ340"]
+        value, check = self.check([feature])
+        self.assertTrue(value["complete"])
+        self.assertEqual(weather_hazards.safety(self.seals(), check, NOW, "coastal")["state"], "unsafe")
 
     def test_through_the_gate_and_dashboard(self):
         _value, check = self.check([{"type": "Feature", "properties": {}}])
@@ -447,6 +598,41 @@ class TestH3ExactCoordinates(unittest.TestCase):
         self.assertTrue(rows)
         self.assertEqual(rows[0].extra["location_precision"], "region")
 
+    NIGHT = datetime(2026, 10, 10, 3, tzinfo=UTC)  # dark, Moon low: glowing surf's conditions pass
+
+    def gate(self, rows):
+        for row in rows:
+            eligibility.assess(row, self.NIGHT, max_drive_hours=8.0, alerts=[])
+        return rows
+
+    def test_a_region_is_not_a_destination(self):
+        # R7: the Channel's centre is not where anyone saw the glow, so it is
+        # never recommended there, however dark the night.
+        reports = email("Bioluminescence along the Santa Barbara Channel tonight.", received=self.NIGHT - timedelta(hours=1),
+                        category="rare_phenomena")
+        (row,) = self.gate(spectacles.report_opportunities(reports, self.NIGHT, HOME))
+        self.assertFalse(row.extra["assessment"]["eligible"])
+        self.assertIn("reported for a region, not a site: no place to check darkness, drive and safety",
+                      row.extra["assessment"]["blockers"])
+
+    def test_the_same_report_at_a_named_beach_is_eligible(self):
+        reports = email("Bioluminescence at Pismo tonight.", received=self.NIGHT - timedelta(hours=1),
+                        category="rare_phenomena")
+        (row,) = self.gate(spectacles.report_opportunities(reports, self.NIGHT, HOME))
+        self.assertTrue(row.extra["assessment"]["eligible"], row.extra["assessment"]["blockers"])
+
+    def test_an_explicit_zone_keeps_the_observed_point(self):
+        # R7: the automation's zone files the mail; the text says where it was.
+        reports = email("Bioluminescence at Pismo tonight.", received=self.NIGHT - timedelta(hours=1),
+                        category="rare_phenomena", zone_id="piedras_blancas")
+        self.assertEqual([(r.latitude, r.longitude) for r in reports], [(35.131, -120.635)])
+        (row,) = self.gate(spectacles.report_opportunities(reports, self.NIGHT, HOME))
+        self.assertAlmostEqual(row.latitude, 35.131, places=3)
+        self.assertAlmostEqual(row.longitude, -120.635, places=3)
+        self.assertEqual(row.extra["location_precision"], "reported place")
+        self.assertLess(row.drive_hours, wildlife.estimate_drive_hours(35.6664, -121.2571, HOME))
+        self.assertTrue(row.extra["assessment"]["eligible"], row.extra["assessment"]["blockers"])
+
 
 class TestH4LightPathLayers(unittest.TestCase):
     def test_missing_layers_are_never_open(self):
@@ -474,7 +660,7 @@ class TestH4LightPathLayers(unittest.TestCase):
         item = next(r for r in rows if r.phenomenon == "horsetail_firefall" and r.extra["precision"] == "peak")
         eligibility.assess(item, now, max_drive_hours=8.0, alerts=[])
         self.assertFalse(item.extra["assessment"]["eligible"])
-        self.assertIn("western light path not modelled", item.extra["assessment"]["blockers"])
+        self.assertIn("western light path not modelled", " ".join(item.extra["assessment"]["blockers"]))
         self.assertIn("Unknown", item.extra["condition_states"]["Western light path"])
 
     def test_sunset_with_one_upstream_layer_is_not_modelled(self):
@@ -529,7 +715,7 @@ class TestH7PerPointWeather(unittest.TestCase):
     def test_unrelated_point_failure_does_not_degrade_home_sunset(self):
         sky = opp("sunset_local", "sunset", zone="home", evidence_state="forecast")
         health = {"weather": {"state": "failed", "name": "Open-Meteo", "impact": "x"}}
-        source_health.annotate([sky], health, {"home": "ok", "lake_tahoe": "failed"})
+        source_health.annotate([sky], health, {"home": "ok", "home:sunset": "ok", "lake_tahoe": "failed"})
         self.assertNotIn("degraded_required", sky.extra)
 
     def test_the_consumed_point_failing_does_degrade(self):

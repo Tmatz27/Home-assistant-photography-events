@@ -2149,3 +2149,37 @@ test("the planner detail shows the full Moon geometry and the gear plan", () => 
   assert.match(html, /<dt>Take<\/dt><dd>200-600 G<\/dd>/);
   assert.match(html, /Worth adding or renting/);
 });
+
+// R9: the rows below are the backend's own compact payload
+// (tests/fixtures/cant-miss-route-rows.json, pinned by the HA pipeline test
+// test_route_basis_reaches_the_card_payload). Only the clock is moved, so the
+// route ages read the same as they did to the backend.
+test("a six-day-old route is never drawn like current traffic", () => {
+  const fixture = JSON.parse(fs.readFileSync(new URL("./fixtures/cant-miss-route-rows.json", import.meta.url), "utf8"));
+  const shift = Date.now() - Date.parse(fixture.generated);
+  const moved = value => new Date(Date.parse(value) + shift).toISOString();
+  const rows = fixture.rows.map(row => ({ ...row, start: moved(row.start), end: moved(row.end),
+    ...(row.route_fetched_at ? { route_fetched_at: moved(row.route_fetched_at) } : {}) }));
+  const render = row => {
+    const card = new Card();
+    card.setConfig({ mode: "action_hero" });
+    card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([row]) } };
+    card.connectedCallback();
+    const collapsed = (card._root.innerHTML.match(/cm-where">([^<]*)</) || [])[1] || "";
+    card._root.querySelectorAll("[data-expand]")[0].click();
+    const html = card._root.innerHTML;
+    card.disconnectedCallback();
+    return { collapsed, html };
+  };
+  const current = render(rows[0]);
+  const recent = render(rows[1]);
+  assert.equal(rows[0].drive_basis, "current");
+  assert.equal(rows[1].drive_basis, "recent");
+  assert.match(current.html, /Routes API, current traffic/);
+  assert.doesNotMatch(current.collapsed, /route .* old/);
+  assert.match(recent.collapsed, /~5 h 48 drive \(route 6 days old\)|~348 min drive \(route 6 days old\)/);
+  assert.match(recent.html, /Routes API, routed 6 days ago; not current traffic/);
+  assert.match(recent.html, /Drive estimate/);
+  assert.doesNotMatch(recent.html, /Routes API, current traffic/, "never labelled as current traffic");
+  assert.notEqual(recent.html.replace(/Milky Way core \((current|recent) route\)/g, ""), current.html.replace(/Milky Way core \((current|recent) route\)/g, ""));
+});

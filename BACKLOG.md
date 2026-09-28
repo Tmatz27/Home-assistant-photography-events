@@ -32,4 +32,3 @@ Phone notifications/delivery, notification blueprint, hassfest, brand submission
 - **Sky gaps:** planetary and Moon-planet conjunctions in the backend (the standalone card computes them), bright comets (needs an observed-magnitude source such as COBS; predictions are not facts), zodiacal light.
 - **Wildlife deferred:** sea otter mother-pup rafts (conflicting peak statements), grebe rushing (no sourced dates within six hours), golden eagle display (no public concentration found), La Jolla leopard sharks and tarantulas are planner-only candidates not yet built as rows.
 - **Monarch counts** have no machine-readable source; they must arrive by report.
-- **Grunion tide window** still takes the highest night tide across all stations; now that tides carry their station, restrict it to Santa Barbara.

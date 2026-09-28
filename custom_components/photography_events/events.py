@@ -33,7 +33,15 @@ from .phenomena import (
     PRECISION_HORIZON_DAYS,
     active_windows,
 )
-from .weather_scoring import SkyScore, cloud_confidence, cloud_is_scorable, mark_standouts, score_sky
+from .weather_scoring import (
+    SkyScore,
+    cloud_confidence,
+    cloud_is_scorable,
+    layer_at,
+    light_path_gate_checked,
+    mark_standouts,
+    score_sky,
+)
 from .verification import grunion_run_window
 from .wildlife import estimate_drive_hours, haversine_km
 
@@ -201,6 +209,8 @@ class Opportunity:
         }
         if self.phenomenon:
             row["phenomenon"] = self.phenomenon
+        if self.drive_in_traffic:
+            row["drive_in_traffic"] = True
         row["time_precision"] = self.time_precision
         # What the eligibility gate decided, so the planner can say "this one
         # made Can't Miss" or "watch only" without re-deriving it.
@@ -275,7 +285,8 @@ class Opportunity:
             "set_after_sunrise_minutes", "civil_dawn", "supermoon_nolle", "illumination", "size_rank",
             "full_moon_at", "ethics", "gear_plan", "drive_basis", "route_fetched_at", "access_state",
             "access_detail", "location_precision", "live_occurrence", "air_quality_note", "contributions",
-            "held_reasons", "time_precision",
+            "held_reasons", "time_precision", "conditions_unassessed", "estimated_drive_hours",
+            "route_age_hours",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -300,12 +311,70 @@ def _shorten(text: str, limit: int = 160) -> str:
     return text[: limit - 1].rstrip() + "\u2026"
 
 
+def _cloud_unassessed(cloud_lookup, moment, cloud, scorable: bool) -> list[str]:
+    """``["cloud"]`` when the forecast reaches this night but gave no valid cloud.
+
+    That night was not assessed, which is different both from a cloudy night
+    and from a night beyond the forecast.
+    """
+    covers = getattr(cloud_lookup, "covers", None)
+    if cloud is None and scorable and covers is not None and covers(moment):
+        return ["cloud"]
+    return []
+
+
 def _gear_for(category: str) -> dict[str, str]:
     return dict(GEAR_PROFILES.get(category, {}))
 
 
 def _zone_coords(zone: dict) -> tuple[float, float]:
     return math.radians(zone["latitude"]), math.radians(zone["longitude"])
+
+
+def home_sun_events(zone: dict, now: datetime, days: int = 3) -> list[tuple[datetime, bool, str]]:
+    """(moment, rising, "Sunset"|"Sunrise") for the sky candidates still ahead."""
+    lat, lon = _zone_coords(zone)
+    found = []
+    for offset in range(days):
+        day = now + timedelta(days=offset)
+        for rising, label in ((False, "Sunset"), (True, "Sunrise")):
+            moment = astro.sun_event(day, lat, lon, rising=rising)
+            if moment is not None and moment >= now:
+                found.append((moment, rising, label))
+    return found
+
+
+def sunset_assessment_gaps(zone: dict, forecast: dict | None, upstream: dict | None, now: datetime,
+                           provider: list | None = None, points: dict | None = None,
+                           days: int = 3) -> list[dict]:
+    """Home sunsets and sunrises that could not be assessed this cycle.
+
+    Each one is assessed by a current provider prediction for *that* event,
+    or by the local model with both of its inputs: the home forecast and the
+    upstream light path toward the Sun, each current (``points``) and valid at
+    that moment. A provider prediction for another event covers nothing here.
+    """
+    from . import sunburst
+
+    points = points or {}
+    upstream = upstream or {}
+    gaps = []
+    for moment, rising, label in home_sun_events(zone, now, days):
+        if sunburst.match(provider or [], label.lower(), moment):
+            continue
+        component = "sunrise" if rising else "sunset"
+        missing = []
+        home_ok = points.get(zone["id"], "ok") == "ok"
+        if not home_ok or not forecast or score_sky(forecast, moment) is None:
+            missing.append("home forecast")
+        path = upstream.get(component)
+        if (points.get(f"{zone['id']}:{component}", "ok") != "ok"
+                or light_path_gate_checked(layer_at(path, "cloud_cover_low", moment),
+                                           layer_at(path, "cloud_cover_mid", moment)) is None):
+            missing.append("upstream light path")
+        if missing:
+            gaps.append({"label": label, "at": moment, "missing": missing})
+    return gaps
 
 
 def build_sunset_opportunities(
@@ -334,28 +403,22 @@ def build_sunset_opportunities(
     """
     from . import sunburst
 
-    lat, lon = _zone_coords(zone)
     upstream = upstream or {}
     candidates: list[tuple[datetime, bool, str, object]] = []
 
-    for offset in range(days):
-        day = now + timedelta(days=offset)
-        for rising, label in ((False, "Sunset"), (True, "Sunrise")):
-            moment = astro.sun_event(day, lat, lon, rising=rising)
-            if moment is None or moment < now:
-                continue
-            scored = score_sky(
-                forecast,
-                moment,
-                upstream=upstream.get("sunrise" if rising else "sunset"),
-                air_quality=air_quality,
-            ) if forecast else None
-            # A current provider forecast can stand on its own: the local
-            # model is a comparison, and its absence must not erase the
-            # provider's answer (source roles decide *before* scoring).
-            if scored is None and not sunburst.match(provider or [], label.lower(), moment):
-                continue
-            candidates.append((moment, rising, label, scored))
+    for moment, rising, label in home_sun_events(zone, now, days):
+        scored = score_sky(
+            forecast,
+            moment,
+            upstream=upstream.get("sunrise" if rising else "sunset"),
+            air_quality=air_quality,
+        ) if forecast else None
+        # A current provider forecast can stand on its own: the local
+        # model is a comparison, and its absence must not erase the
+        # provider's answer (source roles decide *before* scoring).
+        if scored is None and not sunburst.match(provider or [], label.lower(), moment):
+            continue
+        candidates.append((moment, rising, label, scored))
 
     mark_standouts([scored for _, _, _, scored in candidates if scored is not None])
 
@@ -580,6 +643,8 @@ def build_meteor_opportunities(
                         "cloud_cover": round(cloud, 1) if cloud is not None else None,
                         "cloud_confidence": cloud_confidence(lead_days) if cloud is not None else None,
                         "cloud_is_forecast": bool(cloud is not None and cloud_is_scorable(lead_days)),
+                        "conditions_unassessed": _cloud_unassessed(cloud_lookup, window.start, cloud,
+                                                                   cloud_is_scorable(lead_days)),
                         "moon_illumination": round(window.moon_illumination, 3),
                         "peak_altitude": round(window.peak_target_altitude, 1),
                         "score_ceiling": ceiling,
@@ -769,6 +834,7 @@ def build_milky_way_opportunities(
                     # an outlook that ranked the night without promising it.
                     "cloud_confidence": cloud_confidence(lead_days) if cloud is not None else None,
                     "cloud_is_forecast": bool(cloud is not None and forecast_cloud),
+                    "conditions_unassessed": _cloud_unassessed(cloud_lookup, window.start, cloud, forecast_cloud),
                     "moon_illumination": round(window.moon_illumination, 3),
                     "peak_altitude": round(window.peak_target_altitude, 1),
                     "score_ceiling": ceiling,

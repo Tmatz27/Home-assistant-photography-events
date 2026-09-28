@@ -23,7 +23,7 @@ Significance, confidence, urgency, encounter, access and condition quality are s
 
 ## Correction pass before release (still 0.16.0)
 
-An independent review found places where the rules above were not what the running pipeline did. All are corrected:
+Two independent reviews found places where the rules above were not what the running pipeline did. The fixes below are covered by tests that run the real Home Assistant coordinator on synthetic HTTP payloads; they have not been verified against every live feed (see SOURCE_VALIDATION.md for what is and is not live-verified):
 
 - **Boat trips are never "safe" yet.** Land alerts say nothing about the sea and marine-zone warnings are not connected, so boat phenomena are held with "Marine conditions not checked" until they are.
 - **Park access is checked for the phenomena that need it** (Firefall, Yosemite moonbows, Yosemite/Sequoia snow) even with the Parks view off; NPS alerts are read to their full `total`; no key or no current read means held, and NPS's own "Park Closure" category now blocks.
@@ -33,7 +33,15 @@ An independent review found places where the rules above were not what the runni
 - **Out-of-season behaviour**: a fresh report of blue whales feeding (or humpbacks lunge feeding, orcas hunting, bear cubs, fishing eagles, dolphin calves) now opens a short occurrence even outside the usual season.
 - **Forecast integrity**: missing upstream cloud layers are unknown, never an open light path; SunsetWx must be a current model run, not just a current download; one failed forecast point no longer blocks rows at other places; route times age and say so.
 - **Timed planning rows** (grunion runs, moonbow candidates) keep their times in the calendar; winter seasons keep their identity across 1 January; a skipped Milky Way night no longer represents its group; opportunity events pick the best *eligible* viewpoint.
-- **Settings**: clearing an API key in the options really clears it; selecting no categories means none; switching Waves off stays off (older setups are migrated once).
+- **Settings**: clearing an API key in the options really clears it; selecting no categories means none; switching Waves off stays off. A saved category list is never rewritten on upgrade, because nothing records whether an older "everything but Waves" list was a default or a choice. If you installed before Waves existed and want it, turn it on once in the options.
+- **Park alerts are read record by record.** An NPS page whose records lack an id, park, title or category, or that repeats records from an earlier page, makes access unknown rather than open.
+- **NWS warnings must be placeable.** A warning with only zone (UGC) codes, malformed or non-list county codes, or a polygon with invalid coordinates makes the safety check incomplete; it no longer matches nowhere and reads as safe.
+- **Each report sentence speaks only for its own animal.** "Humpbacks passed Avila today and dolphins were lunge feeding" confirms nothing about humpbacks; "2,000 geese and monarchs" is not a monarch count; "sea lions feeding" is not condor behaviour; a short first sentence such as "Trip cancelled at Avila today." no longer lends its place and date to the next one, and a header naming two places gives no place. Hotline pages keep each statement's own date instead of the page heading's.
+- **Unassessed is not unfavourable.** When a forecast value a candidate needs is missing or invalid (a light-path layer, the local sky at sunset, a clearing forecast, dawn at the grove, night cloud), the row is held and the week reads "Can't Miss assessment incomplete". A SunsetWx prediction covers only the sunset or sunrise it predicts.
+- **Forecast inputs are tracked separately.** A broken sunrise light-path probe no longer removes a Firefall that reads only the valley and the sunset path.
+- **A region is not a destination.** Glowing surf reported for "the Santa Barbara Channel" is a watch, not a trip to the Channel's centre; a report from Pismo stays at Pismo even when an automation files it under another zone.
+- **Orca operator reports** back a community cluster only within the same 25 km bound; otherwise they stand at their own place, and their point is listed with the other contributions.
+- **Drive times say what they rest on.** The Can't Miss card shows "current traffic", "routed 6 days ago; not current traffic" or "estimated from distance". An old route that is the only thing keeping a trip under the drive limit (the distance estimate is over it) holds the row until a current route settles it.
 - **Solar safety wording** now distinguishes the camera's solar filter from ISO 12312-2 eye viewers.
 
 ## Compatibility

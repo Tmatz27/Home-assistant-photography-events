@@ -288,12 +288,29 @@ def parse_nps_alerts(payload) -> list[ParkAlert]:
     return found
 
 
+def nps_record_problem(entry) -> str:
+    """Why one alert record cannot count toward a complete read, or "".
+
+    Counting raw records proves nothing: an empty object, a record without a
+    category (a closure that cannot be classified) or the same record served
+    again on a later page all "add up" while hiding what a closure says.
+    """
+    if not isinstance(entry, dict):
+        return "record is not an object"
+    for field in ("id", "parkCode", "title", "category"):
+        value = entry.get(field)
+        if not isinstance(value, str) or not value.strip():
+            return f"record without {field}"
+    return ""
+
+
 def collect_nps_pages(pages: list) -> list[ParkAlert]:
     """Every alert across paginated responses, or IncompleteAlertsError.
 
-    Complete means: each page is a valid response with the same total, and
-    the entries read add up to that total. Anything else - a short page, a
-    changed total, an entry that is not an object - is an incomplete read.
+    Complete means: each page is a valid response with the same total, every
+    record is usable (``nps_record_problem``), no record is served twice, and
+    the *distinct* usable records add up to that total. A genuine zero-result
+    answer is complete.
     """
     if not pages:
         raise IncompleteAlertsError("NPS alerts: no response")
@@ -302,10 +319,15 @@ def collect_nps_pages(pages: list) -> list[ParkAlert]:
         raise IncompleteAlertsError("NPS alerts: total changed between pages")
     total = totals.pop()
     entries = [entry for page in pages for entry in page["data"]]
-    if len(entries) != total:
-        raise IncompleteAlertsError(f"NPS alerts: read {len(entries)} of {total}")
-    if any(not isinstance(entry, dict) for entry in entries):
-        raise IncompleteAlertsError("NPS alerts: unreadable entry")
+    for entry in entries:
+        problem = nps_record_problem(entry)
+        if problem:
+            raise IncompleteAlertsError(f"NPS alerts: {problem}")
+    identities = [entry["id"].strip() for entry in entries]
+    if len(set(identities)) != len(identities):
+        raise IncompleteAlertsError("NPS alerts: a record was served twice; pagination cannot be trusted")
+    if len(identities) != total:
+        raise IncompleteAlertsError(f"NPS alerts: read {len(identities)} of {total}")
     return parse_nps_alerts({"data": entries})
 
 

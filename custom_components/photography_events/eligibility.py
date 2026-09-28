@@ -162,6 +162,15 @@ def _conditions(item, definition, now) -> tuple[bool, str]:
     return True, ""
 
 
+def _unassessed_conditions(item, definition) -> list[str]:
+    """Condition inputs that were missing or invalid, as opposed to unfavourable."""
+    missing = list(item.extra.get("conditions_unassessed") or [])
+    if (definition.key == "sunset_local" and item.zone_id == "home" and not item.extra.get("provider_quality")
+            and item.extra.get("light_path") not in ("modelled", None)):
+        missing.append("upstream light path")
+    return missing
+
+
 def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None = None,
            sunset_drive_hours: float | None = None) -> dict:
     """Separate significance, confidence, urgency and eligibility for one row."""
@@ -171,6 +180,8 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
                                     exposure=definition.exposure if definition else weather_hazards.EXPOSURE_GENERAL)
     urgency, urgency_label = _urgency(item, now)
     blockers: list[str] = []
+    unassessed: list[str] = []
+    unassessed_why = ""
 
     awaiting_conditions = False
     if definition is None:
@@ -193,9 +204,17 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
                 actionable = False
                 # Evidence in hand, conditions not: exactly what a watch is.
                 awaiting_conditions = state in ("behavior_confirmed", "measured")
-                blockers.append(why)
+                unassessed = _unassessed_conditions(item, definition)
+                if not unassessed:
+                    blockers.append(why)
+                else:
+                    unassessed_why = why
         if significance < SIGNIFICANCE_FLOOR:
             blockers.append("significance below the Can't Miss floor")
+        if definition.needs_site and item.extra.get("location_precision") == "region":
+            # A region's centre is not where anyone saw it: darkness, drive
+            # and safety computed there would describe an invented place.
+            blockers.append("reported for a region, not a site: no place to check darkness, drive and safety")
 
     end = item.end or item.start + timedelta(hours=2)
     in_horizon = end >= now and item.start <= now + timedelta(days=CANT_MISS_DAYS)
@@ -209,6 +228,13 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
     within_drive = item.drive_hours is None or item.drive_hours <= limit
     if not within_drive:
         blockers.append(f"beyond the {limit:g} h Can't Miss drive limit")
+    # A recent route may decide a trip (policy: typical travel, not current
+    # traffic), except when it is the only thing keeping the trip under the
+    # limit: then the old route and the estimate disagree and the drive is
+    # held until a current route settles it.
+    estimated = item.extra.get("estimated_drive_hours")
+    route_disputed = (within_drive and item.extra.get("drive_basis") == "recent"
+                      and isinstance(estimated, (int, float)) and estimated > limit)
     # A source this phenomenon's condition needs is down or stale: its last
     # value is not a current assessment. Preferred and optional sources only
     # annotate (source_health.dependency_roles).
@@ -232,6 +258,16 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
         unverified.append(safety["summary"])
     if access_needed and access_state != "closed" and access_state != "open":
         unverified.append(item.extra.get("access_detail") or "Park access not checked.")
+    # Conditions that could not be read are not conditions that failed: the
+    # row is held and the week's assessment is incomplete (``dashboard``).
+    if route_disputed:
+        age = item.extra.get("route_age_hours")
+        unverified.append(f"Drive under the {limit:g} h limit only on a route from "
+                          + (f"{age / 24:.0f} days" if isinstance(age, (int, float)) and age >= 48 else f"{age or 0:.0f} h")
+                          + f" ago; the distance estimate is {estimated:.1f} h. Waiting for a current route.")
+    if unassessed:
+        unverified.append(f"Conditions not assessed: {unassessed_why} ("
+                          + ", ".join(unassessed) + " missing or invalid in the forecast).")
     held = bool(unverified) and not blockers
     blockers.extend(unverified)
 
@@ -274,6 +310,7 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
         "held_for_safety": held,
         "held": held,
         "held_reasons": unverified if held else [],
+        "conditions_unassessed": unassessed,
         "condition_quality": item.extra.get("provider_percent") or (item.score if state in ("computed", "forecast") else None),
         "evidence_state": state,
         "actionable": actionable,
@@ -550,6 +587,22 @@ def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: Fals
                          "reasons": [r for r in reasons if r]})
 
     coverage = coverage or {"state": COVERAGE_COMPLETE, "problems": []}
+    # Coverage is also what the gate could assess: sources that answered with
+    # a missing or invalid value for a candidate this week did not assess it.
+    unassessed = []
+    for item in sorted(opportunities, key=lambda item: item.start):
+        assessment = item.extra.get("assessment") or {}
+        if (assessment.get("conditions_unassessed") and assessment.get("policy_met")
+                and assessment.get("in_horizon") and assessment.get("within_drive")
+                and not suppressed(event_id(item))
+                and item.phenomenon not in {problem["phenomenon"] for problem in unassessed}):
+            unassessed.append({"source": f"conditions:{item.phenomenon}", "phenomenon": item.phenomenon,
+                               "name": f"Conditions for {assessment.get('name') or item.title}",
+                               "state": "unassessed",
+                               "impact": ", ".join(assessment["conditions_unassessed"]).capitalize()
+                               + " missing or invalid in the forecast."})
+    if unassessed:
+        coverage = {"state": COVERAGE_INCOMPLETE, "problems": list(coverage.get("problems") or []) + unassessed}
     incomplete = coverage.get("state") == COVERAGE_INCOMPLETE
     if rows:
         headline = None

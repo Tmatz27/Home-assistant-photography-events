@@ -3631,12 +3631,41 @@ function shortLens(text) {
   return value.trim();
 }
 
+/** How old a route is, in words: "5 h", "6 days". */
+function routeAgeLabel(row, now) {
+  const fetched = parseEventDate(row.route_fetched_at);
+  if (!fetched) return "";
+  const hours = Math.max(0, (now - fetched) / 3600000);
+  return hours < 48 ? `${Math.round(hours)} h` : `${Math.round(hours / 24)} days`;
+}
+
+/**
+ * What a drive time rests on: current traffic, a recent route (typical, not
+ * current traffic) or a distance estimate. A hard drive-limit decision can
+ * rest on any of the three, so the row must say which.
+ */
+function driveBasisLabel(row, now) {
+  const basis = row.drive_basis;
+  if (basis === "current") return `${row.drive_source || "routed"}, ${row.drive_in_traffic ? "current traffic" : "routed now"}`;
+  if (basis === "recent") {
+    const age = routeAgeLabel(row, now);
+    return `${row.drive_source || "routed"}, routed ${age ? `${age} ago` : "earlier"}; not current traffic`;
+  }
+  if (basis === "estimate" || row.drive_source === "estimate") return "estimated from distance";
+  return row.drive_source || "";
+}
+
 /** Where, and how far, in the words a person would use. */
-function whereLabel(row) {
+function whereLabel(row, now = new Date()) {
   const place = row.where || row.zone || "";
   const hours = Number(row.drive_hours);
   if (!Number.isFinite(hours) || hours <= 0.05) return place ? `${place} · at home` : "At home";
-  return `${place} · ~${driveLabel(Math.round(hours * 60))} drive`;
+  let basis = "";
+  if (row.drive_basis === "recent") {
+    const age = routeAgeLabel(row, now);
+    basis = age ? ` (route ${age} old)` : " (old route)";
+  }
+  return `${place} · ~${driveLabel(Math.round(hours * 60))} drive${basis}`;
 }
 
 /**
@@ -3760,7 +3789,7 @@ const CANT_MISS_MODES = {
     return `<div class="cm-row ${expanded ? "open" : ""}" style="--event-color:${categoryColor(row.category)}">
       <button type="button" class="cm-head" data-expand="${escapeHtml(key)}" aria-expanded="${expanded}">
         <span class="cm-title">${escapeHtml(String(row.title || "").replace(/ \(season\)$/, ""))}</span>
-        <span class="cm-where">${escapeHtml(whereLabel(row))}</span>
+        <span class="cm-where">${escapeHtml(whereLabel(row, now))}</span>
         ${row.why_now ? `<span class="cm-why">${escapeHtml(row.why_now)}</span>` : ""}
         <span class="cm-when">${escapeHtml(whenLabel(row, now))}${escapeHtml(best)}</span>
         <span class="cm-status">${escapeHtml(caution)}${escapeHtml(row.status || "")}${warn ? " · check notes" : ""}</span>
@@ -3797,7 +3826,8 @@ const CANT_MISS_MODES = {
     // Required safety kit first; owned kit next; unowned suggestions last and
     // labelled as such, so the two are never read as one packing list.
     const gear = gearPlanRows(plan);
-    const access = [["Where", row.where || row.zone], ["Approximate drive", Number(row.drive_hours) > 0.05 ? `${driveLabel(Math.round(row.drive_hours * 60))} (${row.drive_source === "estimate" ? "estimated" : row.drive_source})` : "At home"],
+    const access = [["Where", row.where || row.zone], ["Approximate drive", Number(row.drive_hours) > 0.05 ? `${driveLabel(Math.round(row.drive_hours * 60))} (${driveBasisLabel(row, now)})` : "At home"],
+      ["Drive estimate", row.drive_basis === "recent" && Number(row.estimated_drive_hours) > 0 ? `${driveLabel(Math.round(row.estimated_drive_hours * 60))} by distance` : ""],
       ["Access", row.access_note], ["Safety", [row.safety_summary, ...(row.safety_notes || [])].filter(Boolean).join(" ")],
       ["Wildlife ethics", row.ethics], ["Closures", (row.closures || []).join("; ")]];
     return `<div class="outlook-detail">

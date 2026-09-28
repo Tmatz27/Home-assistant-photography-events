@@ -39,22 +39,18 @@ INGEST_REPORT_SCHEMA = vol.Schema(
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Versioned, one-time migrations of stored settings.
 
-    1 -> 2: entries saved before the Waves category existed stored every other
-    category. Reading "all but Waves" as "Waves too" used to happen on every
-    read, which also overrode anyone who later switched Waves off on purpose.
-    It happens here once instead; from version 2 the stored list is literal.
+    1 -> 2: the stored category list becomes literal. Nothing in a version-1
+    entry records whether "every category but Waves" was the old default or a
+    deliberate choice, so the list is kept exactly as saved: an explicit
+    selection is never rewritten. An entry with no stored list already gets
+    the current defaults, Waves included. Anyone upgrading from a pre-Waves
+    install turns Waves on once in the options (see the release notes).
     """
     if entry.version > 2:
         return False
     if entry.version == 1:
-        legacy = set(ALL_CATEGORIES) - {"waves"}
-        data, options = dict(entry.data), dict(entry.options)
-        for store in (data, options):
-            categories = store.get("enabled_categories")
-            if categories is not None and set(categories) == legacy:
-                store["enabled_categories"] = [*categories, "waves"]
-        hass.config_entries.async_update_entry(entry, data=data, options=options, version=2)
-        _LOGGER.debug("Migrated Photography Events entry to version 2")
+        hass.config_entries.async_update_entry(entry, version=2)
+        _LOGGER.debug("Migrated Photography Events entry to version 2; stored categories unchanged")
     return True
 
 

@@ -50,6 +50,7 @@ it, because the malformed feature may have been the warning for this place.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -156,7 +157,9 @@ COUNTY_MATCH_KM = 40.0
 
 
 def _valid_geometry(geometry) -> bool:
-    """A Polygon/MultiPolygon with at least one ring of three numeric points."""
+    """A Polygon/MultiPolygon whose every ring has 3+ finite, in-range lon/lat points."""
+    import math
+
     if not isinstance(geometry, dict) or geometry.get("type") not in ("Polygon", "MultiPolygon"):
         return False
     coords = geometry.get("coordinates")
@@ -164,22 +167,34 @@ def _valid_geometry(geometry) -> bool:
     if not isinstance(polygons, list) or not polygons:
         return False
     for polygon in polygons:
-        try:
-            ring = [(float(pair[0]), float(pair[1])) for pair in polygon[0]]
-        except (TypeError, ValueError, IndexError, KeyError):
+        if not isinstance(polygon, list) or not polygon:
             return False
-        if len(ring) < 3:
-            return False
+        for ring in polygon:
+            if not isinstance(ring, list) or len(ring) < 3:
+                return False
+            for pair in ring:
+                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                    return False
+                try:
+                    lon, lat = float(pair[0]), float(pair[1])
+                except (TypeError, ValueError):
+                    return False
+                if not (math.isfinite(lon) and math.isfinite(lat) and -180 <= lon <= 180 and -90 <= lat <= 90):
+                    return False
     return True
+
+
+_SAME_CODE = re.compile(r"^\d{6}$")
 
 
 def validate_feature(feature) -> tuple[dict | None, str]:
     """(compact alert, "") for a usable feature, or (None, why it is unusable).
 
-    Usable for safety coverage means: an event name to look up, a way to place
-    it (a valid polygon or county SAME codes) and a parseable expiry so it
-    cannot linger forever. Anything less is not "no alert" - it is an alert
-    this gate could not read.
+    "Usable geography" is defined by what ``alerts_at`` can resolve: a valid
+    polygon, or a *list* of six-digit county SAME codes. Anything else - UGC
+    zone codes alone, junk or scalar SAME values, non-finite coordinates - is
+    a warning this gate cannot place, so it makes the check incomplete rather
+    than silently matching nowhere (which read as "safe").
     """
     if not isinstance(feature, dict):
         return None, "feature is not an object"
@@ -189,15 +204,27 @@ def validate_feature(feature) -> tuple[dict | None, str]:
     event = props.get("event")
     if not isinstance(event, str) or not event.strip():
         return None, "feature has no event name"
-    geocode = props.get("geocode") if isinstance(props.get("geocode"), dict) else {}
-    same = [code for code in (geocode.get("SAME") or []) if isinstance(code, str) and code.strip()]
-    ugc = [code for code in (geocode.get("UGC") or []) if isinstance(code, str) and code.strip()]
+    geocode = props.get("geocode")
+    if geocode is not None and not isinstance(geocode, dict):
+        return None, f"{event}: unreadable geocode"
+    geocode = geocode or {}
+    raw_same = geocode.get("SAME")
+    if raw_same is not None and not isinstance(raw_same, list):
+        return None, f"{event}: SAME codes are not a list"
+    same = [code for code in (raw_same or []) if isinstance(code, str) and _SAME_CODE.match(code.strip())]
+    if raw_same and len(same) != len(raw_same):
+        return None, f"{event}: malformed SAME codes"
+    raw_ugc = geocode.get("UGC")
+    if raw_ugc is not None and not isinstance(raw_ugc, list):
+        return None, f"{event}: UGC codes are not a list"
+    ugc = [code for code in (raw_ugc or []) if isinstance(code, str) and code.strip()]
     geometry = feature.get("geometry")
     has_polygon = _valid_geometry(geometry)
     if geometry is not None and not has_polygon and not same:
         return None, f"{event}: unreadable geometry and no county codes"
-    if not has_polygon and not same and not ugc:
-        return None, f"{event}: no area to place it"
+    if not has_polygon and not same:
+        return None, (f"{event}: only zone (UGC) codes, which this gate cannot place" if ugc
+                      else f"{event}: no area to place it")
     if _time(props.get("expires")) is None and _time(props.get("ends")) is None:
         return None, f"{event}: no parseable expiry"
     for key in ("onset", "effective"):
@@ -207,7 +234,7 @@ def validate_feature(feature) -> tuple[dict | None, str]:
         "event": event.strip(), "headline": props.get("headline") or event,
         "severity": props.get("severity"), "areaDesc": props.get("areaDesc", ""),
         "onset": props.get("onset") or props.get("effective"), "ends": props.get("ends"),
-        "expires": props.get("expires"), "same": same, "ugc": ugc,
+        "expires": props.get("expires"), "same": [code.strip() for code in same], "ugc": ugc,
         "geometry": geometry if has_polygon else None,
         "url": props.get("@id") or props.get("id"),
     }, ""

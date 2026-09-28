@@ -481,9 +481,10 @@ automation:
                                 'gear_glass') }}
 ```
 
-The flag only turns on when the score clears your alert threshold *and* the
-zone is inside your drive limit, so it stays quiet unless it is genuinely worth
-going.
+The flag follows the Can't Miss gate, not a score: it turns on only for an
+eligible Can't Miss occurrence in the next 48 hours (curated phenomenon, policy
+and conditions met, inside the drive limit, safety checked). The alert score
+still ranks planner rows that were never gated.
 
 ## Add the card
 

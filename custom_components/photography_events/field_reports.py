@@ -564,7 +564,7 @@ def parse_report(raw_html: str, source: dict, fetched: datetime | None = None) -
     if not blocks:
         return []
 
-    best: dict[str, FieldReport] = {}
+    best: dict[tuple, FieldReport] = {}
     for heading, text in blocks:
         if len(text) < MIN_BLOCK_CHARS:
             continue
@@ -585,32 +585,41 @@ def parse_report(raw_html: str, source: dict, fetched: datetime | None = None) -
             continue
 
         snippet = build_snippet(text, source["signals"])
-        observed_at = explicit_date(f"{heading} {text}", fetched)
         from .observations import observe, positive
         for zone_id in zone_ids:
-            existing = best.get(zone_id)
-            if existing is not None and existing.strength >= strength:
-                continue
-            # The same statement normalizer as email: phenomena and counts come
-            # from explicit statements about this zone, never co-occurrence.
-            seen = [item for item in positive(observe(text, observed_at or fetched, category=source["category"],
+            # The same statement normalizer as email. Each observation keeps
+            # its own date, count and phenomenon: a page headed "March 27"
+            # must not renew a sentence that says the bloom was on March 1.
+            # The heading is context only for sentences that state no date.
+            seen = [item for item in positive(observe(text, fetched, category=source["category"],
                                                       default_zone=zone_id, subject_hint=heading))
                     if item.zone_id in ("", zone_id)]
-            best[zone_id] = FieldReport(
-                source_id=source["id"],
-                source_name=source["name"],
-                url=source["url"],
-                category=source["category"],
-                zone_id=zone_id,
-                headline=source["headline"],
+            candidates = [FieldReport(
+                source_id=source["id"], source_name=source["name"], url=source["url"],
+                category=source["category"], zone_id=zone_id, headline=source["headline"],
+                # The quote is the readable block; the data is the statement's.
                 snippet=snippet,
-                strength=strength,
-                fetched=fetched,
-                context=heading,
-                # Only a date the report itself states; never the fetch time.
-                observed_at=observed_at,
-                count=max((item.count for item in seen if item.count), default=None),
-                phenomena=tuple(dict.fromkeys(item.phenomenon for item in seen)),
-                normalized=True,
-            )
-    return list(best.values())
+                strength=strength, fetched=fetched, context=heading, observed_at=item.observed_at,
+                count=item.count, phenomena=(item.phenomenon,), normalized=True,
+                latitude=item.latitude, longitude=item.longitude, place=item.place,
+            ) for item in seen]
+            if not candidates:
+                # Names no curated phenomenon: a generic lead for the planner,
+                # dated only by a date its own text states.
+                candidates = [FieldReport(
+                    source_id=source["id"], source_name=source["name"], url=source["url"],
+                    category=source["category"], zone_id=zone_id, headline=source["headline"],
+                    snippet=snippet, strength=strength, fetched=fetched, context=heading,
+                    observed_at=explicit_date(f"{heading} {text}", fetched), normalized=True)]
+            for report in candidates:
+                key = (zone_id, report.phenomena)
+                existing = best.get(key)
+                if existing is not None and (existing.observed_at or datetime.min.replace(tzinfo=fetched.tzinfo if fetched else None)) \
+                        >= (report.observed_at or datetime.min.replace(tzinfo=fetched.tzinfo if fetched else None)) \
+                        and existing.strength >= report.strength:
+                    continue
+                best[key] = report
+    # One lead per zone: a generic line never stands beside a report of a
+    # curated phenomenon for the same place.
+    specific = {zone for zone, phenomena in best if phenomena}
+    return [report for (zone, phenomena), report in best.items() if phenomena or zone not in specific]

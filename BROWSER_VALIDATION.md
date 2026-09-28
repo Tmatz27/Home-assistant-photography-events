@@ -51,3 +51,12 @@ Playwright with the pre-installed Chromium against `tests/cant-miss-browser-fixt
 - With a required source down and no rows, the card shows "Can't Miss assessment incomplete: required data unavailable." with the failed sources listed, not the green quiet-week state; with rows present, a collapsed "Assessment incomplete" note sits above them.
 - Held rows are headed "Held: a required check could not be made" and include the marine reason.
 - No horizontal document overflow in default, incomplete, held or expanded-gear states; no page errors.
+
+### 0.16.0 residual pass - 2026-09-28, same three viewports
+
+Same Playwright/Chromium setup and fixture (synthetic rows only). The fixture's seal row now carries a six-day-old route (`drive_basis: "recent"`), the held list a Firefall row whose light path was not assessed, and the incomplete state a `conditions:` problem. At desktop 1280x900, phone 390x844 and HA-Android-like 412x915:
+- The collapsed seal row reads "~1 h 52 drive (route 6 days old)"; an estimated row keeps its plain "~81 min drive".
+- Expanded, "Approximate drive" reads "1 h 52 (Routes API, routed 6 days ago; not current traffic)" with a separate "Drive estimate" line.
+- The incomplete state lists "Conditions for Horsetail Fall firefall"; the held list shows "Conditions not assessed: western light path ...".
+- Previous checks (solar filter wording, incomplete headline, held heading, marine hold, gear order) still pass; no horizontal overflow in any state; no page errors.
+

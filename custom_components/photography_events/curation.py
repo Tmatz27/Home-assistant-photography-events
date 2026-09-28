@@ -124,6 +124,10 @@ class PhenomenonDefinition:
     # bounded occurrence even outside the usual window (events.live_occurrences).
     # False for anything calendar-, migration- or physics-bound.
     live_outside_window: bool = False
+    # The conditions are judged at a place (darkness at a beach, a drive to
+    # it). A report that names only a region gives no such place, so it is
+    # evidence for a watch, never a destination.
+    needs_site: bool = False
     sources: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -344,7 +348,7 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
        actionable={STATE_MEASURED},
        gear_profile="storm_surf", land=LAND_MILITARY, encounter="high",
        safety="Photograph only from high, set-back ground. Never on beaches, rocks or jetties during high surf."),
-    _d(key="bioluminescent_surf", name="Bioluminescent surf", category=CATEGORY_RARE,
+    _d(key="bioluminescent_surf", needs_site=True, name="Bioluminescent surf", category=CATEGORY_RARE,
        significance=85, policy=POLICY_LIVE, product_class=CLASS_CANT_MISS, exposure="beach",
        policy_reason="No dependable date exists. A credible report within three days, darkness and a Moon under half lit are all required.",
        actionable={STATE_CONFIRMED}, evidence_days=3,
@@ -408,7 +412,7 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
     # --- Weather (watch signals only unless observed) ---------------------------
     _d(key="fresh_snow_clearing", name="Fresh snow then clearing", category=CATEGORY_RARE,
        significance=85, policy=POLICY_FORECAST_CONFIRM, evidence_days=2, product_class=CLASS_CANT_MISS, exposure="mountain",
-       policy_reason="A snowfall forecast is a watch; observed accumulation (a dated report) plus a clearing forecast confirms. Product threshold: 10 cm modelled in 24 h followed by 30 % cloud or less within 18 h.",
+       policy_reason="Watch: a snowfall forecast (product threshold: 10 cm modelled in 24 h, then 30 % cloud or less within 18 h) is a background signal only. Confirmation: a dated report of fresh snow at this place from the last 2 days, plus a current forecast hour of 30 % cloud or less within the next 48 h at the same place; the opportunity is the 12 h from that clearing. Park access must be checked.",
        actionable={STATE_CONFIRMED}, behavior_terms=("fresh snow", "inches of snow", "snow on the valley floor"),
        gear_profile="landscape", land=LAND_NPS, encounter="high",
        safety="Chain controls and closures; never drive into a Winter Storm Warning."),

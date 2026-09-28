@@ -108,3 +108,23 @@ Bugs found beyond the brief and fixed: the Can't Miss sensor did not publish `he
 Validation: 394 Python tests including 28 real Home Assistant contracts (HA 2024.11.3, Python 3.12 venv; the portable run skips those 28), 115 JavaScript tests, pyflakes clean, card build and version checks pass, TRACKING.md regenerated. Browser checks in BROWSER_VALIDATION.md.
 
 Still not live-verified from this container: SunsetWx login/quality, the eBird species endpoint, the statewide NWS alert payload, Friends of the Elephant Seal's current page, Condor Express orca wording. The user's Home Assistant instance was not used.
+
+
+## 2026-09-28: 0.16.0 correction pass after independent review (same version; never tagged)
+
+Base 9671efc. An independent (Codex) review listed 6 critical, 11 high, 6 medium and 1 low finding. The review document itself was not in the repository; the work followed the finding list supplied by the user. Each finding was reproduced against 9671efc before it was changed. `main` is still 0.15.0; nothing was tagged, released or merged, and no Phase 2 work was started.
+
+Architecture changes (see CHANGELOG.md for the per-finding list):
+- `observations.py`: statement-level report normalization and one admissibility gate for every report ingress path. Context (place, date) is borrowed only from a subject line, an explicit automation zone or a short header statement.
+- Safety: land and marine components; boat phenomena are held until marine zones are connected. NWS collections are validated per feature; incomplete checks cannot conclude safe.
+- Park access as a phenomenon/place dependency with paginated, `total`-validated NPS reads.
+- Assessment coverage on the Can't Miss sensor and card; per-point weather health.
+- Source inputs resolved before scoring (SunsetWx model time, air quality health, provider-only sunsets).
+- Raw orca observations with complete-linkage clusters; bird evidence keeps its own timestamps and site; bounded live occurrences outside seasonal windows for behaviour-driven phenomena.
+- Aging routing cache with `drive_basis`; explicit `time_precision`; year-crossing occurrences; suppression before representative; qualify-then-rank events; literal categories with a version 2 config migration; explicit secret clearing.
+
+Additional bugs found: NPS "Park Closure" never matched the blocking categories; the Condor megapod report carried no count; a failed alert fetch was treated as never fetched; an unrecognised place name let a statement borrow another sentence's place; sunset scoring called one missing upstream layer "modelled"; `wildlife.cluster` shared list objects with cached records; the CI job ran only `test_ha_integration.py`.
+
+Validation (local): 441 portable Python tests; 52 Home Assistant tests (28 contracts + 24 new pipeline tests) against HA 2024.11.3 in a Python 3.12 venv - 493 Python in total; 117 JavaScript tests; pyflakes clean; card build/check and version checks pass; TRACKING.md regenerated. Browser checks in BROWSER_VALIDATION.md.
+
+Still not live-verified: SunsetWx login/current quality and `last_updated`; eBird species responses; the statewide NWS payload; Friends of the Elephant Seal; Condor Express real wording; real Open-Meteo bundles; NPS pagination/access; current CDFW parsing; NOAA station/timezone enrichment. The user's Home Assistant instance was not used.

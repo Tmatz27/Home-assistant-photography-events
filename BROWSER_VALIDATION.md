@@ -43,3 +43,11 @@ The fixture gained a synthetic solar-eclipse row (required kit, caution state, f
 - Evidence shows "Fallback in use" and each condition state as its own row.
 - With the alert feed "down", the card says "Nothing cleared to recommend: safety could not be checked for the rows held below." and lists the held rows with their reason; it does not show the green "Nothing worth changing plans" state.
 - No horizontal overflow in any of these states; no page errors.
+
+### 0.16.0 correction pass — 2026-09-28, same three viewports
+
+Playwright with the pre-installed Chromium against `tests/cant-miss-browser-fixture.html` (synthetic rows only). The fixture gained a marine-held orca row, the corrected solar-filter wording and a "Toggle required source outage (incomplete)" control. At desktop 1280×900, phone 390×844 (DPR 3, touch) and HA-Android-like 412×915 (DPR 2.625, touch, HA app user agent):
+- The collapsed eclipse row reads "Required: Solar filter for cameras"; no camera label mentions ISO 12312-2; the expanded gear section lists Required first and says eye viewers are never used as a camera filter.
+- With a required source down and no rows, the card shows "Can't Miss assessment incomplete: required data unavailable." with the failed sources listed, not the green quiet-week state; with rows present, a collapsed "Assessment incomplete" note sits above them.
+- Held rows are headed "Held: a required check could not be made" and include the marine reason.
+- No horizontal document overflow in default, incomplete, held or expanded-gear states; no page errors.

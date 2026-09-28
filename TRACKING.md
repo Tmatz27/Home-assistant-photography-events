@@ -4,7 +4,7 @@ _Generated from the code by `tools/generate_tracking_inventory.py`. Every date,
 evidence level and link below is read out of the modules that run, so this file
 cannot drift from the thing it describes._
 
-Generated 2026-09-27.
+Generated 2026-09-28.
 
 ## How to read this
 
@@ -222,7 +222,7 @@ Thresholds are sourced or labelled product thresholds; see DISCOVERY_AUDIT.md.
 | Yosemite moonbow | 85 | `conditions_required` | cant miss | Sky geometry is computed; spray and the viewpoint light path are not. A dated flow report makes a sky night a supported candidate (watch). Only a viewpoint-validated prediction - the published Lower/Upper Fall timetables model the valley skyline - plus a clear-sky forecast could make it actionable, and no such timetable can be consumed yet (they are published as page images). |
 | Major meteor shower | 82 | `computed` | cant miss | Peak is computed from solar longitude; conditions (moon, radiant, cloud) decide. |
 | Pismo monarch clusters | 82 | `aggregation_required` | cant miss | The season is predictable, the numbers are not: recent Pismo counts have been in the hundreds. Requires a dated count of at least 1,000 at the grove (product threshold), plus a cold dawn: Xerces notes monarchs cannot fly below about 55 °F, so they stay clustered. |
-| Common dolphin megapod | 80 | `aggregation_required` | cant miss | Presence is ordinary; a dated operator report of one explicitly sized pod of thousands is the aggregation. |
+| Common dolphin megapod | 80 | `aggregation_required` | cant miss | Presence is ordinary; a dated operator report of one explicitly sized pod of thousands is the aggregation. Product threshold: at least 1,000 dolphins written against one pod; the word 'megapod' alone, or a pod of 20, is not it. |
 | Eastern Sierra aspen, high elevation | 80 | `live_confirmation_required` | cant miss | Timing moves with temperature and wind; a dated peak report is required. Undated hotline text is shown as reported, date unknown. |
 | Eastern Sierra aspen, mid elevation | 80 | `live_confirmation_required` | cant miss | As above. |
 | Exceptional Pacific swell | 80 | `forecast_plus_confirmation` | cant miss | The CDIP forecast is a watch; the calibrated NDBC 46011 measurement confirms the swell is here. |

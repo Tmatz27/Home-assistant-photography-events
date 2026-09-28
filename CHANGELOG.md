@@ -36,6 +36,18 @@ Hardening pass before release (same version; 0.16.0 was never tagged):
 - Planner detail shows the full Moon geometry and gear plan; lunar `sunset`, `moonset_azimuth`, `civil_dawn`, `supermoon_nolle`, `size_rank` and related fields were missing from the payload.
 - Fixed: numeric fractions ("1/2 mile offshore") could be read as a report date.
 
+Correction pass after an independent review (same version; still unreleased):
+
+- C1 `weather_hazards.safety` keeps land and marine components; a boat phenomenon's marine safety is unknown until marine zones are connected, so it is never SAFE and Can't Miss holds it. Unsafe warnings still block.
+- C2 Park access is a phenomenon/place dependency (`curation.access_requirement`, `conditions.annotate_access`), fetched when Rare is enabled; NPS alerts paginate to `total`; unknown access holds, a closure blocks. Fixed: NPS's "Park Closure" category never matched the blocking set.
+- C3 Solar gear text separates a front-mounted optics solar filter from ISO 12312-2 eye viewers.
+- C4 Orca presence runs on raw observations filtered to 72 h before aggregation, with complete-linkage clusters (25 km diameter); `wildlife.cluster` no longer mutates cached records.
+- C5 New `observations.py` statement normalizer (subject, behaviour, polarity, count, place, date per clause) for email and hotline text; one admissibility gate (`observations.admissible`) for every ingress path. Megapod minimum 1,000.
+- C6 `parse_alert_collection` validates every NWS feature; malformed features make an incomplete check that cannot conclude safe.
+- H1-H11: per-evidence timestamps for bird spectacles; site identity for merges; exact report coordinates; validated light-path layers; SunsetWx model freshness; input roles resolved before scoring; per-point weather health; assessment coverage on the dashboard and card; presentation vs ownership categories; bounded live occurrences outside the window; aging, origin-keyed routing cache with `drive_basis`.
+- M1-M6: explicit `time_precision`; year-crossing windows are one occurrence; suppression before group representative; qualify-then-rank opportunity events; explicit secret clearing; literal category selection with a one-time version 2 migration for Waves.
+- Tests: `tests/test_codex_review.py` (portable) and `tests/test_ha_pipeline.py` (real coordinator cycle with HTTP faked at the session). CI runs every `test_ha_*.py`.
+
 ## 0.15.0
 
 Four changes, all from watching the cards in use.

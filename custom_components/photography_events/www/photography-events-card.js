@@ -1928,8 +1928,9 @@ function confidenceLegendHtml() {
 
 const DEFAULT_CONFIG = Object.freeze({
   title: "Photography Events",
-  // "timeline" keeps the original browser-computed view. The other two read
-  // the photography_events integration's entities instead.
+  // A config without a mode renders the planner. A card added from the
+  // picker with the integration installed starts on Can't Miss
+  // (getStubConfig); "timeline" keeps the original browser-computed view.
   mode: MODE_OUTLOOK,
   hero_entity: "",
   outlook_entity: "",
@@ -2843,6 +2844,10 @@ const CARD_STYLES = `
       .cm-held strong { color:var(--primary-text-color); }
       .cm-held ul { margin:4px 0 0; padding-left:18px; }
       .cm-held li { margin:0 0 6px; overflow-wrap:anywhere; }
+      .cm-problems { margin:6px 0 0; padding-left:18px; text-align:left; font-size:12px; color:var(--secondary-text-color); }
+      .cm-problems li { margin:0 0 4px; overflow-wrap:anywhere; }
+      .cm-incomplete-note { margin:6px 0 10px; padding:8px 12px; border-left:3px solid var(--warning-color, #dca54c); font-size:13px; color:var(--secondary-text-color); }
+      .cm-incomplete-note summary { cursor:pointer; color:var(--primary-text-color); }
       .cm-row .outlook-detail { padding:0 12px 12px; }
       .cm-report { font-size:13px; margin:6px 0; overflow-wrap:anywhere; }
       .cm-empty { display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:22px 12px; color:var(--secondary-text-color); }
@@ -3596,6 +3601,12 @@ function cantMissFromState(state) {
       chase: Array.isArray(birds.chase) ? birds.chase : [],
     },
     headline: attributes.headline || "",
+    // Whether every source needed to assess the enabled categories answered.
+    // "incomplete" must never be drawn as a quiet week.
+    assessment: attributes.assessment && typeof attributes.assessment === "object"
+      ? { state: attributes.assessment.state || "complete",
+          problems: Array.isArray(attributes.assessment.problems) ? attributes.assessment.problems : [] }
+      : { state: "complete", problems: [] },
     showLimit: Number(attributes.show_limit) || 5,
     preferences: attributes.preferences || {},
     sources: attributes.sources || {},
@@ -3691,6 +3702,7 @@ const CANT_MISS_MODES = {
       <div class="cm-heading"><span>Can't miss</span><span class="cm-sub">next 7 days · within your drive limit</span></div>
       ${this._freshnessHtml(outlookLike, now, "Can't miss")}
       ${this._choiceError ? `<div role="alert" class="event-error">${escapeHtml(this._choiceError)}</div>` : ""}
+      ${events.length && board.assessment.state === "incomplete" ? this._incompleteNoteHtml(board) : ""}
       ${events.length ? shown.map(row => this._cantMissRowHtml(row, board, now)).join("") +
         (events.length > board.showLimit ? `<button type="button" class="show-more" data-more="cant-miss" aria-expanded="${all}">${all ? "Show fewer" : `Show ${events.length - board.showLimit} more`}</button>` : "")
         : this._cantMissEmptyHtml(board, stale)}
@@ -3700,18 +3712,33 @@ const CANT_MISS_MODES = {
     </div>`;
   },
 
-  /** Held for safety: never silently dropped, never presented as clear. */
+  /** Held: every other check passed, but one could not be made. Never silently dropped, never presented as clear. */
   _heldHtml(board) {
     if (!board.held.length) return "";
     const items = board.held.map(item => `<li><strong>${escapeHtml(item.title)}</strong>${item.where ? ` · ${escapeHtml(item.where)}` : ""}<br><span>${escapeHtml(item.summary || "")}</span></li>`).join("");
-    return `<div class="cm-held" role="status"><strong>Held: safety not checked</strong>
-      <p>These would otherwise be listed. NWS warnings could not be checked for them, and unknown is not the same as safe.</p><ul>${items}</ul></div>`;
+    return `<div class="cm-held" role="status"><strong>Held: a required check could not be made</strong>
+      <p>These would otherwise be listed. Safety, marine conditions or park access could not be checked for them, and unknown is not the same as safe or open.</p><ul>${items}</ul></div>`;
+  },
+
+  /** Which required sources prevented a trustworthy assessment. */
+  _incompleteProblemsHtml(board) {
+    const problems = board.assessment.problems.map(item => `<li>${escapeHtml(item.name || item.source || "Source")}${item.state ? ` · ${escapeHtml(item.state)}` : ""}${item.impact ? `<br><span>${escapeHtml(item.impact)}</span>` : ""}</li>`).join("");
+    return problems ? `<ul class="cm-problems">${problems}</ul>` : "";
+  },
+
+  _incompleteNoteHtml(board) {
+    return `<details class="cm-incomplete-note" data-section="cant-miss-incomplete"><summary>Assessment incomplete: some required data is unavailable</summary>
+      <p>The rows below passed every check they depend on. Other opportunities could not be assessed.</p>${this._incompleteProblemsHtml(board)}</details>`;
   },
 
   _cantMissEmptyHtml(board, stale) {
     if (stale) {
       return `<div class="cm-empty cm-empty-stale" role="status"><strong>Can't Miss is not up to date.</strong>
         <span>Waiting for a successful update. An empty list here is not evidence of a quiet week.</span></div>`;
+    }
+    if (board.assessment.state === "incomplete") {
+      return `<div class="cm-empty cm-empty-stale cm-incomplete" role="status"><strong>${escapeHtml(board.headline || "Can't Miss assessment incomplete: required data unavailable.")}</strong>
+        <span>An empty list here is not evidence of a quiet week. Watch items and the planner are still listed.</span>${this._incompleteProblemsHtml(board)}</div>`;
     }
     if (board.held.length) {
       return `<div class="cm-empty cm-empty-stale" role="status"><strong>${escapeHtml(board.headline || "Nothing cleared to recommend.")}</strong></div>`;

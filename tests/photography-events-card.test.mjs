@@ -2071,10 +2071,40 @@ test("rows held for an unchecked safety feed are shown as held, not as a quiet w
     held, headline: "Nothing cleared to recommend: safety could not be checked for the rows held below." }) } };
   card.connectedCallback();
   const html = card._root.innerHTML;
-  assert.match(html, /Held: safety not checked/);
+  assert.match(html, /Held: a required check could not be made/);
   assert.match(html, /Elephant seal breeding/);
   assert.doesNotMatch(html, /Nothing worth changing plans/);
   assert.doesNotMatch(html, /Nothing is building either/);
+  card.disconnectedCallback();
+});
+
+test("an incomplete assessment is never drawn as a quiet week", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  const assessment = { state: "incomplete", problems: [
+    { source: "weather", name: "Open-Meteo", state: "failed", impact: "Cloud comparisons and sunset light-path assessments may be incomplete." }] };
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([], {
+    assessment, headline: "Can't Miss assessment incomplete: required data unavailable." }) } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /Can(?:'|&#39;)t Miss assessment incomplete: required data unavailable\./);
+  assert.match(html, /Open-Meteo · failed/);
+  assert.match(html, /not evidence of a quiet week/);
+  assert.doesNotMatch(html, /Nothing worth changing plans/);
+  assert.doesNotMatch(html, /check-circle/, "no healthy-empty tick");
+  card.disconnectedCallback();
+});
+
+test("eligible rows are still shown when another required source is down, with a note", () => {
+  const card = new Card();
+  card.setConfig({ mode: "action_hero" });
+  const assessment = { state: "incomplete", problems: [{ source: "surf_alerts", name: "NWS active alerts", state: "failed" }] };
+  card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([cantMissRow(0)], { assessment }) } };
+  card.connectedCallback();
+  const html = card._root.innerHTML;
+  assert.match(html, /Assessment incomplete: some required data is unavailable/);
+  assert.match(html, /NWS active alerts · failed/);
+  assert.match(html, /class="cm-row/);
   card.disconnectedCallback();
 });
 
@@ -2083,12 +2113,12 @@ test("required safety kit and unowned suggestions are labelled apart from the ba
   card.setConfig({ mode: "action_hero" });
   const row = cantMissRow(0, { title: "Total solar eclipse", category: "astronomy", safety_state: "caution",
     gear_plan: { take: "Sony FE 200-600mm f/5.6-6.3 G OSS", optional: ["Sony FE 2x Teleconverter for a larger disc"],
-      required: ["Certified solar filter (ISO 12312-2 solar film or glass) mounted over the FRONT of the lens - sized for the 200-600"],
+      required: ["Solar filter for cameras: a special-purpose solar filter made for camera lenses or telescopes, securely mounted over the FRONT of the lens - sized for the 200-600"],
       safety: "ND filters (any strength), polarisers ... are NOT safe.",
       add: [{ item: "Sony FE 14mm f/1.8 GM or FE 20mm f/1.8 G", why: "About 1⅓ stops faster." }] } });
   card.hass = { connected: true, states: { "sensor.photography_events_can_t_miss": cantMissState([row]) } };
   card.connectedCallback();
-  assert.match(card._root.innerHTML, /Required: Certified solar filter/);
+  assert.match(card._root.innerHTML, /Required: Solar filter for cameras/);
   assert.match(card._root.innerHTML, /Caution · /);
   card._expanded.add(row.key); card._render();
   const html = card._root.innerHTML;

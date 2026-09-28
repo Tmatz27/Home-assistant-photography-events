@@ -259,15 +259,17 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
         items = [self.opportunity("a"), self.opportunity("b")]
         for item in items:
             item.latitude, item.longitude = 34.5, -120.5
-        async def fetch(session, points, key):
+        async def fetch(session, points, key, now):
             self.assertEqual(points, [(34.5,-120.5)])
-            self.coordinator._routing_cache[points[0]] = SimpleNamespace(hours=1.25, minutes=75, source="test route", in_traffic=False)
+            self.coordinator._routing_cache[self.coordinator._route_key(points[0])] = (
+                SimpleNamespace(hours=1.25, minutes=75, source="test route", in_traffic=False), now)
             return 1
         self.coordinator._fetch_routing = AsyncMock(side_effect=fetch)
         await self.coordinator._apply_routing(self.session, NOW, items)
         await self.coordinator._apply_routing(self.session, NOW + timedelta(hours=1), items)
         self.coordinator._fetch_routing.assert_awaited_once()
         self.assertEqual([item.drive_hours for item in items], [1.25,1.25])
+        self.assertEqual({item.extra["drive_basis"] for item in items}, {"current"})
 
     async def test_empty_ebird_is_valid_but_auth_error_is_failure(self):
         self.entry.options["ebird_api_key"] = "test-only"

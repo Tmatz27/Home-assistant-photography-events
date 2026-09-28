@@ -127,11 +127,130 @@ def dependencies(item):
     return set(dependency_roles(item))
 
 
-def annotate(opportunities, health):
+# --- Weather, per forecast point ------------------------------------------------
+#
+# The forecast is fetched one request per point on purpose, so one bad
+# response costs one place. Health has to follow the same grain: a failed Lake
+# Tahoe request once marked the whole weather source failed, and that blocked a
+# valid Vandenberg sunset whose own forecast was fine. The global state stays as
+# a summary; a row is gated on the points it actually consumed.
+
+WEATHER_POINT_STALE_MINUTES = 180
+
+
+def weather_points(item) -> list[str]:
+    """The forecast points an opportunity's condition was read from."""
+    phenomenon = getattr(item, "phenomenon", "") or ""
+    if phenomenon in ("sunset_local", "full_moon_closest", "full_moon"):
+        return ["home"]
+    if phenomenon in ("horsetail_firefall", "moonbow") or item.key.startswith("moonbow-"):
+        return ["yosemite_valley"]
+    if phenomenon == "pismo_monarchs" or (item.category == "rare_phenomena" and "monarch" in item.key):
+        return ["pismo_grove"]
+    if phenomenon in ("milky_way", "meteor_major", "meteor_minor", "fresh_snow_clearing"):
+        return [item.zone_id]
+    return []
+
+
+def point_health(points: dict, now) -> dict:
+    """{point: "ok" | "failed" | "stale" | "waiting"} from per-point fetch records."""
+    result = {}
+    for point, record in (points or {}).items():
+        fetched = record.get("fetched_at")
+        if record.get("failed"):
+            result[point] = "failed"
+        elif fetched is None:
+            result[point] = "waiting"
+        elif now - fetched > timedelta(minutes=WEATHER_POINT_STALE_MINUTES):
+            result[point] = "stale"
+        else:
+            result[point] = "ok"
+    return result
+
+
+# --- Assessment coverage -------------------------------------------------------
+#
+# Which sources must have answered before an empty Can't Miss list may be
+# called a quiet week, per enabled category. These are the feeds that *build*
+# or *confirm* the Can't Miss-capable phenomena of that category; if one is
+# down, "nothing qualifies" was not established. The NWS feed and, when used,
+# the NPS feed apply to every category.
+ASSESSMENT_SOURCES = {
+    CATEGORY_ASTRO: ("weather", "aurora"),
+    "sunset": ("weather",),
+    "rare_phenomena": ("weather",),
+    "waves": ("ndbc",),
+    "marine": ("inaturalist", "condor_reports"),
+    "mammals": ("inaturalist",),
+    "birds": ("ebird", "ebird_species"),
+    "blooms": ("theodore_payne", "desertusa"),
+    "foliage": ("california_fall_color",),
+}
+ASSESSMENT_ALWAYS = ("surf_alerts", "park_alerts")
+# Forecast points each category's assessment reads.
+ASSESSMENT_POINTS = {"sunset": ("home",), "rare_phenomena": ("yosemite_valley", "pismo_grove")}
+
+
+def assessment_coverage(health: dict, categories, points: dict | None = None,
+                        sunset_provider_current: bool = False) -> dict:
+    """``{"state": "complete"|"incomplete", "problems": [...]}`` for the dashboard.
+
+    ``sunset_provider_current``: a current SunsetWx forecast assessed the home
+    sunsets, so the home forecast point is not required for that category.
+    """
+    wanted = set(ASSESSMENT_ALWAYS)
+    for category in categories or ():
+        wanted.update(ASSESSMENT_SOURCES.get(category, ()))
+    problems = []
+    # Weather is judged per forecast point when points were recorded: the
+    # summary state turns "failed" when any one point fails, which would hide
+    # *which* place could not be assessed.
+    per_point = bool(points)
+    for key in sorted(wanted):
+        status = health.get(key)
+        if not status or not status.get("enabled"):
+            continue
+        if key == "weather" and per_point:
+            continue
+        if status.get("state") in ("failed", "stale", "waiting"):
+            problems.append({"source": key, "name": status.get("name", key), "state": status["state"],
+                             "impact": status.get("impact") or IMPACTS.get(key, "")})
+    weather_wanted = "weather" in wanted and health.get("weather", {}).get("enabled")
+    if weather_wanted and per_point:
+        needed_points = set()
+        for category in categories or ():
+            if category == "sunset" and sunset_provider_current:
+                continue
+            needed_points.update(ASSESSMENT_POINTS.get(category, ()))
+        if CATEGORY_ASTRO in (categories or ()):
+            needed_points.update(point for point in (points or {}) if point not in ("home", "pismo_grove"))
+        for point in sorted(needed_points):
+            state = (points or {}).get(point)
+            if state in ("failed", "stale", "waiting"):
+                problems.append({"source": f"weather:{point}", "name": f"Forecast for {point.replace('_', ' ')}",
+                                 "state": state, "impact": "Conditions at this place could not be assessed."})
+    return {"state": "incomplete" if problems else "complete", "problems": problems}
+
+
+def annotate(opportunities, health, points: dict | None = None):
+    """Mark each row with the degraded sources it depends on.
+
+    Weather is judged by the forecast points the row consumed (``points`` is
+    ``point_health``) when that is known, so an unrelated point's failure does
+    not degrade it.
+    """
     for item in opportunities:
         roles = dependency_roles(item)
-        broken = sorted(key for key in roles
-                        if health.get(key, {}).get("state") in {"failed", "stale"})
+        broken = []
+        for key in roles:
+            state = health.get(key, {}).get("state")
+            consumed = weather_points(item) if key == "weather" and points else []
+            if consumed and all(point in points for point in consumed):
+                if any(points[point] in ("failed", "stale", "waiting") for point in consumed):
+                    broken.append(key)
+            elif state in {"failed", "stale"}:
+                broken.append(key)
+        broken = sorted(broken)
         # Rebuilding normally creates fresh objects; clear these defensively
         # so a recovery cannot leave a retained object marked degraded.
         for key in ("degraded_sources", "source_health_note", "degraded_required", "fallback_note"):
@@ -139,11 +258,16 @@ def annotate(opportunities, health):
         if broken:
             item.extra["degraded_sources"] = broken
             item.extra["source_health_note"] = " ".join(
-                f"{health[key]['name']}: {health[key]['impact']}" for key in broken)
+                f"{health.get(key, {}).get('name', key)}: {health.get(key, {}).get('impact', IMPACTS.get(key, ''))}"
+                for key in broken)
             required = [key for key in broken if roles[key] == REQUIRED]
             if required:
                 item.extra["degraded_required"] = required
             fallback = [FALLBACK_NOTES[key] for key in broken if roles[key] == PREFERRED and key in FALLBACK_NOTES]
             if fallback:
                 item.extra["fallback_note"] = " ".join(fallback)
+        # The builder knew the provider could not decide even though its feed
+        # was reachable (for example a current download of an old model run).
+        if item.extra.get("provider_fallback") and not item.extra.get("fallback_note"):
+            item.extra["fallback_note"] = item.extra["provider_fallback"]
     return opportunities

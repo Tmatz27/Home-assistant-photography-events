@@ -188,7 +188,8 @@ class CantMissSensor(_BaseSensor):
     _attr_name = "Can't miss"
     _attr_icon = "mdi:camera-marker"
     _attr_native_unit_of_measurement = "events"
-    _unrecorded_attributes = frozenset({"events", "watch", "held", "signals", "birds", "sources", "preferences"})
+    _unrecorded_attributes = frozenset({"events", "watch", "held", "signals", "birds", "sources", "preferences",
+                                        "assessment"})
 
     def __init__(self, coordinator, entry) -> None:
         super().__init__(coordinator, entry, "cant_miss")
@@ -208,6 +209,9 @@ class CantMissSensor(_BaseSensor):
         return {
             "events": board.get("events", []),
             "headline": board.get("headline"),
+            # "complete" only when every source needed to assess the enabled
+            # categories answered; an empty list is only a quiet week then.
+            "assessment": board.get("assessment") or {"state": "incomplete", "problems": []},
             "show_limit": board.get("show_limit", 5),
             "suppressed_count": board.get("suppressed_count", 0),
             "watch": board.get("watch", []),

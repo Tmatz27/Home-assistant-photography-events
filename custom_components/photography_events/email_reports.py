@@ -47,7 +47,6 @@ from .field_reports import (
     is_negated,
     place_point,
     signal_strength,
-    stated_count,
     zones_in,
 )
 
@@ -254,43 +253,53 @@ def parse_email_report(
     strength = signal_strength(haystack, signals)
     if strength <= 0:
         return []
-    sentence = best_sentence(haystack, signals)
-    if is_negated(sentence):
-        return []
 
-    snippet = build_snippet(haystack, signals)
     source_id = "email_" + re.sub(r"[^a-z0-9]+", "_", (source_name or "inbox").lower()).strip("_")
-    # The observation date: an explicit date in the text, or the day it was
-    # sent when the text itself says "today"/"this morning". Otherwise None -
-    # arrival time alone never becomes an observation time.
-    observed = explicit_date(haystack, received)
-    if observed is None and received is not None and SAME_DAY.search(haystack):
-        observed = received
-    from .curation import phenomena_named
-    named = phenomena_named(haystack, category)
-    point = place_point(haystack) if not zone_id else None
-    return [
-        FieldReport(
-            source_id=source_id,
-            source_name=source_name or "Email subscription",
-            url=url,
-            category=category,
-            zone_id=zone,
-            headline=(subject or "Reported by email").strip()[:160],
-            snippet=snippet,
-            strength=strength,
+    headline = (subject or "Reported by email").strip()[:160]
+    explicit_zone = zone_id if zone_id and zone_id in ZONES_BY_ID else None
+
+    def make(zone, snippet, observed, *, phenomena=(), count=None, point=None, place=""):
+        return FieldReport(
+            source_id=source_id, source_name=source_name or "Email subscription", url=url,
+            category=category, zone_id=zone, headline=headline, snippet=snippet, strength=strength,
             # When the mail arrived, not when it was read. Unlike a scraped
             # page, an email genuinely knows its own date, and that is what
             # makes expiry meaningful here.
-            fetched=received,
-            context=source_name or "",
-            observed_at=observed,
-            # Only an unambiguous match is recorded; two candidate phenomena
-            # leave the vocabulary matching to the window's own check.
-            phenomenon_key=named[0] if len(named) == 1 else "",
-            count=stated_count(text),
-            latitude=point[0] if point else None,
-            longitude=point[1] if point else None,
-        )
-        for zone in zone_ids[:1 if point else None]
-    ]
+            fetched=received, context=source_name or "", observed_at=observed,
+            phenomenon_key=phenomena[0] if len(phenomena) == 1 else "",
+            count=count, latitude=point[0] if point else None, longitude=point[1] if point else None,
+            phenomena=tuple(phenomena), place=place, normalized=True)
+
+    # Each report is one explicit statement: its subject, behaviour, polarity,
+    # count, place and date all come from that statement (observations.py),
+    # never from co-occurrence elsewhere in the message. A negated statement
+    # confirms nothing; an unlocated one corroborates nothing.
+    from .observations import observe, positive
+    reports: dict[tuple, FieldReport] = {}
+    for item in positive(observe(text, received, category=category, default_zone=explicit_zone,
+                                 subject_hint=subject or "")):
+        zone = explicit_zone or item.zone_id
+        if not zone or zone not in ZONES_BY_ID:
+            continue
+        point = (item.latitude, item.longitude) if item.latitude is not None and not explicit_zone else None
+        key = (item.phenomenon, zone, point)
+        current = reports.get(key)
+        if current is not None and (current.observed_at or received) >= (item.observed_at or received) \
+                and (current.count or 0) >= (item.count or 0):
+            continue
+        reports[key] = make(zone, item.text[:220], item.observed_at, phenomena=(item.phenomenon,),
+                            count=item.count, point=point, place=item.place)
+    if reports:
+        return list(reports.values())
+
+    # No curated phenomenon named: keep one generic report per named zone as a
+    # background signal (it can corroborate nothing, see report_phenomena).
+    sentence = best_sentence(haystack, signals)
+    if is_negated(sentence) or re.match(r"\s*(?:no|not|none)\b", sentence, re.IGNORECASE):
+        return []
+    observed = explicit_date(sentence, received)
+    if observed is None and received is not None and SAME_DAY.search(sentence):
+        observed = received
+    snippet = build_snippet(haystack, signals)
+    point = place_point(sentence) if not explicit_zone else None
+    return [make(zone, snippet, observed, point=point) for zone in zone_ids[:1 if point else None]]

@@ -12,7 +12,7 @@ kit are never mixed in one sentence:
   makes a material difference to *this* photograph, with the reason. At most
   two per plan; a buying guide is not the point.
 - **REQUIRED** - safety equipment the photograph cannot be taken without
-  (a certified front-mounted solar filter for a solar eclipse; a red headlamp
+  (a front-mounted solar filter made for optics for a solar eclipse; a red headlamp
   on a night beach). Required whether or not it is owned.
 
 Two pieces of reasoning are load-bearing and easy to get wrong:
@@ -56,9 +56,21 @@ FAST_WIDE = "Sony FE 14mm f/1.8 GM or FE 20mm f/1.8 G"
 DEW_HEATER = "USB lens dew heater"
 RAIN_COVER = "Rain cover for camera and lens"
 RED_HEADLAMP = "Headlamp with a red-light mode"
-SOLAR_FILTER = ("Certified solar filter (ISO 12312-2 solar film or glass) mounted over the FRONT of the lens - "
-                "sized for the 200-600 (95 mm) and any other lens aimed at the Sun")
-ECLIPSE_GLASSES = "ISO 12312-2 eclipse glasses or a certified handheld solar viewer for your eyes"
+# Two different kinds of protection, never interchangeable (NASA
+# science.nasa.gov/eclipses/safety; AAS eclipse.aas.org):
+# - For the CAMERA or telescope: a special-purpose solar filter made for
+#   optics (solar film or glass from a reputable manufacturer of filters for
+#   cameras and telescopes), secured over the FRONT aperture. ISO 12312-2 is
+#   the standard for direct-view eclipse glasses and handheld viewers; it is
+#   not the certification standard for a filter on a lens.
+# - For the EYES: ISO 12312-2 compliant eclipse glasses or a handheld solar
+#   viewer. Never behind or in front of a lens as a camera filter: concentrated
+#   sunlight through optics burns through them.
+SOLAR_FILTER = ("Solar filter for cameras: a special-purpose solar filter made for camera lenses or telescopes "
+                "(solar film or glass from a reputable optics-filter maker), securely mounted over the FRONT of "
+                "the lens - sized for the 200-600 (95 mm) and any other lens aimed at the Sun")
+ECLIPSE_GLASSES = ("Eclipse glasses for your eyes: ISO 12312-2 compliant eclipse glasses or handheld solar viewer - "
+                   "for direct viewing only, never used as or with a camera filter")
 
 ADD_TC14 = {"item": TC14, "why": "840 mm at f/9 costs one stop instead of the 2x's two, and keeps autofocus usable on perched or soaring birds in good light."}
 ADD_FAST_WIDE = {"item": FAST_WIDE, "why": "About 1⅓ stops faster than f/2.8: half the ISO, or shorter exposures and rounder stars, on a faint night subject."}
@@ -68,9 +80,12 @@ ADD_RAIN_COVER = {"item": RAIN_COVER, "why": "Wind-driven spray reaches set-back
 # Solar eclipse safety, from NASA (science.nasa.gov/eclipses/safety): the
 # filter goes over the FRONT of the optics; only totality is safe unfiltered.
 SOLAR_SAFETY = (
-    "Never look at, or aim the camera at, the uneclipsed or partially eclipsed Sun without a certified solar "
-    "filter secured over the FRONT of the lens. ND filters (any strength), polarisers, stacked filters, "
-    "sunglasses, smoked glass and filters behind the lens are NOT safe and will not protect your eyes or sensor.")
+    "Never look at, or aim the camera at, the uneclipsed or partially eclipsed Sun without protection. The camera "
+    "needs a special-purpose solar filter made for optics, secured over the FRONT of the lens; your eyes need "
+    "ISO 12312-2 eclipse glasses or a handheld solar viewer. Never use eclipse glasses or a handheld viewer as a "
+    "camera filter, and never look through the camera, binoculars or a telescope while wearing them - concentrated "
+    "sunlight burns through. ND filters (any strength), polarisers, stacked photographic filters, sunglasses, "
+    "smoked glass and filters behind the lens are NOT safe and will not protect your eyes or sensor.")
 
 # DJI's published maximum wind speed resistance for the Mini 3 (Level 5).
 DRONE_MAX_WIND_MS = 10.7
@@ -250,8 +265,9 @@ PROFILES: dict[str, dict] = {
                              f"{WIDE} for the 360° twilight and the landscape - unfiltered only during totality"],
         skip=[f"{DRONE}: the camera gimbal cannot be filtered safely"],
         required=[SOLAR_FILTER, ECLIPSE_GLASSES],
-        safety=SOLAR_SAFETY + " Remove the filter only during totality, inside the path of totality, and put it back "
-               "at the first bead of returning sunlight (third contact). Outside the path there is no totality: it never comes off.",
+        safety=SOLAR_SAFETY + " Remove the filter only during totality, and only from inside the path of totality. "
+               "Put it back on before totality ends - as the Moon's western edge brightens, before the diamond ring "
+               "and the returning sunlight at third contact. Outside the path there is no totality: it never comes off.",
         start="Partial phases filtered: about ISO 100, f/8, 1/500-1/4000 s. Totality unfiltered: bracket 1/4000 s to 1 s for the corona.",
         support="Tripod with the lens foot; remote release",
         technique="Rehearse the filter-off / filter-on sequence; totality lasts minutes.",

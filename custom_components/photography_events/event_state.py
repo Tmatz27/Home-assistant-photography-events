@@ -12,6 +12,11 @@ def event_id(item) -> str:
     return item.roll or item.key
 
 
+def _rank(item):
+    assessment = item.extra.get("assessment") or {}
+    return (assessment.get("priority") or 0, item.score, -(item.drive_hours or 0))
+
+
 def timestamp(value):
     try:
         result = datetime.fromisoformat(str(value))
@@ -73,17 +78,18 @@ class EventState:
         A vanished item isn't called cancelled: the source may simply be down.
         """
         self.prune(now)
+        # Qualify first, then rank: an ineligible score-95 viewpoint must not
+        # shadow an eligible score-94 one of the same occurrence (the
+        # dashboard and action sensor already rank only eligible rows).
         best = {}
         for item in items:
             key = event_id(item)
-            if key not in best or item.score > best[key].score:
+            if self.suppressed(key) or not qualifies(item) or (item.end and item.end <= now):
+                continue
+            if key not in best or _rank(item) > _rank(best[key]):
                 best[key] = item
         notifications = []
         for key, item in best.items():
-            if self.suppressed(key) or not qualifies(item):
-                continue
-            if item.end and item.end <= now:
-                continue
             stage = item.extra.get("verification", "forecast")
             observed = item.extra.get("observed_at")
             fingerprint = {

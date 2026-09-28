@@ -56,7 +56,10 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
         {
             vol.Required(
                 CONF_ENABLED_CATEGORIES,
-                default=defaults.get(CONF_ENABLED_CATEGORIES) or list(ALL_CATEGORIES),
+                # An explicit empty selection is a choice and is shown as one;
+                # only a missing setting falls back to every category.
+                default=list(defaults[CONF_ENABLED_CATEGORIES]) if defaults.get(CONF_ENABLED_CATEGORIES) is not None
+                else list(ALL_CATEGORIES),
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=list(ALL_CATEGORIES),
@@ -147,13 +150,22 @@ def _schema(defaults: dict[str, Any]) -> vol.Schema:
     )
 
 
-def _clean(user_input: dict[str, Any]) -> dict[str, Any]:
+SECRET_KEYS = (CONF_EBIRD_API_KEY, CONF_GOOGLE_API_KEY, CONF_NPS_API_KEY,
+               CONF_SUNSETWX_CLIENT_ID, CONF_SUNSETWX_CLIENT_SECRET)
+
+
+def _clean(user_input: dict[str, Any], *, options: bool = False) -> dict[str, Any]:
     """Normalise what the form hands back.
 
     Number selectors always return floats, and the two scores are compared
-    against integers everywhere downstream. Blank API keys come back as empty
-    strings; dropping them keeps "no key" as a single representation rather
-    than two.
+    against integers everywhere downstream.
+
+    Secrets: at initial setup a blank key is simply absent. In the options
+    form every secret field is pre-filled with the current value, so a secret
+    that comes back blank *or missing* was cleared by the user. It is stored as
+    an explicit empty string, which overrides the value kept in the entry's
+    original data. Dropping it (the old behaviour) let the setup-time secret
+    reappear through the data/options merge - clearing a key did nothing.
     """
     cleaned = dict(user_input)
     for key in (CONF_SUNSET_SCORE, CONF_ALERT_SCORE):
@@ -162,19 +174,25 @@ def _clean(user_input: dict[str, Any]) -> dict[str, Any]:
     for key in (CONF_MAX_DRIVE_HOURS, CONF_SUNSET_DRIVE_HOURS):
         if key in cleaned:
             cleaned[key] = float(cleaned[key])
-    for key in (CONF_EBIRD_API_KEY, CONF_GOOGLE_API_KEY, CONF_NPS_API_KEY,
-                CONF_SUNSETWX_CLIENT_ID, CONF_SUNSETWX_CLIENT_SECRET):
-        if not (cleaned.get(key) or "").strip():
-            cleaned.pop(key, None)
+    if CONF_ENABLED_CATEGORIES in cleaned:
+        cleaned[CONF_ENABLED_CATEGORIES] = [c for c in cleaned[CONF_ENABLED_CATEGORIES] if c in ALL_CATEGORIES]
+    for key in SECRET_KEYS:
+        value = (cleaned.get(key) or "").strip()
+        if value:
+            cleaned[key] = value
+        elif options:
+            cleaned[key] = ""  # explicitly cleared
         else:
-            cleaned[key] = cleaned[key].strip()
+            cleaned.pop(key, None)
     return cleaned
 
 
 class PhotographyEventsConfigFlow(ConfigFlow, domain=DOMAIN):
     """Initial setup."""
 
-    VERSION = 1
+    # 2: enabled categories are taken literally ([] means none); the one-time
+    # Waves migration runs in __init__.async_migrate_entry.
+    VERSION = 2
 
     async def async_step_user(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         # Checked before anything is built, so a single-instance abort can never
@@ -202,7 +220,7 @@ class PhotographyEventsOptionsFlow(OptionsFlow):
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         if user_input is not None:
-            return self.async_create_entry(title="", data=_clean(user_input))
+            return self.async_create_entry(title="", data=_clean(user_input, options=True))
 
         current = {**self.config_entry.data, **self.config_entry.options}
         return self.async_show_form(step_id="init", data_schema=_schema(current))

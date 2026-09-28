@@ -28,14 +28,29 @@ Two jobs, kept apart:
    curated phenomenon.
 
 Alerts are matched to a location by the alert polygon when NWS supplies one,
-otherwise by the county SAME code. Marine-zone alerts (Gale, Small Craft,
-Special Marine) carry marine zone codes this table does not resolve; boat trips
-therefore always say "check the marine forecast" rather than implying a
-checked sea. A failed alert feed is never read as "no warnings".
+otherwise by the county SAME code. A failed alert feed is never read as "no
+warnings".
+
+**Land safety is not marine safety.** The feed is fetched for the California
+land area; a clean county result says nothing about the sea state a boat trip
+depends on. Marine-zone alerts (Gale, Small Craft, Special Marine) carry marine
+zone codes this table does not resolve, so for a boat phenomenon the marine
+component is always ``unknown``: the overall state can be ``unsafe`` (a
+matching land or marine warning still overrides everything) but never
+``safe``, and Can't Miss holds the row until marine coverage exists. Telling
+the photographer to "check the coastal waters forecast" was not enough - the
+row was still recommended as safe.
+
+**A partial feed is not a complete one.** ``parse_alert_collection`` validates
+every feature. A valid empty collection is a healthy "no alerts". A collection
+with malformed features is incomplete: the valid alerts it did carry still
+count (an unsafe match still blocks), but nothing can be called ``safe`` from
+it, because the malformed feature may have been the warning for this place.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
 from .signals import BASIS_FORECAST, Signal
@@ -140,22 +155,117 @@ COUNTY_POINTS = (
 COUNTY_MATCH_KM = 40.0
 
 
-def compact_alert(feature: dict) -> dict | None:
-    """Keep what the gate needs from one NWS GeoJSON feature."""
+def _valid_geometry(geometry) -> bool:
+    """A Polygon/MultiPolygon with at least one ring of three numeric points."""
+    if not isinstance(geometry, dict) or geometry.get("type") not in ("Polygon", "MultiPolygon"):
+        return False
+    coords = geometry.get("coordinates")
+    polygons = [coords] if geometry.get("type") == "Polygon" else coords
+    if not isinstance(polygons, list) or not polygons:
+        return False
+    for polygon in polygons:
+        try:
+            ring = [(float(pair[0]), float(pair[1])) for pair in polygon[0]]
+        except (TypeError, ValueError, IndexError, KeyError):
+            return False
+        if len(ring) < 3:
+            return False
+    return True
+
+
+def validate_feature(feature) -> tuple[dict | None, str]:
+    """(compact alert, "") for a usable feature, or (None, why it is unusable).
+
+    Usable for safety coverage means: an event name to look up, a way to place
+    it (a valid polygon or county SAME codes) and a parseable expiry so it
+    cannot linger forever. Anything less is not "no alert" - it is an alert
+    this gate could not read.
+    """
     if not isinstance(feature, dict):
-        return None
-    props = feature.get("properties") if isinstance(feature.get("properties"), dict) else {}
-    if not props.get("event"):
-        return None
+        return None, "feature is not an object"
+    props = feature.get("properties")
+    if not isinstance(props, dict):
+        return None, "feature has no properties"
+    event = props.get("event")
+    if not isinstance(event, str) or not event.strip():
+        return None, "feature has no event name"
     geocode = props.get("geocode") if isinstance(props.get("geocode"), dict) else {}
+    same = [code for code in (geocode.get("SAME") or []) if isinstance(code, str) and code.strip()]
+    ugc = [code for code in (geocode.get("UGC") or []) if isinstance(code, str) and code.strip()]
+    geometry = feature.get("geometry")
+    has_polygon = _valid_geometry(geometry)
+    if geometry is not None and not has_polygon and not same:
+        return None, f"{event}: unreadable geometry and no county codes"
+    if not has_polygon and not same and not ugc:
+        return None, f"{event}: no area to place it"
+    if _time(props.get("expires")) is None and _time(props.get("ends")) is None:
+        return None, f"{event}: no parseable expiry"
+    for key in ("onset", "effective"):
+        if props.get(key) is not None and _time(props.get(key)) is None:
+            return None, f"{event}: unparseable {key}"
     return {
-        "event": props.get("event"), "headline": props.get("headline") or props.get("event"),
+        "event": event.strip(), "headline": props.get("headline") or event,
         "severity": props.get("severity"), "areaDesc": props.get("areaDesc", ""),
         "onset": props.get("onset") or props.get("effective"), "ends": props.get("ends"),
-        "expires": props.get("expires"), "same": list(geocode.get("SAME") or []),
-        "geometry": feature.get("geometry") if isinstance(feature.get("geometry"), dict) else None,
+        "expires": props.get("expires"), "same": same, "ugc": ugc,
+        "geometry": geometry if has_polygon else None,
         "url": props.get("@id") or props.get("id"),
-    }
+    }, ""
+
+
+def compact_alert(feature: dict) -> dict | None:
+    """Keep what the gate needs from one NWS GeoJSON feature, or None if unusable."""
+    return validate_feature(feature)[0]
+
+
+class AlertFeedError(ValueError):
+    """The response is not an NWS alert collection at all."""
+
+
+def parse_alert_collection(data, now: datetime) -> dict:
+    """Validate a whole NWS active-alerts response.
+
+    Returns ``{"alerts", "complete", "invalid", "problems", "total",
+    "checked_at"}``. Raises ``AlertFeedError`` when the response is not a
+    feature collection. A collection with any unusable feature comes back with
+    ``complete=False``; the caller must not treat it as a full check.
+    """
+    if not isinstance(data, dict) or not isinstance(data.get("features"), list):
+        raise AlertFeedError("NWS alerts unavailable: not a feature collection")
+    if data.get("type") not in (None, "FeatureCollection"):
+        raise AlertFeedError(f"NWS alerts unavailable: unexpected type {data.get('type')!r}")
+    alerts, problems = [], []
+    for feature in data["features"]:
+        alert, problem = validate_feature(feature)
+        if alert is None:
+            problems.append(problem)
+        else:
+            alerts.append(alert)
+    return {"alerts": alerts, "complete": not problems, "invalid": len(problems),
+            "problems": problems[:5], "total": len(data["features"]), "checked_at": now.isoformat()}
+
+
+def alert_list(value) -> list[dict]:
+    """The usable alerts in a stored feed value (current or legacy list shape)."""
+    if isinstance(value, dict):
+        return list(value.get("alerts") or [])
+    return list(value or [])
+
+
+@dataclass(frozen=True)
+class AlertCheck:
+    """What the alert feed can currently say, and whether it can say "nothing".
+
+    ``complete`` is False when the latest fetch failed or carried unusable
+    features. The alerts that were readable still count - an unsafe match
+    still blocks - but an empty match is no longer "safe".
+    """
+
+    alerts: tuple = ()
+    complete: bool = True
+    checked_at: datetime | None = None
+    problem: str = ""
+    issues: tuple = field(default_factory=tuple)
 
 
 def county_for(latitude: float, longitude: float) -> str | None:
@@ -238,24 +348,44 @@ def _applies(exposures, exposure: str) -> bool:
     return exposures is _ALL or exposure in exposures
 
 
-def safety(item, alerts: list | None, now: datetime, exposure: str = EXPOSURE_GENERAL) -> dict:
+MARINE_UNCHECKED = ("Marine conditions not checked: NWS coastal-waters (marine zone) warnings are not "
+                    "connected, so a clear land check says nothing about the sea. Held until marine coverage "
+                    "exists; check the coastal waters forecast and the operator.")
+
+
+def _as_check(alerts) -> AlertCheck | None:
+    if alerts is None or isinstance(alerts, AlertCheck):
+        return alerts
+    return AlertCheck(alerts=tuple(alerts or ()), complete=True)
+
+
+def safety(item, alerts, now: datetime, exposure: str = EXPOSURE_GENERAL) -> dict:
     """SAFE, CAUTION, UNSAFE or UNKNOWN for one opportunity, and what to say.
 
-    ``alerts`` is None when the feed failed or is stale: that is UNKNOWN,
-    never SAFE. ``travel`` says whether going there means leaving home; the
-    eligibility gate holds a travel row whose safety is unknown.
+    ``alerts`` is an ``AlertCheck``, a plain list (a complete check), or None
+    when the feed failed or is stale: that is UNKNOWN, never SAFE. An
+    incomplete check still lets a matching warning block, but cannot conclude
+    safe or merely-cautious. ``travel`` says whether going there means leaving
+    home; the eligibility gate holds a travel row whose safety is unknown.
+
+    ``components`` keeps land and marine apart. For a boat the marine
+    component is unknown (see module docstring), so the overall state is at
+    best unknown.
     """
-    travel = exposure != EXPOSURE_HOME and (getattr(item, "drive_hours", None) or 0) > 0.25
-    base = {"unsafe": False, "notes": [], "checked": False, "travel": travel, "state": STATE_UNKNOWN}
-    if exposure == EXPOSURE_BOAT:
-        base["notes"] = ["Marine-zone warnings are not matched here: check the NWS coastal waters forecast and the operator before going."]
-    if alerts is None:
+    boat = exposure == EXPOSURE_BOAT
+    # Every boat trip means leaving home, whatever the drive to the harbour.
+    travel = boat or (exposure != EXPOSURE_HOME and (getattr(item, "drive_hours", None) or 0) > 0.25)
+    marine = STATE_UNKNOWN if boat else None
+    check = _as_check(alerts)
+    base = {"unsafe": False, "notes": [MARINE_UNCHECKED] if boat else [], "checked": False, "travel": travel,
+            "state": STATE_UNKNOWN, "components": {"land": STATE_UNKNOWN, "marine": marine}}
+    if check is None:
         return {**base, "summary": "Safety not checked: NWS alerts are unavailable. Check warnings before leaving."}
     if item.latitude is None or item.longitude is None:
         return {**base, "summary": "Safety not checked: this location cannot be matched to NWS alerts."}
     end = item.end or item.start + timedelta(hours=2)
-    active, checkable = alerts_at(alerts, item.latitude, item.longitude, item.start, end, now)
-    notes, unsafe, caution = list(base["notes"]), False, False
+    active, checkable = alerts_at(list(check.alerts), item.latitude, item.longitude, item.start, end, now)
+    notes, unsafe, caution = [], False, False
     for alert in active:
         event = alert.get("event", "")
         blocks, warns, note = _rule(alert)
@@ -266,22 +396,52 @@ def safety(item, alerts: list | None, now: datetime, exposure: str = EXPOSURE_GE
             caution = True
             notes.append(f"{event} in effect. {note}".strip())
     if unsafe:
-        state, summary = STATE_UNSAFE, "Unsafe: " + notes[0]
+        land, summary = STATE_UNSAFE, "Unsafe: " + notes[0]
+    elif not check.complete:
+        land = STATE_UNKNOWN
+        summary = ("Safety not fully checked: the NWS alert feed was incomplete"
+                   + (f" ({check.problem})" if check.problem else "") + ". Check warnings before leaving.")
     elif caution:
-        state, summary = STATE_CAUTION, "Caution: " + "; ".join(note for note in notes if " in effect" in note)
+        land, summary = STATE_CAUTION, "Caution: " + "; ".join(note for note in notes if " in effect" in note)
     elif checkable:
-        state, summary = STATE_SAFE, "No NWS warnings for this place and time."
+        land, summary = STATE_SAFE, "No NWS warnings for this place and time."
     else:
-        state, summary = STATE_UNKNOWN, "Safety not checked: this location is not matched to an NWS county. Check warnings yourself."
-    return {"unsafe": unsafe, "notes": notes, "checked": checkable or unsafe or caution,
-            "travel": travel, "state": state, "summary": summary}
+        land, summary = STATE_UNKNOWN, "Safety not checked: this location is not matched to an NWS county. Check warnings yourself."
+    state = land
+    if boat and land != STATE_UNSAFE:
+        # Land may be clear; the sea is unassessed. Unknown, and say why.
+        state = STATE_UNKNOWN
+        summary = MARINE_UNCHECKED if land in (STATE_SAFE, STATE_CAUTION) else summary + " " + MARINE_UNCHECKED
+    if boat:
+        notes.append(MARINE_UNCHECKED)
+    return {"unsafe": unsafe, "notes": notes, "checked": (checkable and check.complete) or unsafe,
+            "travel": travel, "state": state, "summary": summary,
+            "components": {"land": land, "marine": marine}}
 
 
-def current_alerts(value, fetched_at: datetime | None, failures: int, now: datetime) -> list | None:
-    """The alert list only while it is a current check; otherwise None (unknown)."""
-    if fetched_at is None or failures or now - fetched_at > timedelta(hours=ALERTS_MAX_AGE_HOURS):
+def current_alerts(value, fetched_at: datetime | None, failures: int, now: datetime) -> AlertCheck | None:
+    """What the feed can say now: an ``AlertCheck``, or None when it says nothing.
+
+    None (unknown) when the feed never succeeded or its newest readable
+    content is older than ``ALERTS_MAX_AGE_HOURS``. A failed latest attempt,
+    or a stored collection with unusable features, gives an incomplete check:
+    retained warnings still block, but nothing reads as clear.
+    """
+    checked = fetched_at
+    complete, problem, issues = True, "", ()
+    if isinstance(value, dict):
+        checked = _time(value.get("checked_at")) or fetched_at
+        complete = bool(value.get("complete", True))
+        issues = tuple(value.get("problems") or ())
+        if not complete:
+            problem = f"{value.get('invalid', 0)} unreadable alert(s)"
+    if checked is None or now - checked > timedelta(hours=ALERTS_MAX_AGE_HOURS):
         return None
-    return list(value or [])
+    if failures:
+        complete = False
+        problem = problem or "the latest fetch failed"
+    return AlertCheck(alerts=tuple(alert_list(value)), complete=complete, checked_at=checked,
+                      problem=problem, issues=issues)
 
 
 # --- Forecast watch signals ------------------------------------------------------

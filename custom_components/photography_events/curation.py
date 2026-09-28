@@ -119,6 +119,11 @@ class PhenomenonDefinition:
     evidence_days: int = 14
     # A count, where a reliable count decides the photograph (product threshold).
     min_count: int | None = None
+    # Behaviour-driven biology whose typical dates are search guidance, not a
+    # physical limit: a fresh, located, trusted report of the behaviour opens a
+    # bounded occurrence even outside the usual window (events.live_occurrences).
+    # False for anything calendar-, migration- or physics-bound.
+    live_outside_window: bool = False
     sources: tuple[str, ...] = field(default_factory=tuple)
 
 
@@ -135,21 +140,21 @@ BOAT_SAFETY = "Boat trip; sea state decides. Go with an operator."
 
 CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
     # --- Marine ---------------------------------------------------------------
-    _d(key="humpback_lunge_feeding", name="Humpback lunge feeding", category=CATEGORY_MARINE,
+    _d(key="humpback_lunge_feeding", live_outside_window=True, name="Humpback lunge feeding", category=CATEGORY_MARINE,
        significance=85, policy=POLICY_BEHAVIOR, evidence_days=3, product_class=CLASS_CANT_MISS, exposure="coastal",
        policy_reason="Humpbacks are common here for months; the photograph is the bait-ball lunge, which only a dated behaviour report can establish. Presence corroborates the watch, never the behaviour.",
        actionable={STATE_CONFIRMED},
        behavior_terms=("lunge feeding", "lunge-feeding", "bubble net", "bubble-net", "bait ball", "humpbacks feeding", "feeding frenzy"),
        gear_profile="marine_shore", land=LAND_MARINE, wildlife=True, encounter="moderate",
        ethics=MARINE_ETHICS, safety="Piers and bluff edges; boats per operator."),
-    _d(key="blue_whale_feeding", name="Blue whale feeding aggregation", category=CATEGORY_MARINE,
+    _d(key="blue_whale_feeding", live_outside_window=True, name="Blue whale feeding aggregation", category=CATEGORY_MARINE,
        significance=90, policy=POLICY_AGGREGATION, evidence_days=3, product_class=CLASS_CANT_MISS, exposure="boat",
        policy_reason="A single blue whale is intrinsically notable, but the photograph worth a trip is the krill aggregation that holds several close to boats; that needs a dated aggregation report.",
        actionable={STATE_CONFIRMED},
        behavior_terms=("blue whales feeding", "blue whale feeding", "multiple blue whales", "several blue whales", "blue whale aggregation"),
        gear_profile="marine_boat", land=LAND_MARINE, wildlife=True, encounter="moderate",
        ethics=MARINE_ETHICS, safety=BOAT_SAFETY),
-    _d(key="transient_orca_hunt", name="Orcas hunting", category=CATEGORY_MARINE,
+    _d(key="transient_orca_hunt", live_outside_window=True, name="Orcas hunting", category=CATEGORY_MARINE,
        significance=95, policy=POLICY_BEHAVIOR, product_class=CLASS_CANT_MISS, exposure="boat",
        policy_reason="Hunting needs a behaviour report. Orca presence alone may qualify separately as exceptional presence (see orca_presence).",
        actionable={STATE_CONFIRMED, STATE_REPEATED_PRESENCE},
@@ -172,7 +177,7 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
        significance=55, policy=POLICY_LIVE, product_class=CLASS_PLANNER, exposure="coastal",
        policy_reason="Distant blows from a headland are planning context, not a regret event.",
        gear_profile="marine_shore", land=LAND_MARINE, wildlife=True, encounter="moderate", ethics=MARINE_ETHICS),
-    _d(key="common_dolphin_calving", name="Common dolphin calving", category=CATEGORY_MARINE,
+    _d(key="common_dolphin_calving", live_outside_window=True, name="Common dolphin calving", category=CATEGORY_MARINE,
        significance=72, policy=POLICY_BEHAVIOR, evidence_days=3, product_class=CLASS_CANT_MISS, exposure="boat",
        policy_reason="Common dolphins are present most days; newborn calves in the pods need a report.",
        actionable={STATE_CONFIRMED},
@@ -181,8 +186,8 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
        ethics=MARINE_ETHICS, safety=BOAT_SAFETY),
     _d(key="dolphin_megapod", name="Common dolphin megapod", category=CATEGORY_MARINE,
        significance=80, policy=POLICY_AGGREGATION, product_class=CLASS_CANT_MISS, exposure="boat",
-       policy_reason="Presence is ordinary; a dated operator report of one explicitly sized pod of thousands is the aggregation.",
-       actionable={STATE_CONFIRMED},
+       policy_reason="Presence is ordinary; a dated operator report of one explicitly sized pod of thousands is the aggregation. Product threshold: at least 1,000 dolphins written against one pod; the word 'megapod' alone, or a pod of 20, is not it.",
+       actionable={STATE_CONFIRMED}, min_count=1000,
        behavior_terms=("megapod", "mega-pod", "mega pod", "superpod", "super pod"),
        gear_profile="marine_boat", land=LAND_MARINE, wildlife=True, encounter="moderate",
        ethics=MARINE_ETHICS, safety=BOAT_SAFETY, evidence_days=2),
@@ -214,7 +219,7 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
        ethics="Stay in or beside the vehicle; keep well back from bulls.",
        safety="Carrizo roads are impassable clay when wet.",
        sources=("https://www.nps.gov/thingstodo/tule-elk-viewing-point-reyes.htm",)),
-    _d(key="black_bear_cubs", name="Black bear sows with cubs", category=CATEGORY_MAMMALS,
+    _d(key="black_bear_cubs", live_outside_window=True, name="Black bear sows with cubs", category=CATEGORY_MAMMALS,
        significance=85, policy=POLICY_BEHAVIOR, evidence_days=7, product_class=CLASS_CANT_MISS, exposure="mountain",
        policy_reason="Bears are seen year-round; a generic bear sighting is not evidence of cubs. Only a report of a sow with cubs in a public area qualifies. Den locations are never used.",
        actionable={STATE_CONFIRMED},
@@ -242,7 +247,7 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
        ethics="Stay on the auto tour route and in the vehicle; refuge rules apply.",
        safety="Tule fog on Valley highways in winter.",
        sources=("https://www.fws.gov/refuge/merced",)),
-    _d(key="bald_eagle_cachuma", name="Bald eagles fishing at Cachuma Lake", category=CATEGORY_BIRDS,
+    _d(key="bald_eagle_cachuma", live_outside_window=True, name="Bald eagles fishing at Cachuma Lake", category=CATEGORY_BIRDS,
        significance=75, policy=POLICY_BEHAVIOR, evidence_days=5, product_class=CLASS_BIRD_SPECTACLE,
        policy_reason="Wintering eagles are reliably present; eagles actively fishing, or several together, is the photograph and needs a report.",
        actionable={STATE_CONFIRMED},
@@ -253,6 +258,7 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
        significance=85, policy=POLICY_EXCEPTIONAL_PRESENCE, evidence_days=7, product_class=CLASS_BIRD_SPECTACLE,
        policy_reason="NPS says there is no guarantee of a sighting. Repeated reports at a public viewing area make an encounter plausible (bird encounter); several birds together or a behaviour report make it a spectacle. Product thresholds.",
        actionable={STATE_CONFIRMED},
+       behavior_terms=("roosting", "soaring together", "feeding", "several condors", "multiple condors"),
        gear_profile="raptor", land=LAND_NPS, wildlife=True, encounter="moderate",
        ethics="Never approach roosts or nest areas; stay on trails.",
        safety="High Peaks trails are strenuous and hot.",
@@ -422,6 +428,37 @@ CATALOG: dict[str, PhenomenonDefinition] = {d.key: d for d in (
 # Phenomena a report can activate on its own, without a seasonal window.
 REPORT_ACTIVATED = frozenset({"dolphin_megapod", "bioluminescent_surf", "frazil_ice", "moonbow",
                               "horsetail_firefall", "fresh_snow_clearing"})
+
+# Park access a phenomenon depends on, by where it happens. Only these need a
+# current, complete NPS read before Can't Miss may act; the others do not wait
+# on a feed that says nothing about them. (park code, words that tie a closure
+# to this place). Terms are matched against closure/danger alerts only.
+YOSEMITE_VALLEY_TERMS = ("yosemite valley", "valley floor", "northside drive", "southside drive",
+                         "el portal road", "big oak flat road", "wawona road", "highway 140", "hwy 140",
+                         "highway 41", "hwy 41", "highway 120", "hwy 120")
+ACCESS_REQUIREMENTS = {
+    "horsetail_firefall": ("yose", ("firefall", "horsetail", "el capitan", *YOSEMITE_VALLEY_TERMS)),
+    "moonbow": ("yose", ("yosemite fall", "yosemite falls", "lower yosemite", "sentinel bridge", "glacier point",
+                         *YOSEMITE_VALLEY_TERMS)),
+}
+# Report-activated phenomena whose access depends on the zone they were reported in.
+ZONE_ACCESS = {
+    "yosemite_valley": ("yose", ("tioga", "glacier point", *YOSEMITE_VALLEY_TERMS)),
+    "sequoia_kings": ("seki", ("generals highway", "highway 180", "hwy 180", "kings canyon road",
+                               "mineral king", "giant forest", "grant grove")),
+}
+ZONE_ACCESS_PHENOMENA = frozenset({"fresh_snow_clearing", "frazil_ice"})
+
+
+def access_requirement(item) -> tuple[str, tuple[str, ...]] | None:
+    """(park code, place terms) when this occurrence needs a current NPS access check."""
+    phenomenon = getattr(item, "phenomenon", "")
+    if phenomenon in ACCESS_REQUIREMENTS:
+        return ACCESS_REQUIREMENTS[phenomenon]
+    if phenomenon in ZONE_ACCESS_PHENOMENA:
+        return ZONE_ACCESS.get(getattr(item, "zone_id", ""))
+    return None
+
 
 # When both are eligible, the first is shown inside the second, never beside
 # it: orcas seen hunting *are* the orca presence.

@@ -14,8 +14,6 @@ from . import astronomy as astro
 from .event_state import event_id
 from .const import (
     CATEGORY_ASTRO,
-    CATEGORY_BIRDS,
-    CATEGORY_RARE,
     CATEGORY_PARKS,
     CATEGORY_SUNSET,
     DEFAULT_HOME,
@@ -35,7 +33,7 @@ from .phenomena import (
     PRECISION_HORIZON_DAYS,
     active_windows,
 )
-from .weather_scoring import cloud_confidence, cloud_is_scorable, mark_standouts, score_sky
+from .weather_scoring import SkyScore, cloud_confidence, cloud_is_scorable, mark_standouts, score_sky
 from .verification import grunion_run_window
 from .wildlife import estimate_drive_hours, haversine_km
 
@@ -156,6 +154,22 @@ class Opportunity:
     # the title.
     phenomenon: str = ""
 
+    @property
+    def time_precision(self) -> str:
+        """``interval`` for real instants, ``day`` for date-valued windows.
+
+        Independent of ``planning_only`` (an evidence class). A builder that
+        knows its row is a real shooting interval says so with
+        ``extra["time_precision"] = "interval"`` or a ``timing_basis``; a
+        planning row without either is a date range (seasons, park windows).
+        """
+        explicit = self.extra.get("time_precision")
+        if explicit in ("interval", "day"):
+            return explicit
+        if self.extra.get("timing_basis") or not self.planning_only or self.category == "waves":
+            return "interval"
+        return "day"
+
     def as_dict(self) -> dict:
         data = asdict(self)
         data["start"] = self.start.isoformat()
@@ -187,6 +201,7 @@ class Opportunity:
         }
         if self.phenomenon:
             row["phenomenon"] = self.phenomenon
+        row["time_precision"] = self.time_precision
         # What the eligibility gate decided, so the planner can say "this one
         # made Can't Miss" or "watch only" without re-deriving it.
         for key in ("presentation", "significance", "eligible", "why_now", "status", "blockers"):
@@ -205,9 +220,10 @@ class Opportunity:
             if self.category != CATEGORY_PARKS:
                 row["detail"] = _shorten(self.detail, 400)
             # Planning-only describes evidence, not time precision. A computed
-            # moonbow candidate still has a night interval; stripping it to a
-            # date hid its hours and could shift the displayed local night.
-            if not self.extra.get("timing_basis") and self.category != "waves":
+            # moonbow candidate or a CDFW grunion interval still has real
+            # hours; stripping it to a date hid them and, converted in UTC,
+            # could move a late-evening run to the next day.
+            if self.time_precision == "day":
                 row["all_day"] = True
                 row["start"] = self.start.date().isoformat()
                 row["end"] = self.end.date().isoformat() if self.end else None
@@ -257,7 +273,9 @@ class Opportunity:
             "clearing_at", "firefall_sunset", "light_path_gate", "tide_predictions", "operational",
             "swell_note", "dawn_wind_ms", "dawn_precip_probability", "sunset", "moonset_azimuth",
             "set_after_sunrise_minutes", "civil_dawn", "supermoon_nolle", "illumination", "size_rank",
-            "full_moon_at", "ethics", "gear_plan",
+            "full_moon_at", "ethics", "gear_plan", "drive_basis", "route_fetched_at", "access_state",
+            "access_detail", "location_precision", "live_occurrence", "air_quality_note", "contributions",
+            "held_reasons", "time_precision",
         ):
             if self.extra.get(key) not in (None, ""):
                 row[key] = self.extra[key]
@@ -331,19 +349,27 @@ def build_sunset_opportunities(
                 moment,
                 upstream=upstream.get("sunrise" if rising else "sunset"),
                 air_quality=air_quality,
-            )
-            if scored is None:
+            ) if forecast else None
+            # A current provider forecast can stand on its own: the local
+            # model is a comparison, and its absence must not erase the
+            # provider's answer (source roles decide *before* scoring).
+            if scored is None and not sunburst.match(provider or [], label.lower(), moment):
                 continue
             candidates.append((moment, rising, label, scored))
 
-    mark_standouts([scored for _, _, _, scored in candidates])
+    mark_standouts([scored for _, _, _, scored in candidates if scored is not None])
 
     local_home = zone.get("id") == "home"
     found: list[Opportunity] = []
     for moment, rising, label, scored in candidates:
         external = sunburst.match(provider or [], label.lower(), moment)
         top_tier = bool(external and external["quality"] == sunburst.TOP_TIER)
-        if scored.score < threshold and not top_tier:
+        if scored is None:
+            if not top_tier:
+                continue
+            scored = SkyScore(score=round(external["percent"]), reasons=[f"SunsetWx {external['quality']}"],
+                              light_path="provider", limited_by="local model unavailable")
+        elif scored.score < threshold and not top_tier:
             continue
         if local_home:
             when = "tonight" if not rising and moment.date() == now.date() else (
@@ -370,7 +396,7 @@ def build_sunset_opportunities(
             "color_window_end": colour_end.isoformat(),
             "best_time_of_day": ("Best colour usually from about 10 minutes before to 25 minutes after sunset"
                                  if not rising else "Best colour usually from about 25 minutes before sunrise to 10 minutes after"),
-            "local_score": scored.score,
+            "local_score": scored.score if scored.light_path != "provider" else None,
         }
         if external:
             extra.update({
@@ -943,7 +969,66 @@ def build_seasonal_opportunities(
                 },
             )
         )
+    found.extend(live_occurrences(found, now, origin, sightings, field_reports))
     return found
+
+
+def live_occurrences(built: list[Opportunity], now: datetime, origin, sightings, field_reports) -> list[Opportunity]:
+    """Occurrences that live evidence opens outside the usual window.
+
+    For behaviour-driven biology the seasonal dates are where to look, not a
+    prohibition on reality (``PhenomenonDefinition.live_outside_window``). A
+    fresh, positive, dated, located report of the behaviour near the site -
+    the same requirements as inside the window (observations.admissible) -
+    instantiates a bounded occurrence now: from the report to the end of the
+    phenomenon's evidence window. Drive, conditions and safety are still
+    applied by the gate. Never for calendar-, migration- or physics-bound
+    phenomena, and never when an occurrence already covers today.
+    """
+    from . import curation
+    from .phenomena import PEAK_WINDOWS
+
+    result = []
+    for window in PEAK_WINDOWS:
+        definition = curation.definition(window.key)
+        if definition is None or not definition.live_outside_window:
+            continue
+        if any(item.phenomenon == window.key and item.extra.get("precision") == "peak"
+               and item.start <= now <= (item.end or item.start) for item in built):
+            continue
+        evidence = window_evidence(window, sightings, field_reports, now)
+        if not evidence.behavior:
+            continue
+        newest = max(evidence.behavior, key=lambda item: item.observed_at)
+        exact = getattr(newest, "latitude", None) is not None and getattr(newest, "longitude", None) is not None
+        latitude, longitude = (newest.latitude, newest.longitude) if exact else (window.latitude, window.longitude)
+        end = newest.observed_at + timedelta(days=min(LIVE_CORROBORATION_DAYS, definition.evidence_days))
+        if end < now:
+            continue
+        key = f"{window.key}-live-{newest.observed_at.date().isoformat()}"
+        count = f" ({evidence.count:,} counted)" if evidence.count else ""
+        result.append(Opportunity(
+            key=key, roll=key, title=window.name, category=window.category, zone_id=window.key,
+            zone_name=(getattr(newest, "place", "") or "").title() or window.primary_locations[0],
+            start=max(newest.observed_at, now - timedelta(hours=12)), end=end, score=CORROBORATED_SCORE,
+            detail=f"Reported outside its usual season ({window.season_range}). {newest.snippet}",
+            drive_hours=round(estimate_drive_hours(latitude, longitude, origin), 2),
+            reasons=[f"confirmed by {newest.source_name}{count}", "outside the usual season - a dated report says it is happening"],
+            latitude=latitude, longitude=longitude, drive_source="estimate", phenomenon=window.key,
+            source_url=getattr(newest, "url", None) or None,
+            extra={
+                "precision": "peak", "evidence": window.evidence, "evidence_state": "behavior_confirmed",
+                "verification": "corroborated", "live_occurrence": True,
+                "observed_at": newest.observed_at.isoformat(),
+                "behavior_evidence": [_report_summary(item) for item in evidence.behavior],
+                "count": evidence.count, "season_range": window.season_range,
+                "merged_reports": [report_id(item) for item in evidence.behavior],
+                "location_precision": "reported place" if exact else "site",
+                "awaiting": (f"Dated report from {newest.source_name}, observed {newest.observed_at:%d %b}, "
+                             "outside the usual season; conditions may have changed since."),
+            },
+        ))
+    return result
 
 
 @dataclass
@@ -980,18 +1065,17 @@ def _report_summary(report) -> dict:
 
 
 def _report_matches(window, report, definition) -> bool:
-    """Whether a report is about this phenomenon at all (not whether it is fresh)."""
-    from . import curation
+    """Whether a report's own statements describe this phenomenon (not whether it is fresh).
 
-    key = getattr(report, "phenomenon_key", "") or ""
-    if key:
-        return key == window.key
-    category = getattr(report, "category", None)
-    if category != window.category and not (category == CATEGORY_RARE and window.category == CATEGORY_BIRDS):
+    Decided by the statement normalizer (observations.report_phenomena), so a
+    behaviour word in one sentence and the species in another no longer
+    combine into a confirmation.
+    """
+    from .observations import report_phenomena
+
+    if definition is None:
         return False
-    if definition is None or not definition.behavior_terms:
-        return False
-    return window.key in curation.phenomena_named(_report_text(report), window.category)
+    return window.key in report_phenomena(report)
 
 
 def window_evidence(window, sightings, field_reports, now) -> WindowEvidence:
@@ -1003,8 +1087,10 @@ def window_evidence(window, sightings, field_reports, now) -> WindowEvidence:
     stale_before = now - timedelta(days=days)
     presence = corroborating_sightings(window, sightings, now)
     behavior, undated, insufficient = [], [], []
+    from .observations import admissible
+
     for report in field_reports or []:
-        if not _report_matches(window, report, definition):
+        if getattr(report, "polarity", "positive") != "positive" or not _report_matches(window, report, definition):
             continue
         # Corroboration is distance-based; an unlocatable report is nowhere.
         if haversine_km(window.latitude, window.longitude, *_report_point(report, window)) > LIVE_CORROBORATION_KM:
@@ -1016,9 +1102,11 @@ def window_evidence(window, sightings, field_reports, now) -> WindowEvidence:
         # Download time never renews an observation; the report's own date does.
         if not stale_before <= observed <= now + timedelta(hours=1):
             continue
-        needed = definition.min_count if definition else None
-        if needed and (getattr(report, "count", None) or 0) < needed:
-            insufficient.append(report)
+        # The same requirements every ingress path meets (observations.admissible).
+        ok, why = admissible(report, definition, now)
+        if not ok:
+            if why == "count below the phenomenon's threshold":
+                insufficient.append(report)
             continue
         behavior.append(report)
     counts = [getattr(item, "count", None) for item in behavior + insufficient if getattr(item, "count", None)]

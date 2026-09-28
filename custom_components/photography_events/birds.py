@@ -25,12 +25,17 @@ but never shown as a place to go.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timedelta
 
 from .events import MARINE_DRAW, PHOTOGRAPHY_BIRDS, Opportunity
 from .gear import LAND_NPS, LAND_REFUGE, LAND_UNKNOWN, recommend
+from .observations import admissible
 from .wildlife import estimate_drive_hours, haversine_km
+
+
+def curation_definition(key):
+    from .curation import definition
+    return definition(key)
 
 SITE_RADIUS_KM = 15.0
 ENCOUNTER_REPORTS = 3
@@ -114,6 +119,7 @@ def classify(sightings: list, now: datetime, home: tuple[float, float], max_driv
     spectacle, encounter, used = [], [], set()
 
     for scientific, spec in ICONIC.items():
+        definition = curation_definition(spec["phenomenon"]) if spec["phenomenon"] else None
         for site in spec["sites"]:
             name, lat, lon, land = site
             here = [item for item in recent if item.scientific_name == scientific and _site_for(item, (site,))]
@@ -123,24 +129,39 @@ def classify(sightings: list, now: datetime, home: tuple[float, float], max_driv
             observers = {obs for item in here for obs in (item.observers or [f"{item.source}-{item.latest}"])}
             days = {day for item in here for day in (item.dates or [item.latest.date().isoformat()])}
             latest = max(item.latest for item in here)
+            # Each count keeps its own timestamp. The spectacle needs one count
+            # at or above the threshold that is itself fresh: a 3,000 count from
+            # a week ago plus a one-bird sighting today is not a current 3,000.
+            fresh_counts = [item for item in here if spec["count"] is not None and (item.count or 0) >= spec["count"]
+                            and now - item.latest <= timedelta(days=SPECTACLE_FRESH_DAYS)]
             max_count = max((item.count or 0) for item in here)
-            behavior_reports = [report for report in reports or []
-                                if getattr(report, "observed_at", None) and now - report.observed_at <= timedelta(days=SPECTACLE_FRESH_DAYS)
-                                and haversine_km(lat, lon, *_report_point(report)) <= SITE_RADIUS_KM * 3
-                                and any(term in (report.snippet or "").lower() for term in spec["behaviors"])]
+            # Behaviour reports must name this species' phenomenon in their own
+            # statement, be positive, dated, fresh (the spectacle window) and at
+            # this site (observations.admissible).
+            behavior_reports = []
+            if definition is not None:
+                for report in reports or []:
+                    ok, _why = admissible(report, definition, now, site=(lat, lon), radius_km=SITE_RADIUS_KM * 3)
+                    if ok and now - report.observed_at <= timedelta(days=SPECTACLE_FRESH_DAYS):
+                        behavior_reports.append(report)
             drive = estimate_drive_hours(lat, lon, home)
-            fresh = now - latest <= timedelta(days=SPECTACLE_FRESH_DAYS)
-            concentrated = spec["count"] is not None and max_count >= spec["count"]
+            concentrated = bool(fresh_counts)
             repeated = len(observers) >= ENCOUNTER_REPORTS and len(days) >= ENCOUNTER_DAYS
+            qualifying = max(fresh_counts, key=lambda item: (item.count or 0, item.latest)) if fresh_counts else None
+            evidence_time = (qualifying.latest if qualifying else
+                             max(report.observed_at for report in behavior_reports) if behavior_reports else latest)
             summary = {
                 "species": spec["name"], "scientific_name": scientific, "site": name,
-                "latitude": lat, "longitude": lon, "drive_hours": round(drive, 2),
+                "latitude": lat, "longitude": lon, "drive_hours": round(drive, 2), "drive_basis": "estimate",
                 "reports": len(observers), "days": len(days), "max_count": max_count or None,
                 "latest": latest.isoformat(), "phenomenon": spec["phenomenon"],
-                "url": next((item.url for item in sorted(here, key=lambda i: i.latest, reverse=True) if item.url), None),
+                "evidence_at": evidence_time.isoformat(),
+                "qualifying_count": qualifying.count if qualifying else None,
+                "url": ((qualifying.url if qualifying and qualifying.url else None)
+                        or next((item.url for item in sorted(here, key=lambda i: i.latest, reverse=True) if item.url), None)),
             }
-            if fresh and spec["phenomenon"] and (concentrated or behavior_reports):
-                why = (f"{max_count:,} counted in one report" if concentrated
+            if spec["phenomenon"] and (concentrated or behavior_reports):
+                why = (f"{qualifying.count:,} counted in one report on {qualifying.latest:%d %b}" if concentrated
                        else f"behaviour reported by {behavior_reports[0].source_name}")
                 spectacle.append(_spectacle_row(spec, scientific, site, summary, why, now, land, behavior_reports))
             elif repeated and drive <= max_drive_hours:
@@ -176,17 +197,21 @@ def _spectacle_row(spec, scientific, site, summary, why, now, land, behavior_rep
     name, lat, lon, _land = site
     plan = recommend("birds_in_flight_low_light" if spec["phenomenon"] in ("sandhill_crane_flyin", "waterfowl_mass_flight") else "raptor",
                      land=land, wildlife=True)
+    # One occurrence per site: a Woodbridge crane count is not the Merced
+    # fly-in, so the two never share an identity (or a Follow/Skip).
     key = f"birds-{spec['phenomenon']}-{name.lower().replace(' ', '-')}-{now.date().isoformat()}"
     return Opportunity(
-        key=key, roll=f"birds-{spec['phenomenon']}-{now.date().isoformat()}",
+        key=key, roll=key,
         title=f"{spec['name']} at {name}", category="birds", zone_id=spec["phenomenon"], zone_name=name,
-        start=now, end=now + timedelta(days=SPECTACLE_FRESH_DAYS), score=80,
+        # Valid for the spectacle window from the evidence, not from now.
+        start=now, end=datetime.fromisoformat(summary["evidence_at"]) + timedelta(days=SPECTACLE_FRESH_DAYS), score=80,
         detail=f"{spec['name']} reported repeatedly at {name}: {why}.",
         drive_hours=summary["drive_hours"], latitude=lat, longitude=lon, drive_source="estimate",
         source_url=summary["url"], phenomenon=spec["phenomenon"],
         reasons=[why, f"{summary['reports']} reports on {summary['days']} days"],
         extra={"verification": "corroborated", "evidence_state": "behavior_confirmed",
-               "observed_at": summary["latest"], "count": summary["max_count"],
+               # The time of the evidence that qualified, not the newest bird.
+               "observed_at": summary["evidence_at"], "count": summary["qualifying_count"],
                "bird_summary": summary, "recommended_gear": plan.take,
                "behavior_evidence": [{"source": report.source_name, "observed_at": report.observed_at.isoformat(),
                                       "text": report.snippet[:200], "url": report.url or None} for report in behavior_reports],
@@ -204,7 +229,7 @@ def _chase_row(item, age_hours, drive):
     return {
         "class": "bird_chase", "species": item.species, "scientific_name": item.scientific_name,
         "site": item.place, "latitude": item.latitude, "longitude": item.longitude,
-        "drive_hours": round(drive, 2), "reports": reports, "days": max(1, days),
+        "drive_hours": round(drive, 2), "drive_basis": "estimate", "reports": reports, "days": max(1, days),
         "latest": item.latest.isoformat(), "confirmed": item.confirmed, "url": item.url,
         "photogenic": item.species.casefold() in PHOTOGRAPHY_BIRDS,
         "encounter_confidence": max(5, min(90, confidence)),
@@ -227,43 +252,65 @@ def _merge_chase(rows: list[dict]) -> list[dict]:
     return list(best.values())
 
 
-# Orcas move tens of kilometres a day, so reports only combine when they are
-# plausibly the same animals: within this distance of each other and inside
-# the window. Product thresholds; a pair 150 km apart is two sightings of
-# possibly different pods, not a stronger case for either place.
+# Orcas move tens of kilometres a day, so observations only combine when they
+# are plausibly the same animals in the same place. Product thresholds:
+#
+# - ORCA_WINDOW_HOURS: every contributing observation must itself be inside the
+#   last 72 h. Filtering happens on raw observations *before* anything is
+#   combined, so a ten-day-old observer can never be counted as a current one.
+# - ORCA_CLUSTER_KM is a maximum *diameter*: every pair of observations in a
+#   cluster is within 25 km of each other (complete linkage). Single linkage
+#   let A-B-C-D chain along 70 km of coast and call it one "25 km cluster".
+# - Two independent observers (distinct source/person identities) are needed,
+#   or one dated operator report within ORCA_OPERATOR_HOURS.
+# - Obscured or private points are fuzzed by the source; they cannot establish
+#   that two observations were in the same place, so they never form or join a
+#   cluster. They remain background signals.
 ORCA_CLUSTER_KM = 25.0
 ORCA_WINDOW_HOURS = 72
 ORCA_OPERATOR_HOURS = 36
 ORCA_TERMS = ("orca", "killer whale")
-# The same negation rule the operator feed parser applies (spectacles.py).
-NEGATED = re.compile(r"\b(?:no|not|none|yesterday|previous|last week)\b", re.I)
+ORCA_SCIENTIFIC = "Orcinus orca"
+
+
+def _observer_id(item) -> str:
+    """One identity per person/checklist per source; never shared between observations."""
+    who = next(iter(item.observers), None) if item.observers else None
+    return f"{item.source}:{who or item.url or item.latest.isoformat()}"
 
 
 def _orca_clusters(items: list) -> list[list]:
-    """Single-linkage groups of sightings within ORCA_CLUSTER_KM of each other."""
+    """Complete-linkage groups: every pair within ORCA_CLUSTER_KM (the cluster diameter).
+
+    Greedy from the newest observation: each observation joins the first
+    existing cluster whose *every* member is within the diameter, otherwise it
+    starts its own. Deterministic, and no chain can stretch a cluster.
+    """
     groups: list[list] = []
-    for item in sorted(items, key=lambda row: row.latest):
-        near = [group for group in groups if any(
+    for item in sorted(items, key=lambda row: row.latest, reverse=True):
+        home = next((group for group in groups if all(
             haversine_km(item.latitude, item.longitude, other.latitude, other.longitude) <= ORCA_CLUSTER_KM
-            for other in group)]
-        merged = [item]
-        for group in near:
-            merged.extend(group)
-            groups.remove(group)
-        groups.append(merged)
+            for other in group)), None)
+        if home is None:
+            groups.append([item])
+        else:
+            home.append(item)
     return groups
 
 
 def operator_orca_reports(reports: list | None, now: datetime) -> list:
-    """Dated operator or subscription reports that explicitly name orcas.
+    """Dated operator or subscription reports whose own statement names orcas.
 
     A trip report from an operator is a trusted observer: someone whose job is
-    finding these animals, writing the date down. The sentence must name
-    orcas and must not be negated ("no orcas today").
+    finding these animals, writing the date down. The report must pass the
+    shared normalizer (a positive statement about orcas, not "no orcas today"),
+    be dated inside ORCA_OPERATOR_HOURS and be locatable.
     """
-    from .const import ZONES_BY_ID
+    from .curation import definition
+    from .observations import admissible, report_point
 
-
+    presence = definition("orca_presence")
+    hunting = definition("transient_orca_hunt")
     found = []
     for report in reports or []:
         observed = getattr(report, "observed_at", None)
@@ -271,52 +318,49 @@ def operator_orca_reports(reports: list | None, now: datetime) -> list:
             continue
         if report.category != "marine" or not (report.source_id == "condor_express" or report.source_id.startswith("email_")):
             continue
-        text = f"{report.headline}. {report.snippet}"
-        sentences = [part for part in text.replace("!", ".").split(".") if any(term in part.lower() for term in ORCA_TERMS)]
-        if not sentences or all(NEGATED.search(part) for part in sentences):
+        if not (admissible(report, presence, now)[0] or admissible(report, hunting, now)[0]):
             continue
-        zone = ZONES_BY_ID.get(report.zone_id)
-        latitude = report.latitude if report.latitude is not None else zone["latitude"] if zone else None
-        longitude = report.longitude if report.longitude is not None else zone["longitude"] if zone else None
-        if latitude is None:
+        point = report_point(report)
+        if point is None:
             continue  # An unlocatable report corroborates nothing.
-        found.append((report, latitude, longitude))
+        found.append((report, point[0], point[1]))
     return found
 
 
 def marine_presence(sightings: list, now: datetime, home: tuple[float, float], reports: list | None = None) -> list:
     """Orcas reported coherently enough to be worth a boat trip.
 
-    Product thresholds, documented in curation.py: at least two independent
-    observers within ORCA_CLUSTER_KM of each other inside 72 hours, or one
-    dated operator report within 36 hours. A single community observation -
-    even research grade - stays a background signal and never becomes a row:
-    one photo of a dorsal fin says the pod passed, not where it is now. Humpbacks
+    ``sightings`` must be **raw observations** (one per observer/checklist,
+    each with its own coordinates and time) - never a digest that has already
+    merged places, times and observers. A single community observation - even
+    research grade - stays a background signal and never becomes a row: one
+    photo of a dorsal fin says the pod passed, not where it is now. Humpbacks
     and dolphins never qualify here - their presence is ordinary.
     """
-    scientific = "Orcinus orca"
-    here = [item for item in sightings or [] if item.scientific_name == scientific
-            and now - item.latest <= timedelta(hours=ORCA_WINDOW_HOURS) and item.latest <= now + timedelta(hours=1)]
+    here = [item for item in sightings or [] if item.scientific_name == ORCA_SCIENTIFIC
+            and timedelta(hours=-1) <= now - item.latest <= timedelta(hours=ORCA_WINDOW_HOURS)
+            and not getattr(item, "private_location", False)]
     operators = operator_orca_reports(reports, now)
     found = []
     for group in _orca_clusters(here):
-        observers = {obs for item in group for obs in (item.observers or [item.url or item.place])}
+        observers = {_observer_id(item) for item in group}
         latest = max(group, key=lambda item: item.latest)
-        backing = [row for row in operators if haversine_km(row[1], row[2], latest.latitude, latest.longitude)
-                   <= ORCA_CLUSTER_KM * 2]
+        backing = [row for row in operators if all(
+            haversine_km(row[1], row[2], item.latitude, item.longitude) <= ORCA_CLUSTER_KM * 2 for item in group)]
         for row in backing:
             operators.remove(row)
         if len(observers) < 2 and not backing:
             continue
         found.append(_orca_row(latest.latitude, latest.longitude, latest.latest, latest.place, latest.url, now, home,
-                               observers=len(observers), operator=backing[0][0] if backing else None))
+                               observers=len(observers), operator=backing[0][0] if backing else None,
+                               contributions=group))
     for report, latitude, longitude in operators:
         found.append(_orca_row(latitude, longitude, report.observed_at, report.source_name, report.url, now, home,
                                observers=0, operator=report))
     return found
 
 
-def _orca_row(latitude, longitude, seen, place, url, now, home, *, observers, operator):
+def _orca_row(latitude, longitude, seen, place, url, now, home, *, observers, operator, contributions=()):
     drive = estimate_drive_hours(latitude, longitude, home)
     parts = []
     if observers:
@@ -338,9 +382,14 @@ def _orca_row(latitude, longitude, seen, place, url, now, home, *, observers, op
         detail=f"Orcas: {summary}; latest near {place}.",
         drive_hours=round(drive, 2), latitude=latitude, longitude=longitude,
         drive_source="estimate", source_url=url or (operator.url if operator else None), phenomenon="orca_presence",
-        reasons=[summary + (" within 25 km in 72 h" if observers > 1 else "")],
+        reasons=[summary + (" within a 25 km area in the last 72 h" if observers > 1 else "")],
         extra={"verification": "corroborated", "evidence_state": "repeated_presence",
                "observed_at": seen.isoformat(), "behavior_evidence": evidence,
+               # Every contribution with its own place, time and identity.
+               "contributions": [{"source": item.source, "observer": _observer_id(item), "place": item.place,
+                                  "latitude": item.latitude, "longitude": item.longitude,
+                                  "observed_at": item.latest.isoformat(), "url": item.url}
+                                 for item in contributions],
                "evidence_note": "Orca presence only; hunting behaviour is not confirmed. A boat trip is usually required.",
                "confidence_note": "Orcas travel fast; contact an operator before booking."},
     )

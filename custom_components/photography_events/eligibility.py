@@ -141,8 +141,6 @@ def _conditions(item, definition, now) -> tuple[bool, str]:
             return False, "the forecast clearing has passed"
         return True, ""
     if key == "horsetail_firefall":
-        if extra.get("access_blocked"):
-            return False, f"access: {extra['access_blocked']}"
         if not extra.get("firefall_sunset"):
             return False, "no sunset inside the alignment window this week"
         cloud = extra.get("cloud_cover")
@@ -219,11 +217,23 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
         blockers.append("required source unavailable: " + ", ".join(required))
     if safety["unsafe"]:
         blockers.append(safety["summary"])
-    held = False
+    # Park access this place depends on (curation.access_requirement). A
+    # reported closure blocks; an access check that could not be made holds,
+    # exactly like unknown safety: "no closure returned" is not "not closed".
+    access_needed = definition is not None and curation.access_requirement(item) is not None
+    access_state = item.extra.get("access_state") if access_needed else None
+    if access_needed and access_state == "closed":
+        blockers.append("access: " + (item.extra.get("access_blocked") or "closure reported"))
+    # Checks that could not be made. A row that passes everything else is
+    # *held*: listed as held, never recommended and never dropped silently.
+    unverified = []
     if safety["state"] == weather_hazards.STATE_UNKNOWN and safety["travel"]:
         # Unknown is not safe. Hold the trip; the planner still lists it.
-        held = not blockers
-        blockers.append(safety["summary"])
+        unverified.append(safety["summary"])
+    if access_needed and access_state != "closed" and access_state != "open":
+        unverified.append(item.extra.get("access_detail") or "Park access not checked.")
+    held = bool(unverified) and not blockers
+    blockers.extend(unverified)
 
     eligible = not blockers
     if eligible:
@@ -253,16 +263,27 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
         "urgency": urgency,
         "urgency_label": urgency_label,
         "encounter": definition.encounter if definition else "unknown",
-        "access": ("closure reported" if item.extra.get("closures") else
-                   "unsafe" if safety["unsafe"] else "check access" if item.extra.get("access_note") else "public"),
+        "access": ("closure reported" if item.extra.get("closures") or access_state == "closed" else
+                   "unsafe" if safety["unsafe"] else "not checked" if access_needed and access_state != "open"
+                   else "check access" if item.extra.get("access_note") else "public"),
+        "access_state": access_state,
         "safety_state": safety["state"],
+        "safety_components": safety.get("components") or {},
+        # Kept under its old name for the card and automations; it now covers
+        # every check that could not be made (safety, marine, park access).
         "held_for_safety": held,
+        "held": held,
+        "held_reasons": unverified if held else [],
         "condition_quality": item.extra.get("provider_percent") or (item.score if state in ("computed", "forecast") else None),
         "evidence_state": state,
         "actionable": actionable,
         # The policy alone (evidence), before conditions, safety and timing.
         "policy_met": bool(definition is not None and state in definition.actionable),
         "within_drive": within_drive,
+        # What the drive time rests on: a current route, a recent route
+        # (typical, not current traffic) or a calibrated estimate.
+        "drive_basis": item.extra.get("drive_basis") or (
+            "estimate" if item.drive_source in ("estimate", "baseline") else "routed"),
         "in_horizon": in_horizon,
         "eligible": eligible,
         "blockers": blockers,
@@ -276,6 +297,7 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
     item.extra["safety_notes"] = safety["notes"]
     item.extra["safety_summary"] = safety["summary"]
     item.extra["safety_state"] = safety["state"]
+    item.extra["held_reasons"] = result["held_reasons"]
     if definition is not None:
         if definition.ethics:
             item.extra["ethics"] = definition.ethics
@@ -291,7 +313,9 @@ def why_now(item, state, definition) -> str:
     extra = item.extra
     if item.phenomenon == "sunset_local":
         if extra.get("provider_quality"):
-            return f"SunsetWx forecasts {extra['provider_quality']} ({extra.get('provider_percent'):.0f}%); local model {extra.get('local_score')}."
+            local = extra.get("local_score")
+            return (f"SunsetWx forecasts {extra['provider_quality']} ({extra.get('provider_percent'):.0f}%); "
+                    + (f"local model {local}." if local is not None else "local model unavailable."))
         return "Best sky in the forecast window with an open light path to the west." if extra.get("standout") else "Promising sky forecast."
     if item.phenomenon == "full_moon_closest":
         gap = extra.get("rise_after_sunset_minutes")
@@ -323,10 +347,29 @@ def why_now(item, state, definition) -> str:
     return BASIS.get(state, "")
 
 
+def presentation_categories(item) -> set[str]:
+    """Every view that may present this row, which is not the category that owns its data.
+
+    A crane fly-in is a rare-phenomena calendar row *and* a bird spectacle.
+    Filtering on the owning category alone erased it (and the live evidence
+    merged into it) whenever Birds was on and Rare was off.
+    """
+    shown = {item.category}
+    spec = curation.definition(item.phenomenon, item.category)
+    if spec is not None and spec.product_class == CLASS_BIRD_SPECTACLE:
+        shown.add("birds")
+    return shown
+
+
 def annotate(opportunities, now, *, max_drive_hours, alerts=None, sunset_drive_hours=None):
     for item in opportunities:
         assess(item, now, max_drive_hours=max_drive_hours, alerts=alerts, sunset_drive_hours=sunset_drive_hours)
     return opportunities
+
+
+# Evidence merges into a calendar occurrence only at the same site. Product
+# threshold: the 15 km public-viewing-area radius birds.py uses.
+MERGE_SITE_KM = 15.0
 
 
 def merge_into_phenomena(opportunities: list, extra_rows: list, now: datetime) -> list:
@@ -337,11 +380,20 @@ def merge_into_phenomena(opportunities: list, extra_rows: list, now: datetime) -
     today, it is upgraded in place and the extra row is dropped. Returns the
     rows that had nowhere to go (for example condors, which have no window).
     """
+    from .wildlife import haversine_km
+
     remaining = []
     for row in extra_rows:
+        # Same phenomenon is not the same occurrence: the evidence must be at
+        # the calendar row's own site (MERGE_SITE_KM, the bird viewing-area
+        # radius). A Woodbridge crane count is not the Merced fly-in; it stays
+        # its own occurrence with its own place, drive, evidence and route.
         target = next((item for item in opportunities if item.phenomenon == row.phenomenon
                        and item.start <= now <= (item.end or item.start)
-                       and item.extra.get("precision", "peak") == "peak"), None)
+                       and item.extra.get("precision", "peak") == "peak"
+                       and None not in (item.latitude, item.longitude, row.latitude, row.longitude)
+                       and haversine_km(item.latitude, item.longitude, row.latitude, row.longitude) <= MERGE_SITE_KM),
+                      None)
         if target is None:
             remaining.append(row)
             continue
@@ -352,6 +404,8 @@ def merge_into_phenomena(opportunities: list, extra_rows: list, now: datetime) -
                                                  {"source": row.detail, "observed_at": row.extra.get("observed_at"),
                                                   "url": row.source_url, "text": row.detail}])]
         target.extra["count"] = max(target.extra.get("count") or 0, row.extra.get("count") or 0) or None
+        # The time of the evidence that qualified (birds.py keeps it per count/report).
+        target.extra["observed_at"] = row.extra.get("observed_at") or target.extra.get("observed_at")
         target.reasons = [*row.reasons[:1], *target.reasons]
     return remaining
 
@@ -365,9 +419,14 @@ def _bird_views(opportunities: list, birds: dict, suppressed) -> dict:
     although nothing else in the product would send you there. Spectacle now
     means: a bird-spectacle phenomenon whose evidence policy is met, inside
     the drive limit and the seven-day horizon - eligible or held back only by
-    weather or safety. One row per phenomenon.
+    weather or safety. One row per occurrence *at a site*: Merced and
+    Woodbridge cranes are two occurrences of one phenomenon, and neither
+    hides the other.
     """
     from .event_state import event_id
+
+    def site(item):
+        return (item.phenomenon, round(item.latitude or 0, 1), round(item.longitude or 0, 1))
 
     spectacle, shown = [], set()
     ordered = sorted(opportunities, key=lambda item: (-((item.extra.get("assessment") or {}).get("priority") or 0),
@@ -376,16 +435,18 @@ def _bird_views(opportunities: list, birds: dict, suppressed) -> dict:
     for item in ordered:
         assessment = item.extra.get("assessment") or {}
         definition = curation.definition(item.phenomenon, item.category)
-        if definition is None or definition.product_class != CLASS_BIRD_SPECTACLE or item.phenomenon in shown:
+        if definition is None or definition.product_class != CLASS_BIRD_SPECTACLE or site(item) in shown:
             continue
         if not (assessment.get("policy_met") and assessment.get("within_drive") and assessment.get("in_horizon")):
             continue
         if suppressed(event_id(item)):
             continue
-        shown.add(item.phenomenon)
+        shown.add(site(item))
         spectacle.append(cant_miss_row(item))
-    # An encounter of the species already shown as a spectacle is the same birds.
-    encounter = [row for row in birds.get("encounter", []) if row.get("phenomenon") not in shown]
+    # An encounter at a site already shown as a spectacle is the same birds.
+    encounter = [row for row in birds.get("encounter", [])
+                 if (row.get("phenomenon"), round(row.get("latitude") or 0, 1), round(row.get("longitude") or 0, 1))
+                 not in shown]
     return {"spectacle": spectacle, "encounter": encounter[:20], "chase": birds.get("chase", [])[:25]}
 
 
@@ -394,7 +455,8 @@ def cant_miss_row(item, alternatives: int = 0) -> dict:
     assessment = item.extra.get("assessment") or {}
     row.update({key: assessment.get(key) for key in (
         "significance", "confidence", "confidence_basis", "urgency", "urgency_label", "encounter",
-        "access", "condition_quality", "priority", "status", "why_now", "policy", "name", "safety_state")})
+        "access", "condition_quality", "priority", "status", "why_now", "policy", "name", "safety_state",
+        "drive_basis", "held_reasons")})
     row["gear_plan"] = item.extra.get("gear_plan") or {}
     row["safety_notes"] = item.extra.get("safety_notes") or []
     if item.extra.get("ethics"):
@@ -410,9 +472,22 @@ def _group_key(item) -> str:
     return item.roll or item.key
 
 
+COVERAGE_COMPLETE = "complete"
+COVERAGE_INCOMPLETE = "incomplete"
+INCOMPLETE_HEADLINE = "Can't Miss assessment incomplete: required data unavailable."
+
+
 def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: False,
-              signals: list | None = None, birds: dict | None = None, limit: int = 12) -> dict:
-    """The Can't Miss payload: eligible rows ranked, a watch list, background signals."""
+              signals: list | None = None, birds: dict | None = None, limit: int = 12,
+              coverage: dict | None = None) -> dict:
+    """The Can't Miss payload: eligible rows ranked, a watch list, background signals.
+
+    ``coverage`` is ``source_health.assessment_coverage``: whether every source
+    needed to *assess* the enabled categories answered. Without it an outage
+    that prevented rows from being built at all (no forecast, so no sunset
+    candidate) produced the same "Nothing worth changing plans" as a
+    genuinely quiet week.
+    """
     from .event_state import event_id
     from .signals import background
 
@@ -429,12 +504,17 @@ def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: Fals
 
     rows, suppressed_count = [], 0
     for items in groups.values():
-        items.sort(key=lambda item: (-(item.extra["assessment"]["priority"] or 0), item.drive_hours, item.start))
-        best = items[0]
-        if all(suppressed(event_id(item)) for item in items):
+        # Suppression first, then the representative: a skipped best night
+        # must not stand for a group whose other night is still wanted.
+        available = [item for item in items if not suppressed(event_id(item))]
+        if not available:
             suppressed_count += 1
             continue
-        row = cant_miss_row(best, alternatives=len(items) - 1)
+        available.sort(key=lambda item: (-(item.extra["assessment"]["priority"] or 0), item.drive_hours, item.start))
+        best = available[0]
+        row = cant_miss_row(best, alternatives=len(available) - 1)
+        # The group's identity keeps every member, so Follow/Skip still covers
+        # the whole lunar window.
         row["choice_ids"] = sorted({event_id(item) for item in items})
         rows.append((best, row))
     shown = {item.phenomenon for item, _ in rows}
@@ -456,25 +536,38 @@ def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: Fals
                       "where": item.zone_name, "significance": assessment.get("significance")})
     watch = watch[:limit]
 
-    # Rows that passed everything except a safety check that could not be
-    # made. Shown as held, so an alert outage never looks like an empty week.
+    # Rows that passed everything except a check that could not be made
+    # (safety, marine conditions, park access). Shown as held, so an outage
+    # never looks like an empty week.
     held = []
     for item in sorted(opportunities, key=lambda item: item.start):
         assessment = item.extra.get("assessment") or {}
-        if assessment.get("held_for_safety") and not suppressed(event_id(item)) \
+        if assessment.get("held") and not suppressed(event_id(item)) \
                 and item.phenomenon not in {row["phenomenon"] for row in held}:
+            reasons = assessment.get("held_reasons") or [item.extra.get("safety_summary")]
             held.append({"title": item.title, "phenomenon": item.phenomenon, "where": item.zone_name,
-                         "start": item.start.isoformat(), "summary": item.extra.get("safety_summary")})
+                         "start": item.start.isoformat(), "summary": " ".join(r for r in reasons if r),
+                         "reasons": [r for r in reasons if r]})
 
+    coverage = coverage or {"state": COVERAGE_COMPLETE, "problems": []}
+    incomplete = coverage.get("state") == COVERAGE_INCOMPLETE
+    if rows:
+        headline = None
+    elif incomplete:
+        headline = INCOMPLETE_HEADLINE
+    elif held:
+        headline = "Nothing cleared to recommend: some checks could not be made for the rows held below."
+    else:
+        headline = "Nothing worth changing plans for this week."
     return {
         "events": [row for _, row in rows],
         "eligible_count": len(rows),
         "suppressed_count": suppressed_count,
         "show_limit": SHOW_LIMIT,
-        # An outage must never read as a quiet week.
-        "headline": None if rows else (
-            "Nothing cleared to recommend: safety could not be checked for the rows held below." if held
-            else "Nothing worth changing plans for this week."),
+        # A quiet dashboard must mean the relevant sources were assessed. An
+        # outage never reads as a quiet week.
+        "headline": headline,
+        "assessment": coverage,
         "watch": watch,
         "held": held[:SHOW_LIMIT],
         "signals": background(signals or [], now),

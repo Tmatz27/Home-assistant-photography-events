@@ -139,6 +139,15 @@ ROUTING_SLACK = 1.5
 # fetch intervals).
 SUNSETWX_MAX_AGE_HOURS = 6
 
+# Routed drive times age. Product thresholds:
+# - "in current traffic" only while the route is at most an hour old;
+# - a route older than three hours is re-requested when it is needed;
+# - a route older than seven days is expired: the calibrated estimate is used
+#   instead, and labelled as one. A cached duration never renews itself.
+ROUTE_CURRENT_MINUTES = 60
+ROUTE_REFRESH_MINUTES = 180
+ROUTE_RECENT_DAYS = 7
+
 
 class PartialFetchError(ValueError):
     """Keep successful parts and cached failed parts without claiming success."""
@@ -187,7 +196,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         # schedule - an email lands when it lands - so there is nothing to poll
         # and nothing to throttle, only something to expire.
         self._ingested_reports: list = []
-        self._routing_cache: dict[tuple[float, float], routing_module.DriveTime] = {}
+        # {(origin, routing mode, destination): (DriveTime, fetched_at)}. The
+        # origin and mode are part of the key so a moved home or a changed
+        # endpoint preference never reuses another trip's duration.
+        self._routing_cache: dict[tuple, tuple] = {}
         self._routing_endpoint: str | None = None
         self._cold_start = True
         self.event_state = EventState()
@@ -200,6 +212,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         self._lunar_cache: tuple | None = None
         self._last_signals: list = []
         self._last_birds: dict = {}
+        # {forecast point id: {"fetched_at", "failed"}} - see source_health.point_health.
+        self._weather_points: dict[str, dict] = {}
+        self._last_coverage: dict | None = None
         for source in reports_module.REPORT_SOURCES:
             self._sources[source["id"]] = Source(source["name"], MIN_INTERVAL_FIELD_REPORTS)
 
@@ -229,7 +244,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             # at the next fetch cycle.
             data["cant_miss"] = eligibility.dashboard(
                 data.get("opportunities", []), dt_util.utcnow(), suppressed=self.event_state.suppressed,
-                signals=self._last_signals, birds=self._last_birds)
+                signals=self._last_signals, birds=self._last_birds, coverage=self._last_coverage)
             self.async_set_updated_data(data)
 
     # --- Configuration ------------------------------------------------------
@@ -240,11 +255,17 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
     @property
     def enabled_categories(self) -> set[str]:
+        """Exactly what the user selected; every category only when nothing was ever set.
+
+        An explicit empty list is "none". Reading a setting must never change
+        it: the old "all but Waves means Waves too" rule re-enabled Waves on
+        every read for anyone who had deliberately switched it off. The legacy
+        case it was for is migrated once (__init__.async_migrate_entry).
+        """
         configured = self._options.get(CONF_ENABLED_CATEGORIES)
-        selected = set(configured) if configured else set(ALL_CATEGORIES)
-        if selected == set(ALL_CATEGORIES) - {"waves"}:
-            selected.add("waves")
-        return selected
+        if configured is None:
+            return set(ALL_CATEGORIES)
+        return {category for category in configured if category in ALL_CATEGORIES}
 
     @property
     def max_drive_hours(self) -> float:
@@ -362,7 +383,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             await self._refresh(self._sources["streamflow"], now, lambda: self._fetch_streamflow(session))
         if CATEGORY_RARE in categories or "waves" in categories:
             await self._refresh(self._sources["tides"], now, lambda: self._fetch_tides(session, now))
-        if CATEGORY_PARKS in categories and self.nps_key:
+        if self.park_alerts_needed:
             await self._refresh(self._sources["park_alerts"], now, lambda: self._fetch_park_alerts(session))
 
         # These bounded public feeds carry their own timestamps and cadence.
@@ -389,8 +410,14 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             opportunities, self.max_drive_hours, self.category_drive_limits
         )
         health = source_health.snapshot(self._sources, self._enabled_sources(), now)
-        source_health.annotate(opportunities, health)
+        points = source_health.point_health(self._weather_points, now)
+        source_health.annotate(opportunities, health, points)
         self._update_repairs(health)
+        # Park access for the phenomena that depend on it, from the NPS
+        # source's real state: never "open" without a current, complete read.
+        parks = self._sources["park_alerts"]
+        conditions.annotate_access(opportunities, parks.value if self.park_alerts_needed else None,
+                                   parks.fetched_at if self.park_alerts_needed else None, parks.failures, now)
         alerts_source = self._sources["surf_alerts"]
         # A failed or stale alert feed is "safety unknown", never "all clear".
         alerts = weather_hazards.current_alerts(alerts_source.value, alerts_source.fetched_at,
@@ -398,8 +425,13 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         await self.hass.async_add_executor_job(lambda: eligibility.annotate(
             opportunities, now, max_drive_hours=self.max_drive_hours, alerts=alerts,
             sunset_drive_hours=self.category_drive_limits.get(CATEGORY_SUNSET)))
+        coverage = source_health.assessment_coverage(
+            health, self.enabled_categories, points,
+            sunset_provider_current=bool(self._current_sunsetwx(now)[0]))
+        self._last_coverage = coverage
         cant_miss = eligibility.dashboard(
-            opportunities, now, suppressed=self.event_state.suppressed, signals=signals, birds=bird_views)
+            opportunities, now, suppressed=self.event_state.suppressed, signals=signals, birds=bird_views,
+            coverage=coverage)
         action = event_builder.action_window(opportunities, now)
         top = next((item for item in action if not self.event_state.suppressed(event_id(item))
                     and event_builder.alert_candidate(item, self.alert_score)), None)
@@ -443,27 +475,31 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
 
         # Sunsets are a home feature: tonight's sky over Vandenberg, not a
         # regional sky map nobody drives six hours for.
-        if CATEGORY_SUNSET in categories and home_forecast:
-            # A provider forecast only while the provider is healthy and recent:
-            # yesterday's "Great" must not decide tonight. Otherwise the local
-            # model decides and source health says the fallback is in use.
-            sunsetwx = self._sources["sunsetwx"]
-            provider = (sunsetwx.value if self.sunsetwx_credentials and not sunsetwx.failures
-                        and sunsetwx.fetched_at and now - sunsetwx.fetched_at <= timedelta(hours=SUNSETWX_MAX_AGE_HOURS)
-                        else None)
-            opportunities.extend(
-                await self.hass.async_add_executor_job(
+        if CATEGORY_SUNSET in categories:
+            # Inputs are resolved *before* anything is scored, by their roles:
+            # a source that may not decide must not be allowed to change the
+            # score either (a retained, failed air-quality value used to pull
+            # a valid local sunset under the threshold and discard it).
+            provider, provider_note = self._current_sunsetwx(now)
+            usable_air = air_quality.get("home") if self._usable(self._sources["air_quality"], now) else None
+            if home_forecast or provider:
+                rows = await self.hass.async_add_executor_job(
                     event_builder.build_sunset_opportunities,
                     self.home_zone,
-                    home_forecast,
+                    home_forecast or {},
                     now,
                     self.sunset_score,
                     3,
                     home_bundle.get("upstream") or {},
-                    air_quality.get("home"),
-                    provider or [],
+                    usable_air,
+                    provider,
                 )
-            )
+                for row in rows:
+                    if provider_note and not row.extra.get("provider_quality"):
+                        row.extra["provider_fallback"] = provider_note
+                    if air_quality.get("home") and usable_air is None:
+                        row.extra["air_quality_note"] = "Air quality unavailable or stale; clarity from humidity and visibility only."
+                opportunities.extend(rows)
 
         for zone in zones:
             bundle = forecasts.get(zone["id"]) or {}
@@ -513,8 +549,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         if unmatched:
             opportunities.extend(event_builder.build_field_report_opportunities(unmatched, now))
         conditions.annotate_monarchs(seasonal, forecasts, now, local_tz)
-        conditions.annotate_firefall(seasonal, forecasts, now, self._sources["park_alerts"].value
-                                     if "park_alerts" in self._enabled_sources() else None)
+        # Access is annotated for every row after the build (_annotate_access).
+        conditions.annotate_firefall(seasonal, forecasts, now)
 
         bird_views = {"spectacle": [], "encounter": [], "chase": []}
         if CATEGORY_BIRDS in categories or CATEGORY_RARE in categories:
@@ -527,7 +563,9 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                         {row.phenomenon for row in bird_views["spectacle"]}]
             bird_views["spectacle"] = [*leftovers, *upgraded]
         if CATEGORY_MARINE in categories:
-            opportunities.extend(birds_module.marine_presence(corroboration, now, self.home, reports))
+            # Raw observations, never the 14-day digest: orca presence needs each
+            # observation's own place, time and observer (birds.marine_presence).
+            opportunities.extend(birds_module.marine_presence(raw_sightings, now, self.home, reports))
 
         if CATEGORY_RARE in categories:
             opportunities.extend(grunion.opportunities(self._sources["grunion"].value or [], now, self.home))
@@ -557,7 +595,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             coastal = source.value if not source.failures and source.fetched_at and now - source.fetched_at <= timedelta(hours=6) else {}
             opportunities.extend(waves.build_opportunities(now, self._sources["ndbc"].value or {},
                 coastal or {}, self._calibration, self.event_state, self.home,
-                self._sources["surf_alerts"].value or []))
+                weather_hazards.alert_list(self._sources["surf_alerts"].value)))
             opportunities.extend(lunar.tide_opportunities(self._sources["tides"].value or [], now, self.home, local_tz))
             # Published dates immediately; NOAA times and the buoy when in range.
             opportunities.extend(lunar.king_tide_opportunities(
@@ -571,7 +609,37 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 self._lunar_opportunities, now, local_tz, _make_cloud_lookup(home_forecast)))
         signals += weather_hazards.watch_signals(forecasts, [*zones, self.home_zone], now)
         self._last_signals, self._last_birds = signals, bird_views
-        return [item for item in opportunities if item.category in categories]
+        # Which categories a row is *shown* under is not which one *owns* its
+        # data. A crane fly-in is a rare-phenomena calendar row and also a
+        # bird spectacle; filtering on the owner alone erased it (and the live
+        # evidence merged into it) whenever Birds was on and Rare was off.
+        return [item for item in opportunities if eligibility.presentation_categories(item) & categories]
+
+    @staticmethod
+    def _usable(source: Source, now: datetime) -> bool:
+        """Healthy and within two of its own intervals: fit to change a result."""
+        return (not source.failures and source.fetched_at is not None
+                and now - source.fetched_at <= timedelta(minutes=2 * source.min_interval_minutes))
+
+    def _current_sunsetwx(self, now: datetime) -> tuple[list, str]:
+        """(predictions that may decide now, why SunsetWx is not deciding).
+
+        Two separate facts. Transport: the last fetch succeeded within
+        ``SUNSETWX_MAX_AGE_HOURS``. Model: each prediction's own update time
+        is current (``sunburst.current``). A fresh download of an old model
+        run fails the second test.
+        """
+        if not self.sunsetwx_credentials:
+            return [], ""
+        source = self._sources["sunsetwx"]
+        if source.failures or source.fetched_at is None:
+            return [], "SunsetWx unavailable; the built-in local model decided this sunset."
+        if now - source.fetched_at > timedelta(hours=SUNSETWX_MAX_AGE_HOURS):
+            return [], "SunsetWx not refreshed recently; the built-in local model decided this sunset."
+        predictions = sunburst.current(source.value or [], now)
+        if not predictions:
+            return [], "SunsetWx forecast model is not current; the built-in local model decided this sunset."
+        return predictions, ""
 
     def _lunar_opportunities(self, now, tz, cloud_lookup):
         """Full-Moon geometry once a day; cloud re-read against it every cycle."""
@@ -668,7 +736,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             enabled.update(("grunion", "tides", "streamflow"))
         if "waves" in cats:
             enabled.update(("ndbc", "cdip", "tides"))
-        if CATEGORY_PARKS in cats and self.nps_key:
+        if self.park_alerts_needed:
             enabled.add("park_alerts")
         if self.google_key and self.routing_mode != ROUTING_OFF:
             enabled.add("routing")
@@ -743,9 +811,15 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         data = await self._get_json(session, "https://api.weather.gov/alerts/active?area=CA",
                                    headers={"User-Agent": "PhotographyEvents/0.16 (+https://github.com/Tmatz27/Home-assistant-photography-events)",
                                             "Accept": "application/geo+json"})
-        if not isinstance(data, dict) or not isinstance(data.get("features"), list):
-            raise ValueError("NWS alerts unavailable")
-        return [alert for alert in (weather_hazards.compact_alert(feature) for feature in data["features"]) if alert]
+        # An HTTP 200 is not a safety check. Every feature is validated; a
+        # collection with unusable features is kept (its readable warnings
+        # still block) but recorded as a failed, incomplete check.
+        collection = weather_hazards.parse_alert_collection(data, dt_util.utcnow())
+        if not collection["complete"]:
+            raise PartialFetchError(
+                f"NWS alerts incomplete: {collection['invalid']} of {collection['total']} features unusable "
+                f"({'; '.join(collection['problems'][:2])})", collection)
+        return collection
 
     async def _fetch_sunsetwx(self, session, now):
         """SunsetWx quality for the next home sunset and sunrise."""
@@ -769,6 +843,10 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 self._sunsetwx_token = None
                 raise ValueError(f"SunsetWx returned no usable {kind} forecast")
             found.extend(parsed)
+        # A successful download of an old model run is not a current forecast.
+        if not sunburst.current(found, now):
+            problem = sunburst.model_age_problem(found[0], now)
+            raise ValueError(f"SunsetWx forecast is not current ({problem}); the local model decides")
         return found
 
     async def _fetch_ebird_species(self, session) -> list:
@@ -835,6 +913,15 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             return zone["id"], bundle
 
         results = await asyncio.gather(*(fetch(zone) for zone in zones))
+        # Per-point health: each point keeps its own last success, so one bad
+        # response degrades the rows that read that point and no others.
+        stamp = dt_util.utcnow()
+        for key, payload in results:
+            record = self._weather_points.setdefault(key, {"fetched_at": None, "failed": False})
+            if payload:
+                record.update(fetched_at=stamp, failed=False)
+            else:
+                record["failed"] = True
         return self._finish_batch("weather",
             {key: payload for key, payload in results if payload},
             [key for key, payload in results if not payload], mapping=True)
@@ -1000,19 +1087,65 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         return sorted(found, key=lambda tide: tide.moment)
 
     async def _fetch_park_alerts(self, session) -> list:
-        """Closures and warnings straight from the parks."""
-        url, params = verify_module.build_nps_alerts_request(
-            list(verify_module.NPS_PARK_CODES.values()), self.nps_key
-        )
-        payload = await self._get_json(session, url, params=params, label="NPS alerts")
-        if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
-            raise RuntimeError("NPS alerts unavailable")
-        return verify_module.parse_nps_alerts(payload)
+        """Every current closure and warning for the covered parks.
+
+        Paginated to the response's own ``total``. The absence of a closure
+        is only a fact once every alert has been read; a first page of 50
+        says nothing about the 51st, so a short or inconsistent read raises
+        and access stays unknown.
+        """
+        pages = []
+        codes = list(verify_module.NPS_PARK_CODES.values())
+        for index in range(verify_module.NPS_MAX_PAGES):
+            url, params = verify_module.build_nps_alerts_request(codes, self.nps_key,
+                                                                start=index * verify_module.NPS_PAGE_SIZE)
+            payload = await self._get_json(session, url, params=params, label=f"NPS alerts page {index + 1}")
+            total = verify_module.nps_total(payload)
+            pages.append(payload)
+            read = sum(len(page["data"]) for page in pages)
+            if read >= total or not payload["data"]:
+                break
+        return verify_module.collect_nps_pages(pages)
+
+    @property
+    def park_alerts_needed(self) -> bool:
+        """NPS alerts are fetched for the Parks view *or* for a phenomenon that depends on access.
+
+        Firefall, Yosemite moonbow and Yosemite/Sequoia snow need current park
+        access before Can't Miss may act, whether or not the Parks planner
+        view is enabled (curation.access_requirement).
+        """
+        return bool(self.nps_key) and bool(self.enabled_categories & {CATEGORY_PARKS, CATEGORY_RARE})
 
     # --- Google routing -----------------------------------------------------
 
+    def _route_key(self, point) -> tuple:
+        origin = self.home
+        return (round(origin[0], 3), round(origin[1], 3), self.routing_mode, point)
+
+    @staticmethod
+    def route_basis(fetched_at: datetime | None, now: datetime) -> str:
+        """"current", "recent" or "expired" for a cached route of this age."""
+        if fetched_at is None:
+            return "expired"
+        age = now - fetched_at
+        if age <= timedelta(minutes=ROUTE_CURRENT_MINUTES):
+            return "current"
+        if age <= timedelta(days=ROUTE_RECENT_DAYS):
+            return "recent"
+        return "expired"
+
     async def _apply_routing(self, session, now: datetime, opportunities: list) -> list:
-        """Replace estimated drive times with routed ones where it matters."""
+        """Replace estimated drive times with routed ones where it matters.
+
+        Every row says which basis its drive time has (``extra["drive_basis"]``):
+        ``current`` (routed within the hour; traffic-aware if the endpoint
+        gave traffic), ``recent`` (routed within a week; typical, not current
+        traffic), or ``estimate`` (calibrated straight-line). The Can't Miss
+        drive gate reads the same field.
+        """
+        for item in opportunities:
+            item.extra.setdefault("drive_basis", "estimate" if item.drive_source in ("estimate", "baseline") else "routed")
         key = self.google_key
         if not key or self.routing_mode == ROUTING_OFF or not opportunities:
             return opportunities
@@ -1031,33 +1164,50 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
         # Deduplicate before spending quota: a dozen opportunities at one zone
         # is one billable element, not a dozen.
         wanted = list(dict.fromkeys(_point(item) for item in candidates))
-        unknown = [point for point in wanted if point not in self._routing_cache]
-        if unknown:
+        due = [point for point in wanted
+               if (entry := self._routing_cache.get(self._route_key(point))) is None
+               or now - entry[1] > timedelta(minutes=ROUTE_REFRESH_MINUTES)]
+        if due:
             await self._refresh(
-                self._sources["routing"], now, lambda: self._fetch_routing(session, unknown, key)
+                self._sources["routing"], now, lambda: self._fetch_routing(session, due, key, now)
             )
 
         for item in candidates:
-            routed = self._routing_cache.get(_point(item))
-            if routed is None:
+            entry = self._routing_cache.get(self._route_key(_point(item)))
+            basis = self.route_basis(entry[1] if entry else None, now)
+            if entry is None or basis == "expired":
+                # No route, or one too old to describe this trip: the estimate
+                # stands and says so. Never a month-old duration as "traffic".
+                item.extra["drive_basis"] = "estimate"
                 continue
+            routed, fetched = entry
+            current = basis == "current"
             item.drive_hours = round(routed.hours, 2)
             item.drive_source = routed.source
-            item.drive_in_traffic = routed.in_traffic
-            note = f"{routed.minutes} min by road" + (" in current traffic" if routed.in_traffic else "")
-            if note not in item.reasons:
-                item.reasons.append(note)
+            item.drive_in_traffic = bool(routed.in_traffic and current)
+            item.extra["drive_basis"] = basis
+            item.extra["route_fetched_at"] = fetched.isoformat()
+            if current:
+                note = f"{routed.minutes} min by road" + (" in current traffic" if routed.in_traffic else "")
+            else:
+                hours = (now - fetched).total_seconds() / 3600
+                age = f"{hours:.0f} h" if hours < 48 else f"{hours / 24:.0f} days"
+                note = f"about {routed.minutes} min by road (routed {age} ago; not current traffic)"
+            item.reasons = [reason for reason in item.reasons if " min by road" not in reason]
+            item.reasons.append(note)
         return opportunities
 
-    async def _fetch_routing(self, session, points: list[tuple[float, float]], key: str) -> int:
+    async def _fetch_routing(self, session, points: list[tuple[float, float]], key: str, now: datetime | None = None) -> int:
         """Fill the routing cache, trying the modern endpoint before the legacy one.
 
         Which endpoint a key can call is a property of the Google Cloud project,
         not of this code: Distance Matrix cannot be enabled on projects created
         after March 2025, and Routes may never have been enabled on older ones.
         Rather than make you discover that by reading an error, both are tried
-        and whichever answers is remembered for next time.
+        and whichever answers is remembered for next time. Each route is stored
+        with the time it was fetched.
         """
+        now = now or dt_util.utcnow()
         origin = self.home
         order = {
             ROUTING_AUTO: (ROUTING_ROUTES, ROUTING_LEGACY),
@@ -1076,7 +1226,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
                 self._routing_endpoint = endpoint
                 for index, drive in results.items():
                     if 0 <= index < len(batch):
-                        self._routing_cache[batch[index]] = drive
+                        self._routing_cache[self._route_key(batch[index])] = (drive, now)
                         filled += 1
                 break
 

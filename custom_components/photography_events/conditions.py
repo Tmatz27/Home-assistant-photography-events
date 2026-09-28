@@ -142,7 +142,11 @@ def annotate_firefall(rows, forecasts: dict, now: datetime, park_alerts=None) ->
     Alignment is the published mid-February window (the row's own dates).
     Water on Horsetail Fall comes only from a dated report - the row's
     evidence state; this never reads the Merced gauge. Light needs the local
-    sky clear at sunset *and* the western light path open upstream.
+    sky clear at sunset *and* the western light path open upstream, from
+    upstream layers that are actually present and valid (a missing layer is
+    unknown, never open). Park access is ``annotate_access``'s job; passing
+    ``park_alerts`` here is a shortcut that treats them as a current,
+    complete read.
     """
     bundle = (forecasts or {}).get("yosemite_valley") or {}
     local = _local(bundle)
@@ -156,36 +160,59 @@ def annotate_firefall(rows, forecasts: dict, now: datetime, park_alerts=None) ->
         flow = item.extra.get("evidence_state") == "behavior_confirmed"
         states["Water on Horsetail Fall"] = ("Reported" if flow else
                                              "Unconfirmed: needs a dated report. Merced discharge is a different drainage and is not used.")
-        item.extra.pop("cloud_cover", None)
+        for key in ("cloud_cover", "cloud_is_forecast", "light_path_gate", "firefall_sunset"):
+            item.extra.pop(key, None)
         if sunset is not None:
             item.extra["firefall_sunset"] = sunset.isoformat()
-            cloud = weather_scoring._at(local, "cloud_cover", sunset) if local else None
+            cloud = weather_scoring.layer_at(local, "cloud_cover", sunset)
             lead = (sunset - now).total_seconds() / 86400
             if cloud is not None:
                 item.extra["cloud_cover"] = round(cloud, 1)
                 item.extra["cloud_is_forecast"] = weather_scoring.cloud_is_scorable(lead)
                 states["Local sky at sunset"] = f"{cloud:.0f}% cloud forecast"
             else:
-                states["Local sky at sunset"] = "No forecast"
-            if upstream:
-                gate = weather_scoring.light_path_gate(weather_scoring._at(upstream, "cloud_cover_low", sunset),
-                                                       weather_scoring._at(upstream, "cloud_cover_mid", sunset))
+                states["Local sky at sunset"] = "No valid forecast for sunset"
+            low = weather_scoring.layer_at(upstream, "cloud_cover_low", sunset)
+            mid = weather_scoring.layer_at(upstream, "cloud_cover_mid", sunset)
+            gate = weather_scoring.light_path_gate_checked(low, mid)
+            if gate is not None:
                 item.extra["light_path_gate"] = round(gate, 2)
                 states["Western light path"] = "Open" if gate >= FIREFALL_MIN_LIGHT_GATE else "Blocked upstream"
             else:
-                item.extra.pop("light_path_gate", None)
-                states["Western light path"] = "Not modelled"
-        if park_alerts is None:
-            states["Park access"] = "Not checked: no NPS alert feed"
-        else:
-            relevant = [alert for alert in park_alerts if getattr(alert, "park_code", "") == "yose"
-                        and getattr(alert, "blocking", False)]
-            blocking = [alert for alert in relevant
-                        if any(term in f"{alert.title} {alert.description}".lower() for term in FIREFALL_ACCESS_TERMS)]
-            if blocking:
-                item.extra["access_blocked"] = blocking[0].title
-            states["Park access"] = (f"Closure: {blocking[0].title}" if blocking else
-                                     f"Other Yosemite closures: {relevant[0].title}" if relevant else "No closures reported")
+                missing = [name for name, value in (("low", low), ("mid", mid)) if value is None]
+                states["Western light path"] = ("Not modelled: no upstream forecast" if not upstream else
+                                                f"Unknown: upstream {' and '.join(missing)} cloud missing or invalid at sunset")
+        item.extra["condition_states"] = states
+    if park_alerts is not None:
+        annotate_access([row for row in rows if row.phenomenon == "horsetail_firefall"],
+                        park_alerts, now, 0, now)
+
+
+def annotate_access(rows, park_alerts, fetched_at, failures: int, now: datetime) -> None:
+    """Current NPS access for every occurrence whose phenomenon depends on it.
+
+    Driven by the phenomenon and its place (``curation.access_requirement``),
+    not by whether the Parks view is switched on. ``access_state`` is
+    ``open`` only after a current, complete read that names no closure here;
+    otherwise ``closed`` or ``unknown``. The gate blocks a closure and holds
+    an unknown.
+    """
+    from . import curation, verification
+
+    for item in rows:
+        requirement = curation.access_requirement(item)
+        for key in ("access_state", "access_detail", "access_blocked"):
+            item.extra.pop(key, None)
+        if requirement is None:
+            continue
+        park, terms = requirement
+        state, detail = verification.access_state(park_alerts, fetched_at, failures, now, park, terms)
+        item.extra["access_state"] = state
+        item.extra["access_detail"] = detail
+        if state == verification.ACCESS_CLOSED:
+            item.extra["access_blocked"] = detail.removeprefix("Closure: ")
+        states = dict(item.extra.get("condition_states") or {})
+        states["Park access"] = detail
         item.extra["condition_states"] = states
 
 

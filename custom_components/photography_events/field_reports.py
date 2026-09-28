@@ -331,6 +331,20 @@ class FieldReport:
     longitude: float | None = None
     # A number the text states for the named subject ("2,300 monarchs").
     count: int | None = None
+    # The curated phenomena this report's own statements name positively
+    # (observations.observe). Empty for a report that names none; an older
+    # object without it is normalized on use (observations.report_phenomena).
+    phenomena: tuple = ()
+    polarity: str = "positive"
+    # The specific named place the coordinates came from, when there is one.
+    place: str = ""
+    # Set by the parsers that ran the statement normalizer: ``phenomena`` is
+    # then final, even when empty (a generic report names nothing).
+    normalized: bool = False
+
+    def __post_init__(self):
+        if not self.phenomena and self.phenomenon_key:
+            self.phenomena = (self.phenomenon_key,)
 
     def age_label(self, now: datetime) -> str:
         """When the page was *read*, which is all these pages tell us.
@@ -571,10 +585,17 @@ def parse_report(raw_html: str, source: dict, fetched: datetime | None = None) -
             continue
 
         snippet = build_snippet(text, source["signals"])
+        observed_at = explicit_date(f"{heading} {text}", fetched)
+        from .observations import observe, positive
         for zone_id in zone_ids:
             existing = best.get(zone_id)
             if existing is not None and existing.strength >= strength:
                 continue
+            # The same statement normalizer as email: phenomena and counts come
+            # from explicit statements about this zone, never co-occurrence.
+            seen = [item for item in positive(observe(text, observed_at or fetched, category=source["category"],
+                                                      default_zone=zone_id, subject_hint=heading))
+                    if item.zone_id in ("", zone_id)]
             best[zone_id] = FieldReport(
                 source_id=source["id"],
                 source_name=source["name"],
@@ -587,7 +608,9 @@ def parse_report(raw_html: str, source: dict, fetched: datetime | None = None) -
                 fetched=fetched,
                 context=heading,
                 # Only a date the report itself states; never the fetch time.
-                observed_at=explicit_date(f"{heading} {text}", fetched),
-                count=stated_count(text),
+                observed_at=observed_at,
+                count=max((item.count for item in seen if item.count), default=None),
+                phenomena=tuple(dict.fromkeys(item.phenomenon for item in seen)),
+                normalized=True,
             )
     return list(best.values())

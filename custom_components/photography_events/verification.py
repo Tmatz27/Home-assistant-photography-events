@@ -71,8 +71,10 @@ def closure_coverage(park_key: str) -> str | None:
     return NON_NPS_UNITS.get(park_key)
 
 
-# Alert categories that can end a trip rather than merely colour it.
-BLOCKING_CATEGORIES = {"closure", "danger"}
+# Alert categories that can end a trip rather than merely colour it. The NPS
+# API's own category names are "Park Closure", "Danger", "Caution" and
+# "Information"; matching only "closure" meant a real NPS closure never blocked.
+BLOCKING_CATEGORIES = {"park closure", "closure", "danger"}
 
 # A grunion run begins roughly this long after the high tide.
 GRUNION_LAG_MIN = timedelta(hours=1)
@@ -220,12 +222,44 @@ def grunion_run_window(tides: list[TideEvent], night: date,
 # --- NPS alerts -------------------------------------------------------------
 
 
-def build_nps_alerts_request(park_codes: list[str], api_key: str, limit: int = 50) -> tuple[str, dict]:
+NPS_PAGE_SIZE = 50
+# Eight parks rarely carry more than a few dozen alerts between them. A total
+# needing more pages than this is treated as an incomplete read rather than
+# fetched without limit.
+NPS_MAX_PAGES = 10
+
+
+def build_nps_alerts_request(park_codes: list[str], api_key: str, limit: int = NPS_PAGE_SIZE,
+                             start: int = 0) -> tuple[str, dict]:
     return NPS_ALERTS_URL, {
         "parkCode": ",".join(sorted(set(park_codes))),
         "limit": limit,
+        "start": start,
         "api_key": api_key,
     }
+
+
+class IncompleteAlertsError(ValueError):
+    """The NPS response cannot establish that every alert was read."""
+
+
+def nps_total(payload) -> int:
+    """The response's declared ``total``, validated.
+
+    The absence of a closure is only meaningful when every alert was read.
+    The first 50 results say nothing about the 51st, so a missing or
+    unreadable total makes the whole read incomplete.
+    """
+    if not isinstance(payload, dict) or not isinstance(payload.get("data"), list):
+        raise IncompleteAlertsError("NPS alerts unavailable")
+    raw = payload.get("total")
+    try:
+        total = int(str(raw).strip())
+    except (TypeError, ValueError):
+        raise IncompleteAlertsError(f"NPS alerts: unreadable total {raw!r}") from None
+    if total < 0:
+        raise IncompleteAlertsError(f"NPS alerts: negative total {total}")
+    return total
 
 
 def parse_nps_alerts(payload) -> list[ParkAlert]:
@@ -252,6 +286,63 @@ def parse_nps_alerts(payload) -> list[ParkAlert]:
             )
         )
     return found
+
+
+def collect_nps_pages(pages: list) -> list[ParkAlert]:
+    """Every alert across paginated responses, or IncompleteAlertsError.
+
+    Complete means: each page is a valid response with the same total, and
+    the entries read add up to that total. Anything else - a short page, a
+    changed total, an entry that is not an object - is an incomplete read.
+    """
+    if not pages:
+        raise IncompleteAlertsError("NPS alerts: no response")
+    totals = {nps_total(page) for page in pages}
+    if len(totals) != 1:
+        raise IncompleteAlertsError("NPS alerts: total changed between pages")
+    total = totals.pop()
+    entries = [entry for page in pages for entry in page["data"]]
+    if len(entries) != total:
+        raise IncompleteAlertsError(f"NPS alerts: read {len(entries)} of {total}")
+    if any(not isinstance(entry, dict) for entry in entries):
+        raise IncompleteAlertsError("NPS alerts: unreadable entry")
+    return parse_nps_alerts({"data": entries})
+
+
+# --- Park access for a specific phenomenon ------------------------------------
+
+ACCESS_OPEN = "open"
+ACCESS_CLOSED = "closed"
+ACCESS_UNKNOWN = "unknown"
+# Closures are checked every six hours; a read older than two intervals is not
+# a current statement about a road. Product threshold.
+ACCESS_MAX_AGE_HOURS = 12
+# Park-wide wording applies to every place in the park.
+PARK_WIDE_TERMS = ("park is closed", "park closed", "entire park", "all park roads", "park-wide closure")
+
+
+def access_state(alerts, fetched_at, failures: int, now: datetime, park_code: str,
+                 terms: tuple[str, ...]) -> tuple[str, str]:
+    """Whether a specific place in a park can be reached, as far as NPS says.
+
+    ``("open", ...)`` only after a complete, current read in which no closure
+    or danger alert for this park names this place (or the whole park).
+    Missing, failed, stale or incomplete data is ``unknown``: "no closure was
+    returned" is only true if closures were actually checked.
+    """
+    if fetched_at is None or alerts is None:
+        return ACCESS_UNKNOWN, "Park access not checked: NPS alerts have not been read (an NPS API key is needed)."
+    if failures:
+        return ACCESS_UNKNOWN, "Park access not checked: the latest NPS alert read failed or was incomplete."
+    if now - fetched_at > timedelta(hours=ACCESS_MAX_AGE_HOURS):
+        return ACCESS_UNKNOWN, "Park access not checked: NPS alerts are more than 12 hours old."
+    blocking = [alert for alert in alerts_for(alerts, park_code) if any(
+        term in f"{alert.title} {alert.description}".lower() for term in (*terms, *PARK_WIDE_TERMS))]
+    if blocking:
+        return ACCESS_CLOSED, f"Closure: {blocking[0].title}"
+    others = alerts_for(alerts, park_code)
+    return ACCESS_OPEN, (f"No closure reported for this area (other alerts: {others[0].title})" if others
+                         else "No closure reported for this area")
 
 
 def alerts_for(alerts: list[ParkAlert], park_code: str, blocking_only: bool = True) -> list[ParkAlert]:

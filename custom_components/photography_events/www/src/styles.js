@@ -574,6 +574,10 @@ const CARD_STYLES = `
       .cm-held strong { color:var(--primary-text-color); }
       .cm-held ul { margin:4px 0 0; padding-left:18px; }
       .cm-held li { margin:0 0 6px; overflow-wrap:anywhere; }
+      .cm-problems { margin:6px 0 0; padding-left:18px; text-align:left; font-size:12px; color:var(--secondary-text-color); }
+      .cm-problems li { margin:0 0 4px; overflow-wrap:anywhere; }
+      .cm-incomplete-note { margin:6px 0 10px; padding:8px 12px; border-left:3px solid var(--warning-color, #dca54c); font-size:13px; color:var(--secondary-text-color); }
+      .cm-incomplete-note summary { cursor:pointer; color:var(--primary-text-color); }
       .cm-row .outlook-detail { padding:0 12px 12px; }
       .cm-report { font-size:13px; margin:6px 0; overflow-wrap:anywhere; }
       .cm-empty { display:flex; flex-direction:column; align-items:center; text-align:center; gap:6px; padding:22px 12px; color:var(--secondary-text-color); }

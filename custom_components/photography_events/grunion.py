@@ -56,7 +56,8 @@ def opportunities(schedule, now, home):
             detail="CDFW's probable two-hour spawning interval, adjusted by its published Santa Barbara offset. This is an expected run, not a confirmed appearance of fish.",
             latitude=34.418, longitude=-119.670, drive_hours=estimate_drive_hours(34.418, -119.670, home),
             source_url=URL,
-            extra={"verification": "schedule", "evidence_state": "schedule", "tide_window_start": start.isoformat(),
+            extra={"verification": "schedule", "evidence_state": "schedule", "time_precision": "interval",
+                   "timing_basis": "CDFW published run interval, Pacific local time", "tide_window_start": start.isoformat(),
                    "tide_window_end": end.isoformat(), "evidence_note": "Published CDFW schedule; Pacific local time, including daylight saving.",
                    "confidence_note": "Check the source and beach access before going. No promise fish will spawn on a particular beach."},
         ))

@@ -160,15 +160,20 @@ def canvas_strength(high: float | None, mid: float | None, low: float | None) ->
     return max(CANVAS_FLOOR, min(1.0, strength))
 
 
-def light_path_gate(low: float | None, mid: float | None) -> float:
-    """Whether the beam gets through, 0-1.
+def light_path_gate(low: float | None, mid: float | None) -> float | None:
+    """Whether the beam gets through, 0-1, or None when nothing is known.
 
     Low cloud blocks outright. Mid-level cloud only blocks once it is more than
     broken, because a beam at that grazing angle threads gaps a satellite would
     still call cloudy.
+
+    Two missing layers are not an open path: this returned 1.0 for
+    ``(None, None)``, which let an empty upstream forecast read as a clear
+    western horizon. A decision that needs the *modelled* path must use
+    ``light_path_gate_checked``, which requires both layers.
     """
     if low is None and mid is None:
-        return 1.0
+        return None
     blocked = (low or 0.0) + 0.6 * max(0.0, (mid or 0.0) - 45.0)
     if blocked <= PATH_OPEN_BELOW:
         return 1.0
@@ -208,8 +213,13 @@ def clarity_factor(aod: float | None, visibility: float | None, humidity: float 
 # --- Forecast plumbing ------------------------------------------------------
 
 
+def _number(value) -> bool:
+    """A finite real number - not a bool, not NaN, not infinity."""
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
+
+
 def _mean(values: list[float]) -> float | None:
-    numeric = [v for v in values if isinstance(v, (int, float))]
+    numeric = [v for v in values if _number(v)]
     return sum(numeric) / len(numeric) if numeric else None
 
 
@@ -247,9 +257,35 @@ def _sample(forecast: dict, key: str, index: int, offsets: tuple[int, ...]) -> l
     out = []
     for offset in offsets:
         position = index + offset
-        if 0 <= position < len(values) and isinstance(values[position], (int, float)):
+        if 0 <= position < len(values) and _number(values[position]):
             out.append(float(values[position]))
     return out
+
+
+def layer_at(forecast: dict | None, key: str, moment: datetime) -> float | None:
+    """A cloud-cover percentage at an event, only when the forecast really has it.
+
+    Present, finite, 0-100 and time-matched (the slot nearest the event, within
+    90 minutes, must itself carry a valid value). Anything less is unknown:
+    a missing layer is not a clear one.
+    """
+    if not forecast:
+        return None
+    index = _index_for(forecast, moment)
+    if index is None:
+        return None
+    series = _series(forecast, key)
+    if index >= len(series) or not _number(series[index]) or not 0 <= series[index] <= 100:
+        return None
+    values = [v for v in _sample(forecast, key, index, SAMPLE_OFFSETS_HOURS) if 0 <= v <= 100]
+    return _mean(values)
+
+
+def light_path_gate_checked(low: float | None, mid: float | None) -> float | None:
+    """The modelled light-path gate, or None when either upstream layer is unknown."""
+    if low is None or mid is None:
+        return None
+    return light_path_gate(low, mid)
 
 
 def _at(forecast: dict | None, key: str, moment: datetime) -> float | None:
@@ -296,17 +332,25 @@ def score_sky(
     reasons: list[str] = []
     canvas = canvas_strength(high, mid, low)
 
-    upstream_low = _at(upstream, "cloud_cover_low", event_time)
-    upstream_mid = _at(upstream, "cloud_cover_mid", event_time)
-    if upstream_low is not None or upstream_mid is not None:
-        gate = light_path_gate(upstream_low, upstream_mid)
+    upstream_low = layer_at(upstream, "cloud_cover_low", event_time)
+    upstream_mid = layer_at(upstream, "cloud_cover_mid", event_time)
+    modelled_gate = light_path_gate_checked(upstream_low, upstream_mid)
+    if modelled_gate is not None:
+        # Both upstream layers present and valid: only then is the light path
+        # "modelled". One missing layer used to be read as 0% cloud.
+        gate = modelled_gate
         source = "modelled"
-    else:
-        # No upstream forecast. The deck overhead is the only proxy available,
-        # and it is a poor one - it is the reason the old model kept promising
-        # sunsets that the marine layer had already eaten.
+    elif low is not None:
+        # No usable upstream forecast. The deck overhead is the only proxy
+        # available, and it is a poor one - it is the reason the old model kept
+        # promising sunsets that the marine layer had already eaten.
         gate = light_path_gate(low, None)
         source = "local"
+    else:
+        # Neither: the horizon is unknown. Scored neutrally, capped, and never
+        # labelled "modelled", so it cannot reach an alert.
+        gate = 1.0
+        source = "unknown"
 
     clarity, clarity_problem = clarity_factor(aod, visibility, humidity)
 
@@ -349,7 +393,7 @@ def score_sky(
         reasons.append(limited_by)
 
     final = int(max(0, min(100, round(base))))
-    if source == "local":
+    if source != "modelled":
         final = min(final, LOCAL_ONLY_CEILING)
 
     return SkyScore(

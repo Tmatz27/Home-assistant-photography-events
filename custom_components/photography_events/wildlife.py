@@ -450,7 +450,12 @@ def cluster(sightings: list[Sighting]) -> list[Sighting]:
     for item in sightings:
         existing = merged.get(item.cluster_key)
         if existing is None:
-            merged[item.cluster_key] = Sighting(**vars(item))
+            # A new object *and* new lists: the digest must never write into
+            # the cached source records it was built from. Sharing the
+            # observers list once let one cycle's merge add a stranger's
+            # observer ID to a raw record, which the next cycle then counted.
+            merged[item.cluster_key] = Sighting(**{**vars(item), "observers": list(item.observers),
+                                                   "dates": list(item.dates)})
             continue
 
         existing.reports += item.reports

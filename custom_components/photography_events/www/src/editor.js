@@ -1,7 +1,8 @@
 const DEFAULT_CONFIG = Object.freeze({
   title: "Photography Events",
-  // "timeline" keeps the original browser-computed view. The other two read
-  // the photography_events integration's entities instead.
+  // A config without a mode renders the planner. A card added from the
+  // picker with the integration installed starts on Can't Miss
+  // (getStubConfig); "timeline" keeps the original browser-computed view.
   mode: MODE_OUTLOOK,
   hero_entity: "",
   outlook_entity: "",

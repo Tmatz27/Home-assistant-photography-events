@@ -220,15 +220,20 @@ class PeakWindow:
         return self.evidence == EVIDENCE_LIVE
 
     def occurrences(self, year: int) -> list[tuple[date, date]]:
-        """Concrete dates, splitting a window that crosses New Year."""
+        """The occurrence that *starts* in ``year``, whole.
+
+        A window crossing New Year (15 Nov - 15 Jan) is one season identified
+        by the year it starts in. It used to be split into calendar-year
+        halves and stitched back only when both halves were in view; from 1
+        January the earlier half was out of view, the occurrence's key
+        changed, and Skip/Seen/Follow and announcements for the same cranes
+        were lost overnight.
+        """
         start = date(year, *self.peak_start)
         end = date(year, *self.peak_end)
         if end >= start:
             return [(start, end)]
-        return [
-            (date(year, 1, 1), date(year, *self.peak_end)),
-            (date(year, *self.peak_start), date(year, 12, 31)),
-        ]
+        return [(start, date(year + 1, *self.peak_end))]
 
 
 PEAK_WINDOWS: tuple[PeakWindow, ...] = (
@@ -843,7 +848,9 @@ def active_windows(moment: datetime, horizon_days: int) -> list[dict]:
     found: list[dict] = []
 
     for window in PEAK_WINDOWS:
-        for year in {today.year, horizon.year, today.year + 1}:
+        # The previous year too: a season that started last December is still
+        # underway in January, under the key it had in December.
+        for year in {today.year - 1, today.year, horizon.year, today.year + 1}:
             for start, end in window.occurrences(year):
                 if end < today or start > horizon:
                     continue

@@ -30,7 +30,7 @@ jobs:
       - name: Exercise coordinator, entities and real Store
         run: |
           python -c "import homeassistant.core"
-          python -m unittest discover -s tests -p test_ha_integration.py -v
+          python -m unittest discover -s tests -p "test_ha_*.py" -v
 
   hacs:
     name: HACS

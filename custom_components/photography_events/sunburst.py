@@ -99,6 +99,37 @@ def parse_quality(payload) -> list[dict]:
     return found
 
 
+# Transport freshness and model freshness are different facts. A download made
+# a minute ago can carry a forecast whose model run is days old; re-fetching it
+# must not renew its authority. SunsetWx labels each feature with
+# ``last_updated`` (when their forecast was produced). Product threshold: the
+# provider decides only while that is within 12 hours (two of its typical
+# update cycles) and not in the future. A feature without it cannot establish
+# its freshness and is not used; the local model decides, visibly.
+MODEL_MAX_AGE_HOURS = 12
+CLOCK_SKEW = timedelta(minutes=10)
+
+
+def model_age_problem(entry: dict, now: datetime) -> str:
+    """Why one parsed prediction cannot decide now, or "" when it can."""
+    updated = entry.get("last_updated")
+    if updated is None:
+        return "no model update time"
+    if updated > now + CLOCK_SKEW:
+        return "model update time is in the future"
+    age = now - updated
+    if age > timedelta(hours=MODEL_MAX_AGE_HOURS):
+        return f"model last updated {age.total_seconds() / 3600:.0f} h ago"
+    if entry["valid_at"] < now - timedelta(hours=2):
+        return "forecast is for a past event"
+    return ""
+
+
+def current(predictions: list[dict], now: datetime) -> list[dict]:
+    """Only the predictions whose own model time makes them a current forecast."""
+    return [entry for entry in predictions or [] if not model_age_problem(entry, now)]
+
+
 def match(predictions: list[dict], kind: str, moment: datetime) -> dict | None:
     """The provider forecast for one of our computed sunsets/sunrises."""
     best = None

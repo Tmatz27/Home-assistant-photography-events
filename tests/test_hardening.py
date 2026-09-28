@@ -212,9 +212,15 @@ class TestSafetyStates(unittest.TestCase):
     def test_stale_alert_feed_is_unknown(self):
         fetched = NOW - timedelta(hours=weather_hazards.ALERTS_MAX_AGE_HOURS + 1)
         self.assertIsNone(weather_hazards.current_alerts([], fetched, 0, NOW))
-        self.assertIsNone(weather_hazards.current_alerts([], NOW, 1, NOW))
         self.assertIsNone(weather_hazards.current_alerts(None, None, 0, NOW))
-        self.assertEqual(weather_hazards.current_alerts([], NOW - timedelta(minutes=30), 0, NOW), [])
+        current = weather_hazards.current_alerts([], NOW - timedelta(minutes=30), 0, NOW)
+        self.assertTrue(current.complete)
+        self.assertEqual(list(current.alerts), [])
+        # A failed latest fetch is an incomplete check (0.16.0 correction):
+        # retained warnings still block, but an empty match is never "safe".
+        failed = weather_hazards.current_alerts([], NOW, 1, NOW)
+        self.assertFalse(failed.complete)
+        self.assertEqual(weather_hazards.safety(self.seals(), failed, NOW, "coastal")["state"], "unknown")
 
 
 PACIFIC = ZoneInfo("America/Los_Angeles")
@@ -248,6 +254,9 @@ class TestFreshSnowClearing(unittest.TestCase):
         if cloud is not None:
             forecasts["yosemite_valley"] = {"local": forecast(forecast_start or self.NOW - timedelta(hours=2), cloud_cover=cloud)}
         conditions.annotate_snow(found, forecasts, self.NOW)
+        # Yosemite snow depends on park access (curation.ZONE_ACCESS): a
+        # current, complete NPS read with no closures here.
+        conditions.annotate_access(found, [], self.NOW, 0, self.NOW)
         for item in found:
             eligibility.assess(item, self.NOW, max_drive_hours=8.0, alerts=[])
         return found

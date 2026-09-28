@@ -43,9 +43,9 @@ def condor_reports(raw, now):
         body = text[date.end():]
         # Require one explicitly sized pod. A list of daily sightings is not it.
         sentences = re.split(r"(?<=[.!?])\s+", body)
-        confirmed = next((s for s in sentences if re.search(
-            r"\b(?:mega[ -]?pod|single pod)\b.{0,55}\b(?:[1-9]\d,\d{3}|[1-9],\d{3}|[1-9]\d{3,})\s+(?:common )?dolphins\b", s, re.I)
-            and not re.search(r"\b(?:no|not|yesterday|previous|last week)\b", s, re.I)), None)
+        pod = re.compile(r"\b(?:mega[ -]?pod|single pod)\b.{0,55}\b([1-9]\d,\d{3}|[1-9],\d{3}|[1-9]\d{3,})\s+(?:common )?dolphins\b", re.I)
+        confirmed = next((s for s in sentences if pod.search(s)
+                          and not re.search(r"\b(?:no|not|yesterday|previous|last week)\b", s, re.I)), None)
         link = item.findtext("link") or CONDOR_FEED
         if confirmed:
             reports.append(FieldReport(
@@ -54,6 +54,9 @@ def condor_reports(raw, now):
                 now, body[:1200], observed, "dolphin_megapod",
                 # The report names a region, never an exact vessel or animal position.
                 None, None,
+                # The pod size written against the pod: what the megapod
+                # threshold is checked against (observations.admissible).
+                int(pod.search(confirmed).group(1).replace(",", "")),
             ))
         # Orcas are rare enough here that the operator naming them on a dated
         # trip is itself the evidence (birds.marine_presence). Same negation
@@ -76,47 +79,61 @@ def report_opportunities(reports, now, home):
 
     A megapod, glowing surf, frazil ice or fresh snow has no dependable date,
     so there is no window for the report to merge into; the report *is* the
-    occurrence. Each still needs the report's own observation date, a known
-    place, and freshness inside the phenomenon's evidence window.
+    occurrence. It must pass the same requirements as every other ingress
+    path (observations.admissible): positive, dated, fresh, not in the
+    future, and the phenomenon's minimum count written against its subject.
+
+    Where the report names a specific place with known coordinates (Pismo,
+    Avila), the occurrence is there - drive, darkness and safety are computed
+    at that point. Only a report that names a region stays at the region's
+    centre, and says so.
     """
     from .curation import REPORT_ACTIVATED, definition
+    from .observations import admissible, report_phenomena
 
     result = []
     for report in reports:
-        key_name = report.phenomenon_key
-        if key_name not in REPORT_ACTIVATED or key_name in ("moonbow", "horsetail_firefall") or report.observed_at is None:
-            continue
-        spec = definition(key_name)
-        age = now - report.observed_at
-        if not timedelta(0) <= age <= timedelta(days=spec.evidence_days if spec else 2):
-            continue
-        zone = ZONES_BY_ID.get(report.zone_id)
-        if zone is None:
-            continue
-        start, end = report.observed_at, report.observed_at + timedelta(hours=36)
-        extra = {"verification": "corroborated", "evidence_state": "behavior_confirmed", "special": True,
-                 "observed_at": report.observed_at.isoformat(), "source_name": report.source_name,
-                 "behavior_evidence": [{"source": report.source_name, "observed_at": report.observed_at.isoformat(),
-                                        "text": report.snippet[:220], "url": report.url or None}],
-                 "confidence_note": "Confirms a past observation in this region, not that it continues. Check the source before driving.",
-                 "evidence_note": "The source explicitly names the observation date and phenomenon. Location is regional."}
-        if key_name == "bioluminescent_surf":
-            # Glowing surf is a night subject: the next full darkness, and a
-            # Moon dim enough not to drown it.
-            lat, lon = math.radians(zone["latitude"]), math.radians(zone["longitude"])
-            dark = astronomy.dark_window(max(now, report.observed_at), lat, lon)
-            if dark is not None:
-                start, end = dark.start, dark.end
-                extra["moon_illumination"] = round(astronomy.moon_illumination(dark.start)[0], 3)
-        key = f"report-{key_name}-{report.zone_id}-{report.observed_at.date()}"
-        result.append(Opportunity(
-            key=key, roll=key, title=spec.name if spec else report.headline, category=spec.category if spec else report.category,
-            zone_id=report.zone_id, zone_name=zone["name"], phenomenon=key_name,
-            start=start, end=end, score=85, detail=report.snippet, source_url=report.url,
-            drive_hours=estimate_drive_hours(zone["latitude"], zone["longitude"], home),
-            latitude=zone["latitude"], longitude=zone["longitude"], drive_source="estimate",
-            extra=extra,
-        ))
+        for key_name in report_phenomena(report):
+            if key_name not in REPORT_ACTIVATED or key_name in ("moonbow", "horsetail_firefall"):
+                continue
+            spec = definition(key_name)
+            if spec is None or not admissible(report, spec, now)[0]:
+                continue
+            zone = ZONES_BY_ID.get(report.zone_id)
+            if zone is None:
+                continue
+            exact = report.latitude is not None and report.longitude is not None
+            latitude, longitude = (report.latitude, report.longitude) if exact else (zone["latitude"], zone["longitude"])
+            place = (getattr(report, "place", "") or "").title() if exact else ""
+            start, end = report.observed_at, report.observed_at + timedelta(hours=36)
+            extra = {"verification": "corroborated", "evidence_state": "behavior_confirmed", "special": True,
+                     "observed_at": report.observed_at.isoformat(), "source_name": report.source_name,
+                     "behavior_evidence": [{"source": report.source_name, "observed_at": report.observed_at.isoformat(),
+                                            "text": report.snippet[:220], "url": report.url or None,
+                                            "count": report.count}],
+                     "count": report.count,
+                     "location_precision": "reported place" if exact else "region",
+                     "confidence_note": "Confirms a past observation here, not that it continues. Check the source before driving.",
+                     "evidence_note": ("The source explicitly names the observation date, phenomenon and place."
+                                       if exact else "The source explicitly names the observation date and phenomenon. Location is regional.")}
+            if key_name == "bioluminescent_surf":
+                # Glowing surf is a night subject: the next full darkness at
+                # the reported beach, and a Moon dim enough not to drown it.
+                dark = astronomy.dark_window(max(now, report.observed_at), math.radians(latitude), math.radians(longitude))
+                if dark is not None:
+                    start, end = dark.start, dark.end
+                    extra["moon_illumination"] = round(astronomy.moon_illumination(dark.start)[0], 3)
+            where = f"{place} ({zone['name']})" if place else f"{zone['name']} (region)"
+            key = f"report-{key_name}-{report.zone_id}-{report.observed_at.date()}" + (
+                f"-{round(latitude, 2)}-{round(longitude, 2)}" if exact else "")
+            result.append(Opportunity(
+                key=key, roll=key, title=spec.name, category=spec.category,
+                zone_id=report.zone_id, zone_name=where, phenomenon=key_name,
+                start=start, end=end, score=85, detail=report.snippet, source_url=report.url,
+                drive_hours=estimate_drive_hours(latitude, longitude, home),
+                latitude=latitude, longitude=longitude, drive_source="estimate",
+                extra=extra,
+            ))
     return result
 
 

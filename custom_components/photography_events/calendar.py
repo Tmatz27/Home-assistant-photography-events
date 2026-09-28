@@ -9,6 +9,7 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
+from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN
 from .coordinator import PhotographyEventsCoordinator
@@ -65,20 +66,29 @@ class PhotographyCalendar(CoordinatorEntity, CalendarEntity):
         if gear:
             description = f"{description}\n\nGear: {gear}"
 
-        if item.planning_only or (item.end and (item.end - item.start) >= timedelta(hours=24)):
-            end = (item.end or item.start).date() + timedelta(days=1)
+        if item.time_precision == "day":
+            # Date-valued windows: their dates are the dates they were built from.
+            first, last = item.start.date(), (item.end or item.start).date()
+        elif item.end and (item.end - item.start) >= timedelta(hours=24):
+            # A multi-day span of real instants: the *local* days it covers.
+            first, last = dt_util.as_local(item.start).date(), dt_util.as_local(item.end).date()
+        else:
+            first = None
+        if first is not None:
             return CalendarEvent(
                 summary=summary,
                 description=description,
                 location=item.zone_name,
-                start=item.start.date(),
+                start=first,
                 # Calendars treat an all-day end as exclusive, so the last day
                 # of a window needs the day after it to actually be included.
-                end=end,
+                end=last + timedelta(days=1),
             )
+        # A real shooting interval keeps its clock times, planning row or not
+        # (a CDFW grunion run, a moonbow sky candidate).
 
         return CalendarEvent(
-            summary=f"{summary} - {item.score}/100",
+            summary=f"{summary} - {item.score}/100" if not item.planning_only else summary,
             description=description,
             location=item.zone_name,
             start=item.start,

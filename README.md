@@ -1,980 +1,270 @@
 # Photography Events
 
-A regret-prevention system for one photographer based at Vandenberg SFB. It
-watches a lot of California behind the scenes and asks one question on the main
-card: *is something happening within roughly six hours that is unusual,
-photographically exceptional, reachable, likely enough, and safe - so that I
-would regret missing it?* "Nothing worth changing plans for this week." is a
-successful answer. [Release notes](RELEASE_NOTES.md) · [Discovery audit](DISCOVERY_AUDIT.md)
+Photography Events is a Home Assistant integration and Lovelace card that acts as a regret-prevention system for photographers:
 
-## Five kinds of output, kept apart (0.16.0)
+> Is something happening soon enough, close enough, unusual enough, and well-supported enough that I would regret missing it?
 
-| View | What it holds | How something gets there |
-| --- | --- | --- |
-| **Can't Miss** (`mode: action_hero`; what a card added from the picker starts on when the integration is installed) | Usually 0-5 rows for the next seven days | Passes a hard gate: a curated phenomenon, its trigger policy and place-specific conditions satisfied, inside the drive limit, significance at or above the floor, its *required* data sources current, NWS safety **checked** at the place with no blocking warning, and - for Firefall, Yosemite moonbows and Yosemite/Sequoia snow - park access **checked** with no closure. Then ranked. A row that passes everything except a check that could not be made (safety, marine conditions, park access) is listed as **held**, never as clear. When a source needed to assess the enabled categories is down, an empty list reads "Can't Miss assessment incomplete: required data unavailable.", never a quiet week. |
-| **Planner** (`mode: calendar_outlook`) | Everything with a date: seasons, parks, full Moons (with their full rise/set/twilight geometry), published King Tide dates, NOAA minus tides, watch windows, the Can't Miss rows too | Classified, never deleted. Long trips are listed beyond the drive limit here. |
-| **Bird Spectacle** (`mode: birds`) | Iconic birds doing something: condors together, eagles fishing, the crane fly-in | A bird-spectacle phenomenon whose evidence policy is met, inside the drive limit and the next seven days - classified from the same rows as Can't Miss, so the Merced crane fly-in appears in both. |
-| **Bird Encounter / Bird Chase** (`mode: birds`) | Repeated iconic-bird reports at a public site; notable individual birds | Encounter: repeated reports. Chase: eBird notable, ranked by how findable it still is (a ranking, not a probability). Both inside the drive limit; never on Can't Miss. |
-| **Background signals** | One collapsed section on the Can't Miss card | Sightings, undated reports, forecasts, presence without behaviour. A sighting is a signal, not an event. |
+It is not an encyclopedia of every event or sighting. It keeps a short list of opportunities worth changing plans for, with a separate year planner and bird view for exploring further.
 
-The data flow is **signal → phenomenon → opportunity**. Signals (`signals.py`)
-are raw evidence. Phenomena (`curation.py`) are curated experiences with a
-significance, a trigger policy and a written reason. Opportunities are
-phenomena at a time and place; `eligibility.py` gives each separate
-significance, confidence, urgency, encounter, access and condition-quality
-values, then the gate decides. One score no longer pretends to be all of them.
+**0.16.0 is the first stable snapshot of this architecture.** It is intentionally published before broader installed-Home-Assistant and live-provider iteration, so real-world testing has a fixed version to work against. Automated validation and code review do not establish that every live source works in every installation.
 
-### Gear: your bag, what is worth adding, what is required
+The curated places and wildlife coverage focus on California, particularly trips from the Central Coast. Changing your home location changes the origin for calculations; it does not turn the catalog into worldwide coverage.
 
-*Take / optional / skip* only ever name the owned kit - Sony A7R IV, FE 16-35mm
-GM, FE 70-200mm GM II, FE 200-600mm G, the 2x teleconverter, DJI Osmo Pocket 3
-and DJI Mini 3. The 2x is optional at most (it costs two stops and autofocus;
-an APS-C crop of the 61 MP file often does as well). Two separate lists sit
-beside them and are never mixed in:
+[Release notes](RELEASE_NOTES.md) · [Source validation and evidence limits](SOURCE_VALIDATION.md) · [Tracked phenomena](TRACKING.md)
 
-- **Worth adding or renting** - at most two unowned items, only where they make
-  a material difference, each with its reason: the FE 1.4x teleconverter for
-  eagles and condors; a 14mm f/1.8 GM or 20mm f/1.8 G for Milky Way, meteors,
-  aurora, moonbows and glowing surf; a dew heater; a rain cover for storm surf.
-- **Required** - safety equipment. For any solar eclipse: a special-purpose
-  solar filter made for camera lenses or telescopes, secured over the **front**
-  of the lens, *and* ISO 12312-2 eclipse glasses or a handheld solar viewer for
-  your eyes. They are different products: ISO 12312-2 is the eye-viewer
-  standard, and glasses or a viewer are never used as a camera filter. Only
-  totality, from inside the path, is ever unfiltered, and the filter goes back
-  on before totality ends; ND filters, polarisers and stacked photographic
-  filters are never safe. Also a red headlamp on a night beach or at the falls.
+## Signal → Phenomenon → Opportunity
 
-The magnetic filter set you own is not declared yet, so nothing recommends a
-filter as owned. The drone verdict says **Prohibited** in national parks,
-national wildlife refuges and under Vandenberg's restricted airspace, **not
-appropriate** over wildlife, and **not safe** above its published 10.7 m/s wind
-rating.
-
-### Sunsets are a home feature
-
-Only tonight's sunset and tomorrow's sunrise at home are assessed. With
-optional SunsetWx client credentials, SunsetWx's forecast is used while the
-last fetch succeeded within six hours *and* each prediction's own model update
-time is within twelve hours - a fresh download of an old model run does not
-count - and only its top tier ("Great") reaches Can't Miss. A current SunsetWx
-forecast can decide even when the local forecast is missing. When SunsetWx
-fails or is not current, the built-in model decides on its own terms (a
-modelled light path - both upstream cloud layers present and valid - and the
-week's standout) and the row says the local model decided. Inputs are resolved
-before scoring: failed or stale air quality is not used at all, so it can
-never lower a sunset below the threshold. A provider percentage is its
-forecast score, never presented as a probability.
-
-### Safety: checked, caution, unsafe, unknown
-
-Every row is checked against NWS active alerts for its place and its exposure
-(home, beach, coastal overlook, boat, mountain, desert). Severe thunderstorm,
-flash flood, winter storm, fire, tsunami, extreme heat and similar warnings
-make it **unsafe**; advisories and watches, and a Red Flag Warning (fire
-*weather*, not a fire), are **caution** with the instruction they imply. A High
-Surf Warning blocks a night on the beach and turns an exceptional-swell row into
-"high, set-back ground only - never beaches, rocks or jetties". If the alert
-feed fails or is more than three hours old, or the place is not matched to an
-NWS county, safety is **unknown**: rows that need travel are held; the planner
-still lists them. A response with unreadable alert features is an incomplete
-check: a readable warning still blocks, but nothing is called safe from it.
-
-Land safety is not marine safety. Marine-zone (coastal waters) warnings are not
-connected yet, so every boat phenomenon (orcas, blue whales, megapods, dolphin
-calves) has marine safety **unknown**: it is never shown as safe and is held on
-Can't Miss, while a matching land or marine warning still blocks outright.
-
-### Park access
-
-Firefall, Yosemite moonbows and fresh snow in Yosemite or Sequoia/Kings Canyon
-depend on park access. NPS alerts are fetched for them whenever Rare Phenomena
-is enabled (not only when the Parks view is), read to the response's own
-`total` across pages, and only a current (under 12 hours), complete read with
-no closure naming the place counts as open. Without an NPS key, or after a
-failed, stale or incomplete read, access is unknown and the row is held.
-
-### Tides: published dates versus predictions
-
-King Tide rows appear for every published California Coastal Commission window
-of the season as soon as it is published - as planning dates. Exact times,
-heights, daylight/twilight and buoy swell are attached only once NOAA
-predictions cover those days (the integration fetches about 45 days ahead).
-Minus tides are operational NOAA predictions only, so they appear at most about
-45 days out; nothing here predicts a year of low tides.
-
-
-![Photography Events](banner.svg)
-
-> **v0.3 splits this into two halves.** A Python integration does the polling,
-> scoring, and notifying; the Lovelace card visualises it. Both ship in this
-> one HACS install. See [Architecture](#architecture) and, if you installed
-> v0.2, [Upgrading from the card-only version](#upgrading-from-the-card-only-version).
-
-## Architecture
-
-A Lovelace card only runs while someone is looking at a dashboard, cannot hold
-API keys, and is blocked by the browser from calling third-party APIs. None of
-that works for "tell me to get in the car." So the work is split:
-
-| | Runs | Does |
-| --- | --- | --- |
-| **`photography_events` integration** | Home Assistant, in the background | Polls Open-Meteo, eBird, iNaturalist and the wildflower hotlines, computes ephemeris, scores opportunities, gates on real drive time, publishes entities |
-| **`photography-events-card`** | The browser | Renders the timeline, alerts, and planning view |
-
-Because the integration publishes real entities
-(`binary_sensor.photography_events_action_opportunity`,
-`sensor.photography_events_best_sky_score`,
-`calendar.photography_events_planning_calendar`), ordinary Home Assistant
-automations can push to your phone whether or not any dashboard is open - which
-is the whole point.
-
-### What the backend needs from you
-
-- **Nothing, to start.** Open-Meteo, iNaturalist and the three hotline pages
-  need no key and no account, so sunset scoring, meteor showers, Milky Way
-  windows, whale sightings and bloom reports all work the moment it is
-  installed.
-- **An eBird API key** ([free, instant](https://ebird.org/api/keygen)) for
-  rare-bird alerts. Without it the bird category simply produces nothing.
-- **A Google Maps API key** (optional) for real, traffic-aware drive times.
-  Without one, drive times come from the per-zone baselines and, for sightings
-  that are not at a zone, from a distance estimate calibrated against those
-  baselines. See [Drive times](#drive-times).
-
-### What is allowed to wake you up
-
-Every entry declares what its dates rest on, and that decides what it can do.
-The rule exists to prevent one specific failure: booking a trip around a
-confident date that nothing has actually confirmed.
-
-| Basis | What it means | What it can do |
-| --- | --- | --- |
-| **Computed** | Geometry - darkness, moon phase, radiant altitude | Alerts on its merits, verifiable to the minute |
-| **Calendar-reliable** | A documented annual cycle published by the site's managers (elephant seals, Carpinteria harbor seals, Merced cranes, tule elk rut) | Inside its sourced core window only; the elk rut also needs a recent report near the site |
-| **Live** | A search season. The dates say when to start watching | Only once its trigger policy is met. Species presence corroborates a watch; it never proves behaviour |
-| **Static** | A calendar estimate with no live source | Never by date or presence; only a dated, located report of the behaviour itself |
-
-So a humpback window reads *"watch window - nothing reported yet, so this is
-where to look, not when to go"* until something is seen, and then becomes
-*"confirmed: 3 reports within 120 km, most recent 2 days ago"*.
-
-**No API verifies peak windows.** Nobody publishes "gray whale southbound peak =
-5-25 January" as machine-readable data; it does not exist. What can be verified
-is whether something is being seen right now, what the tide is doing, and
-whether the road in is open - and for anything biological those are the better
-questions anyway.
-
-### Where the ground truth comes from
-
-Every entry names the people who actually survey it, and the card links them
-under **Check before you book**:
-
-| Source | What it gives |
+| Stage | Meaning |
 | --- | --- |
-| [Whale Safe](https://whalesafe.com/) | Daily whale-presence rating for the Santa Barbara Channel and San Francisco, from hydrophones, trained observers and a habitat model |
-| [NOAA Fisheries](https://www.fisheries.noaa.gov/west-coast/science-data/gray-whale-population-abundance) | Gray whale abundance from Granite Canyon and mother-calf counts from Piedras Blancas |
-| [Whale Alert](https://www.fisheries.noaa.gov/resource/tool-app/whale-alert) · [Pacific Whale Foundation](https://pacificwhale.org/what-we-do/research/learn-about-marine-life/whale-dolphin-tracker-live-sightins-map/) | Crowdsourced sightings from operators and citizen scientists |
-| [CDFW](https://wildlife.ca.gov/Conservation/Mammals/Black-Bear) · [Bear Tracker](https://keepbearswild.org/bear-tracker/) | Black bear denning and emergence timing, and live sightings |
-| [Western Monarch Count](https://westernmonarchcount.org/) · [eBird](https://ebird.org/) | Roost counts and week-by-week arrival charts |
+| **Signal** | Raw evidence: a sighting, field report, forecast, tide prediction, email or operator report. |
+| **Phenomenon** | A curated photographic experience with a trigger policy: feeding behavior, a mass gathering, a bloom, a distinctive sky or a computed astronomical event. |
+| **Opportunity** | That phenomenon at a time and place, assessed for evidence, conditions, access, safety and drive time. |
 
-**Whale Safe is linked rather than read.** Its public API supplies ship and
-compliance data, not whale presence. Presence data requires an agreement with
-the Benioff Ocean Science Lab and a verified response contract before integration.
-Vessel speed-reduction seasons are not evidence of whales being present.
+A sighting is evidence. A season is context. A photographic phenomenon is an event. Only a sufficiently assessed opportunity becomes **Can't Miss**. Species presence alone cannot confirm feeding, calving or another named behavior, and a high score cannot bypass the eligibility checks.
 
-### Seasons versus peak windows
+## Views
 
-Every natural event carries two different facts, and the integration keeps them
-apart:
-
-| | What it is | What it can do |
-| --- | --- | --- |
-| **Background season** | "Gray whales, December to May" | Appears in the year view. Never scores, never alerts |
-| **Peak window** | "Southbound adults past the points, 5-25 January" | Scores, and can raise a drop-everything alert as it opens |
-
-Beyond sixty days you get the season, because that is the most honest thing
-anyone can say - weather models do not reach that far and animals do not read
-calendars. Inside sixty days it switches to the concrete window and carries the
-specific overlooks, real focal lengths, and the behaviour or tide that decides
-whether you come home with the shot.
-
-An alert fires as a window *opens*, not on every day it is open: a five-week rut
-peak announces itself once rather than thirty-five times.
-
-### Live data sources
-
-| Source | Key | Polled | Feeds |
-| --- | --- | --- | --- |
-| [Open-Meteo](https://open-meteo.com/) | none | hourly | Layered-cloud sunset scoring, astro cloud checks |
-| [eBird API v2](https://documenter.getpostman.com/view/664302/S1ENwy59) | free | hourly | Locally rare birds across four counties |
-| [iNaturalist API v1](https://api.inaturalist.org/v1/docs/) | none | hourly | Orca, blue, fin and humpback whale reports |
-| Theodore Payne Wildflower Hotline | none | daily | Bloom reports |
-| DesertUSA Wildflower Reports | none | daily | Desert bloom reports |
-| California Fall Color | none | daily | Autumn colour reports |
-| [Google Routes / Distance Matrix](https://developers.google.com/maps/documentation/routes) | yours | on demand, ≤2×/hour | Traffic-aware drive times |
-| [NOAA CO-OPS](https://api.tidesandcurrents.noaa.gov/api/prod/) | none | 12-hourly | Tide predictions - sets the grunion run hour |
-| [NPS alerts](https://www.nps.gov/subjects/developer/) | free | 6-hourly | Park closures, so a planned trip is checked against reality |
-
-Every service carries its own minimum interval, independent of the coordinator
-cycle, so raising the update frequency cannot make any one of them be polled
-harder than it allows. On a restart the sources are fetched in staggered groups
-rather than all at once, and the daily scrapers are deferred to a background
-task so setup never waits on them. A service that fails keeps serving its last
-good payload and retries on a short backoff.
-
-### Drive times
-
-Two paths, and you can use either:
-
-- **Default, no key.** The twelve zones carry measured baseline drive times.
-  Sightings do not land on zones - a vagrant turns up at whatever lagoon it
-  likes - so those are estimated from straight-line distance divided by an
-  effective road speed *calibrated against the zone table itself*. Across the
-  twelve known zones that estimator lands within about half an hour, worst case
-  an hour and a half (Lake Tahoe). Displayed times are rounded coarsely so they
-  cannot be mistaken for routed ones.
-- **With a Google Maps API key.** Routed times replace both. Only opportunities
-  inside the 48-hour action window are routed, deduplicated by location, so a
-  dozen events at one zone cost one billable element. Each route is cached with
-  its origin, routing mode and fetch time: "in current traffic" only while it is
-  under an hour old, re-requested after three hours, labelled "routed N ago; not
-  current traffic" up to seven days, and replaced by the labelled estimate after
-  that. Every row carries `drive_basis` (`current`, `recent`, `estimate`).
-
-Google split this API in half mid-life: **Distance Matrix cannot be enabled on
-any Google Cloud project created after 1 March 2025**, and the current
-replacement is the Routes API. Which one your key can call is a property of
-your project, not of this integration, so both are implemented. Leave the
-routing mode on `auto` and it tries Routes first, falls back to Distance
-Matrix, and remembers which one answered.
-
-A Home Assistant Lovelace card that looks out from your location (or an
-overridden one) for photography-worthy sky and nature events: golden and blue
-hour, moon phases, planets and their conjunctions, meteor shower peaks, solar
-and lunar eclipses, Milky Way windows, comets you add as they are announced,
-and a coarse bird migration season heuristic.
-
-Its main job is to tell an ordinary sunset apart from the rare one where the
-whole sky catches fire, and to say so loudly enough to get you out of the
-house - see [Scoring the sky](#scoring-the-sky).
-
-> The banner above is an illustration of the card's layout, not a screenshot.
-
-It shows a near-term **24/48/72 hour** snapshot plus a longer **7-30 day**
-outlook (21 days by default) in one scrollable timeline, grouped by day.
-
-## What this card computes
-
-- **Golden hour, blue hour, sunrise, and sunset** - computed directly, not read
-  from `sun.sun`, so twilight and golden/blue hour boundaries are all available,
-  each scored for how likely the sky is to actually light up (see
-  [Scoring the sky](#scoring-the-sky))
-- **Moon phase, illumination %, moonrise/moonset** - with New Moon ("dark sky,
-  good for stars") and Full Moon ("moonrise-over-the-landscape", flagged as a
-  Supermoon when notably close) called out specifically
-- **Planets** - Mercury, Venus, Mars, Jupiter and Saturn, surfacing oppositions,
-  greatest elongations, planet-planet and Moon-planet conjunctions, and a
-  nightly "what's up" summary. Positions are computed, not tabulated
-- **Meteor shower peaks** - the eleven major annual showers, scored by radiant
-  altitude and moonlight interference on the peak night
-- **Solar and lunar eclipses** - a curated table of upcoming eclipses (see
-  [Data accuracy](#data-accuracy-and-limitations) below) with a local-visibility
-  check computed from real moon/sun geometry for your location
-- **Milky Way core season** - runs of dark, moonless nights when the galactic
-  core clears a usable altitude, grouped into a window naming the best night
-- **Comets and anything else announced rather than predicted** - via
-  [`custom_events`](#comets-and-other-one-off-events)
-- **Bird migration season** - a general spring/fall seasonal window for your
-  hemisphere (see the caveat below - this is not live migration data)
-
-Sky-quality scoring needs a `weather_entity` with a cloud-coverage forecast
-(see Configuration). Without one, the card still shows every event, just
-without a score.
-
-## Scoring the sky
-
-Most sunsets are pleasant. A few times a year the cloud is exactly right and the
-whole sky goes up in colour. The point of this is to tell those apart rather
-than reporting "sunset: 7:14pm" every night.
-
-### Where the light actually comes from
-
-The obvious way to score a sunset - look at the cloud above your head - is
-wrong, and wrong in a way that fails on this coast's most common evening. At
-sunset the beam that reddens a cloud at height `h` above you grazes the surface
-roughly `sqrt(2Rh)` away toward the sun: about 140 km for a low deck, 230 km for
-mid-level cloud, over 300 km for cirrus. So a sunset has **two separate
-requirements in two separate places**:
-
-| | Where | What it needs |
-| --- | --- | --- |
-| **The canvas** | Overhead | Cloud to catch the light. High cirrus is best; mid-level adds depth; even a solid low deck lights up from underneath. No cloud at all is a plain evening, not a photograph. |
-| **The light path** | ~200 km toward the sun | A gap. This is a **gate**, not a bonus - if it is shut, nothing above you matters however beautiful. |
-
-Conflating the two is what makes a sunset model unreliable. The textbook local
-failure is 55% cirrus overhead, clear sky above the tripod, and a solid marine
-layer sitting 200 km out over the Pacific. An overhead-only model scores that in
-the eighties. Nothing happens, because the light was absorbed far to the west
-where nobody was looking. Scoring the light path separately drops the same
-evening to about 10.
-
-So the integration fetches **three points per zone** in a single request - the
-zone, the point 200 km toward sunset, and the point 200 km toward sunrise, each
-on the sun's own azimuth at the event, which swings through about sixty degrees
-across the year. When the upstream forecast is unavailable the score falls back
-to the local deck, is capped at 88, and says so on the card rather than passing
-a guess off as a measurement.
-
-### What it measures
-
-All from Open-Meteo, free and keyless:
-
-| Input | Role |
+| View | What it is for |
 | --- | --- |
-| `cloud_cover_high` / `_mid` / `_low`, at the zone | The canvas |
-| `cloud_cover_low` / `_mid`, at the upstream probes | The light path gate |
-| `aerosol_optical_depth`, `dust` | Saturation. Aerosol scatters the short wavelengths that give a sunset its range and leaves a flat orange smear - dirty air makes sunsets worse, not better, contrary to the folklore |
-| `visibility` | Near-field haze |
-| `relative_humidity_2m` | Weighted lowest on purpose: marine air here is humid on the clearest evenings of the year |
-| `precipitation_probability` | Rain overhead ends it; rain *earlier* that clears is the best setup there is, and is the only route to a score in the high nineties |
+| **Can't Miss** | The next seven days, usually 0–5 displayed rows. Eligibility is checked before ranking. A fully assessed empty week says **“Nothing worth changing plans for this week.”** Missing required data instead shows **assessment incomplete**, with reasons and held opportunities where available. |
+| **Year Planner** | Long-range seasons, astronomy, tides, park windows and planning-only candidates. Broad seasons remain broad; available shooting windows retain their times and alternatives. |
+| **Birds** | Separate Bird Spectacle, Bird Encounter and Bird Chase lists. |
+| **Background signals** | Collapsed evidence and watch material beneath Can't Miss. A raw sighting is not promoted just because something was seen. |
 
-### Alerting on "just right" rather than "good"
-
-A fixed threshold answers "is this a good sunset". The question you are actually
-asking is "is this the one to go out for", and that is comparative: an 85 is
-worth rearranging an evening for when the rest of the week is in the fifties,
-and worth ignoring when tomorrow is a 96.
-
-So every candidate in the forecast window is scored before any is filtered, and
-a sky is flagged a **standout** when it is at least 82 *and* within three points
-of the best in that window. Only a standout with a modelled light path can turn
-on the drop-everything sensor. A good sunset happens most weeks; being told
-about every one is how a notification gets muted, and a muted notification is
-worth nothing on the evening that matters.
-
-### The card on its own
-
-Used standalone against a Home Assistant weather entity - no integration - the
-card only has a single aggregate cloud percentage to work with, because that is
-all such entities expose. It infers structure from how much that number moves
-across the hours either side of the event: the broken sweet spot around 25-65%
-scores best, a large spread is a bonus, a flat unchanging deck is a penalty. It
-is a decent proxy and it is not the model above. With the integration installed,
-the layered and upstream version is what you get.
-
-## Requirements
-
-1. Home Assistant 2024.11 or newer
-2. HACS
-3. No API keys are required to start. An eBird key unlocks rare-bird alerts and
-   a Google Maps key unlocks traffic-aware drive times; both are optional.
-
-The integration installs one Python dependency, `beautifulsoup4`, used to parse
-the three hotline pages. The card itself still stores no credentials, and its
-only network request is to your own Home Assistant instance.
+Follow, Skip and **Seen it · Got the shot** apply to an occurrence and persist across dashboards and restarts. Skip and Seen suppress that occurrence; a future year's occurrence remains separate. Calendar views retain full date ranges, and the card distinguishes stale data from an empty result.
 
 ## Install with HACS
 
-1. Open **HACS**
-2. Open the three-dot menu and choose **Custom repositories**
-3. Add `https://github.com/Tmatz27/Home-assistant-photography-events`
-4. Choose the **Integration** category
-5. Install **Photography Events**, then restart Home Assistant
-6. Go to **Settings → Devices & Services → Add Integration** and pick
-   **Photography Events**
+This repository is **one HACS Integration install**, including the card. Its `hacs.json` declares **Home Assistant 2024.11.0 or newer**; your installed HACS version may have its own requirements.
 
-The card is bundled inside the integration and registers itself as a dashboard
-resource on setup, so there is no second install and no manual resource entry.
+1. In HACS, open **Custom repositories** and add `https://github.com/Tmatz27/Home-assistant-photography-events` with type **Integration**.
+2. Find **Photography Events** and install version **0.16.0**.
+3. Restart Home Assistant.
+4. Open **Settings → Devices & services → Add integration**.
+5. Search for **Photography Events**.
+6. Complete setup. API credentials are optional for loading the integration; their absence affects the evidence and checks described below.
+7. Edit a dashboard, add a card and choose **Photography Events Card**.
 
-### "already_in_progress" when adding the integration
+See the [HACS custom-repository instructions](https://www.hacs.dev/docs/faq/custom_repositories/) for the repository dialog.
 
-Versions before 0.5.1 shipped a config flow whose schema Home Assistant could
-not render. The attempt failed but stayed registered, so every retry aborted
-with `already_in_progress`.
+The integration automatically serves and registers `/photography_events/photography-events-card.js`. **No separate frontend HACS repository is needed.** If automatic registration fails, add that URL as a **JavaScript module** under the dashboard's resources, then refresh the browser. Manual registration is a fallback, not a normal installation step.
 
-Update to 0.5.1 or later, then **restart Home Assistant once**. In-progress
-flows are held in memory, so the stale one clears only on a restart - after
-which **Settings → Devices & services → Add integration → Photography Events**
-works normally.
-
-### Upgrading from the card-only version
-
-v0.2 was a Dashboard-category repository; v0.3 is an Integration. HACS pins one
-category per repository, so the old entry has to be removed and re-added:
-
-1. In HACS, uninstall the old **Photography Events Card**
-2. Remove `/hacsfiles/.../photography-events-card.js` from
-   **Settings → Dashboards → ⋮ → Resources** if it is still listed
-3. Re-add this repository as an **Integration** and follow the steps above
-
-Existing `custom:photography-events-card` dashboard cards keep working - the
-card is the same element, just served from the integration now.
+When upgrading an older installation, restart Home Assistant and refresh the dashboard. Saved category selections are preserved exactly. If you installed before Waves existed, enable `waves` once in the integration's options if you want it.
 
 ## Configuration
 
-Set up in the UI. Everything can be changed later from the integration's
-**Configure** button:
+Setup and integration options expose the same fields. Home uses Home Assistant's configured latitude/longitude; if that location is unavailable, the packaged fallback is **Vandenberg SFB (34.7420, −120.5724)**.
 
-| Option | Default | Description |
-| --- | --- | --- |
-| Enabled categories | all | Astronomy, sunsets, marine, mammals, birds, blooms, foliage |
-| Max drive hours | `6.0` | The Can't Miss drive limit. The planner still lists longer trips |
-| Sunset score threshold | `85` | Local sky-model score before a home sunset is considered |
-| Alert score threshold | `75` | Legacy: only applies to rows the gate never assessed |
-| eBird API key | *(none)* | Optional; Bird Chase and iconic-bird counts |
-| SunsetWx client ID / secret | *(none)* | Optional; purpose-built sunset quality forecast |
+| Field | Default / behavior |
+| --- | --- |
+| Enabled categories | All categories for a new setup. An explicit empty list means **none**. |
+| Maximum drive hours | **6 hours**; the general drive budget. |
+| Sunset drive hours | **1 hour**; can tighten, never expand, the general limit. Current sunset forecasting is at home. |
+| Sunset score threshold | **85**; filters built-in sky candidates. Preferred-provider quality and the eligibility gate also matter. |
+| Alert score threshold | **75**; retained for compatibility with unassessed score-based candidates. In the current assessed pipeline, eligibility decides the action flag; this slider cannot override it. |
+| eBird API key | Optional; enables eBird evidence. |
+| Google API key | Optional; enables routed drive times. |
+| NPS API key | Optional at setup; needed to affirmatively clear dependent park access. |
+| SunsetWx client ID | Optional provider credential, used with the client secret. |
+| SunsetWx client secret | Optional provider credential, used with the client ID. |
+| Routing mode | `auto` by default: try Google Routes, then legacy Distance Matrix. Other choices: `routes`, `distance_matrix`, `off`. |
+| Field reports enabled | **On**; enables the public field-report sources. |
 
-### Target zones
+Available categories: `astronomy`, `sunset`, `marine`, `mammals`, `birds`, `blooms`, `foliage`, `rare_phenomena`, `parks`, `waves`.
 
-Twelve fixed zones are evaluated on every update, each with a baseline drive
-time and an approximate Bortle dark-sky class:
+### Optional credentials and drive estimates
 
-| Zone | Drive | Bortle | Specialities |
-| --- | --- | --- | --- |
-| Piedras Blancas (San Simeon) | 1.5 h | 3 | Elephant seals, otters, coastal sunsets |
-| Channel Islands (Ventura) | 1.5 h | 4 | Pelagic whales, island endemics |
-| Carrizo Plain | 2.0 h | 2 | Super blooms, tule elk, pronghorn, dark skies |
-| Big Sur Coastline | 3.0 h | 3 | Fog inversions, gray whales, orcas |
-| Antelope Valley | 3.0 h | 4 | Poppy bloom, desert astronomy |
-| Pinnacles | 3.5 h | 3 | Condors, dark skies |
-| Santa Cruz Redwoods | 4.0 h | 5 | Old-growth redwoods, coastal fog |
-| Sequoia & Kings Canyon | 4.5 h | 2 | Sequoias, black bears |
-| Death Valley | 6.0 h | 1 | Bighorn rut, salt flats, the darkest skies in reach |
-| Yosemite Valley | 6.0 h | 3 | Granite, clearing storms, bears |
-| Eastern Sierra (Bishop/June) | 6.0 h | 2 | Aspen colour, alpine lakes, Sierra bighorn |
-| Lake Tahoe Basin | 6.0 h | 4 | Bear cubs, autumn colour |
+- **eBird:** needed for eBird-powered bird evidence and features. Missing or withheld observations do not prove that birds are absent.
+- **Google:** supplies routed travel times. Without it, the integration uses its calibrated distance/baseline estimates. The card identifies the basis and age of a route. An older route is not current traffic, and cannot alone keep an opportunity under the limit when the distance estimate disagrees.
+- **NPS:** required to affirmatively clear park access for phenomena that depend on it. Without a key, affected opportunities may be held with access unknown.
+- **SunsetWx:** an optional preferred sunset/sunrise forecast provider. The built-in local weather model remains the fallback.
 
-## Notifications
-
-`binary_sensor.photography_events_action_opportunity` is on only while an
-*eligible* Can't Miss occurrence (the same gate as the card; never a held row)
-starts within 48 hours and has not been skipped or marked seen. The
-`photography_events_opportunity` event qualifies rows first and then picks the
-best eligible viewpoint of each occurrence, so a higher-scoring ineligible
-viewpoint never hides an eligible one.
-
-The integration exposes everything an automation needs as attributes, so the
-automation itself stays short:
-
-```yaml
-automation:
-  - alias: "Photography: drop-everything alert"
-    trigger:
-      - platform: state
-        entity_id: binary_sensor.photography_events_action_opportunity
-        to: "on"
-    action:
-      - service: notify.mobile_app_your_phone
-        data:
-          title: >-
-            {{ state_attr('binary_sensor.photography_events_action_opportunity',
-                          'event_name') }}
-          message: >-
-            {{ state_attr('binary_sensor.photography_events_action_opportunity',
-                          'target_zone') }}
-            ({{ state_attr('binary_sensor.photography_events_action_opportunity',
-                           'drive_time') }} drive) ·
-            {{ state_attr('binary_sensor.photography_events_action_opportunity',
-                          'condition_summary') }}
-            Pack: {{ state_attr('binary_sensor.photography_events_action_opportunity',
-                                'gear_glass') }}
-```
-
-The flag follows the Can't Miss gate, not a score: it turns on only for an
-eligible Can't Miss occurrence in the next 48 hours (curated phenomenon, policy
-and conditions met, inside the drive limit, safety checked). The alert score
-still ranks planner rows that were never gated.
+None of these keys is required for the integration itself to load. Clearing a credential in options removes its effective value. A preferred or optional source failure does not automatically block a row; the outcome depends on which inputs that phenomenon requires.
 
 ## Add the card
 
-Use the dashboard visual editor and choose **Photography Events Card**, or add:
-
-```yaml
-type: custom:photography-events-card
-```
-
-### The card is not in the "Add card" list
-
-Work through these in order. Step 1 tells you which half of the problem you have.
-
-**1. Did the file load?** Open the browser console (F12 → Console) on a
-dashboard page and look for the version banner:
-
-```
-Photography Events Card v0.16.0
-```
-
-- **Banner present** → the card is registered. Skip to step 4.
-- **Banner missing** → the browser never ran the file. Continue with step 2.
-
-**2. Is the resource registered?** Go to **Settings → Dashboards → ⋮ (top
-right) → Resources**. You need an entry of type **JavaScript Module**:
-
-```
-/photography_events/photography-events-card.js
-```
-
-If it is missing, add it with **+ Add Resource** using exactly that URL and the
-**JavaScript Module** type. HACS adds this automatically only for
-storage-mode dashboards.
-
-**3. Running Lovelace in YAML mode?** HACS cannot register the resource for
-you. Add it to `configuration.yaml` and restart:
-
-```yaml
-lovelace:
-  mode: yaml
-  resources:
-    - url: /photography_events/photography-events-card.js
-      type: module
-```
-
-**4. Clear the frontend cache.** The dashboard caches resources aggressively:
-
-- Desktop: hard refresh with `Ctrl+Shift+R` (`Cmd+Shift+R` on macOS)
-- Mobile app: **Settings → Companion App → Debugging → Reset frontend cache**,
-  then fully close and reopen the app
-
-**5. Search rather than scroll.** In the card picker, type `Photography` in
-the search box. Custom cards are grouped near the bottom of the list, below
-every built-in card, so they are easy to miss when scrolling.
-
-If the console shows an error mentioning `photography-events-card` instead of
-the version banner, please open an issue with that message.
-
-## Card modes
-
-The card has four modes. All use the integration when available; timeline
-also offers a standalone browser calculator when the integration is absent.
-A card added from the picker starts on `action_hero` when the integration is
-installed; a YAML config without `mode` renders `calendar_outlook`.
-
-```yaml
-type: custom:photography-events-card
-mode: action_hero          # action_hero (Can't Miss) | calendar_outlook | birds | timeline
-```
-
-### `action_hero` — Can't Miss
-
-Reads `sensor.photography_events_can_t_miss` (auto-detected; override with
-`cant_miss_entity`). Each collapsed row answers what, where and how far, why
-now, when, the evidence status and the lens to take. Opening it shows evidence
-and sources, dates and timing, gear and technique, and access, safety and
-ethics. At most five rows show before a "Show more" control. An empty week
-says so only when every source needed to assess it answered; otherwise it says
-the assessment is incomplete and names the sources. Stale or missing data says
-*that* instead, never "quiet". Held rows name the check that could not be made. Everything
-still building sits in one collapsed "Watching N background signals" section.
+A new card from the picker starts on **Can't Miss** when the integration's entities are available. For compatibility, an older YAML card without `mode` renders the planner. Set the mode explicitly when choosing a view:
 
 ```yaml
 type: custom:photography-events-card
 mode: action_hero
 ```
 
-Against an older backend without the Can't miss sensor, the 0.15 seven-day
-view (and before that the legacy hero) is used.
-
-### `birds` — Spectacle, Encounter, Chase
+```yaml
+type: custom:photography-events-card
+mode: calendar_outlook
+```
 
 ```yaml
 type: custom:photography-events-card
 mode: birds
 ```
 
-Needs an eBird key in the integration for notable birds and iconic-species
-counts. Spectacles lead; Encounters and the Bird Chase list are collapsed.
+The card normally discovers its entities. If yours were renamed, select them in the editor or set `cant_miss_entity` for Can't Miss/Birds and `outlook_entity` for the planner.
 
-### `calendar_outlook` - the year ahead
+## Home Assistant entities
 
-A scrollable, month-grouped timeline of everything the backend knows about,
-out to 365 days: meteor showers, Milky Way windows, whale and rut seasons, bloom
-and colour reports, and the national parks calendar below.
+These are the default entity IDs; Home Assistant may retain a renamed ID or add a suffix if an ID is already in use.
 
-```yaml
-type: custom:photography-events-card
-mode: calendar_outlook
-title: Planning
-outlook_from_days: 0        # 0 keeps seasons that are already underway
-outlook_through_days: 365
-```
+| Entity | Purpose |
+| --- | --- |
+| `sensor.photography_events_next_opportunity` | The next listed opportunity and its time, place, score and source. |
+| `sensor.photography_events_best_sky_score` | The highest generated local sunrise/sunset score and its context. |
+| `sensor.photography_events_planning_outlook` | Planning count and the event payload used by the year planner. |
+| `sensor.photography_events_can_t_miss` | Eligible occurrence count, short-list rows, assessment coverage, held rows, watches, signals and bird views. |
+| `binary_sensor.photography_events_action_opportunity` | An eligible, unsuppressed opportunity in the nearer 48-hour action window. |
+| `calendar.photography_events_planning_calendar` | Planning events with day ranges or actual shooting times as appropriate. |
 
-Each category gets a chip on the card itself. Tapping one shows or hides that
-category immediately - the filters are card state and need no helper entities.
+The large planner and Can't Miss payload attributes are excluded from recorder history. They remain available to the card over Home Assistant's state connection. The backend continues calculating and updating entities even when no dashboard is open.
 
-Every row expands. Tapping one opens the peak window against its extended
-season, the recommended gear, the specific locations, the best time of day, and
-a plain-language account of why it scored what it did.
+## Services / actions
 
-### What the timeline suppresses
+### `photography_events.set_event_choice`
 
-Golden hour happens twice a day and the Moon reaches first quarter every month.
-Listing all of it buries the handful of things a year worth reorganising an
-evening around, so by default the timeline hides ordinary golden and blue hours
-(only a sunset scoring 85 or better gets a row), lunar quarters (only a New Moon
-or a Supermoon), nightly "planets are up" summaries (only oppositions and
-conjunctions closer than one degree), and eclipses that miss this location
-entirely. Set `hide_routine: false` to get them all back.
+Supply `event_id` from an existing occurrence and a `choice`:
 
-### `timeline` - integration planner or standalone fallback
-
-The original mode (no longer the default). It uses the integration planner when
-available. Without it, the standalone fallback computes sun, moon, planet and
-meteor geometry in the browser from your coordinates and makes no third-party
-requests. [What this card computes](#what-this-card-computes) describes that fallback.
-
-### Why the backend modes hold no logic
-
-A browser tab cannot keep an API key, cannot call eBird or Google past CORS, and
-only runs while a dashboard is open. Anything sourced from a live service has to
-arrive as entity state - so in these two modes the card draws what the
-integration worked out, and does no computing of its own. They are also
-push-driven for event updates, with a local minute timer to age saved data and
-show overdue information even when the backend stops sending updates.
-
-## National parks and monuments
-
-Ten California parks and monuments are in the planning calendar, each
-with its best and merely-good months, its distance and drive time from home, and
-its dog rules.
-
-The dog rules are there because they decide whether a trip happens at all: three
-of these ban dogs outright, and most of the rest allow them only on pavement.
-That is worth knowing before a five-hour drive rather than at the gate.
-
-The list is deliberately short. Monuments without a visitor centre or a real
-photographic draw were cut: a planning list you scroll past is worse than a
-shorter one you read.
-
-Parks behave differently from everything else in two ways, both deliberate:
-
-- **They are never a drop-everything alert.** A park is a trip you plan, not a
-  sky you chase, so park windows score below the alert threshold by
-  construction and never enter the 48-hour action window.
-- **The planner ignores the drive-time limit for them.** Half the list is a
-  long weekend rather than an evening. Can't Miss never lists a park season at
-  all; a spectacle inside a park (firefall, moonbow, condors) is its own
-  phenomenon with its own gate.
-
-Drive times and distances are the measured ones for the Vandenberg origin rather
-than anything computed. Coordinates are approximate main-area or visitor-centre
-positions: good enough to put a park on a map or hand to a router, not a
-trailhead. Edit the table at the top of
-`custom_components/photography_events/parks.py` to add your own.
-
-## Configuration
-
-Every setting is available in the visual editor.
+| Choice | Effect |
+| --- | --- |
+| `default` | Clear the saved preference. |
+| `follow` | Mark the occurrence to follow. |
+| `skip` | Suppress the occurrence because you are not going. |
+| `seen` | Suppress it because you already got the shot. |
 
 ```yaml
-type: custom:photography-events-card
-title: Photography Events
-location_name: Home
-weather_entity: weather.home
-outlook_days: 21
-show_sun_events: true
-show_moon_events: true
-show_meteor_showers: true
-show_eclipses: true
-show_milky_way: true
-show_bird_migration: true
+action: photography_events.set_event_choice
+data:
+  event_id: "<event_id copied from an entity's event attributes>"
+  choice: follow
 ```
 
-| Option | Default | Description |
-| --- | --- | --- |
-| `title` | `Photography Events` | Card header text |
-| `location_name` | *(none)* | Optional label shown under the title |
-| `latitude` / `longitude` | *(your HA location)* | Override the observing point - see below |
-| `elevation` | *(your HA elevation)* | Meters; refines rise/set for a horizon dip |
-| `weather_entity` | *(none)* | A `weather.*` entity with forecast cloud coverage, used to score sunset/sunrise/meteor-shower conditions |
-| `outlook_days` | `21` | How far ahead to look, from 7 to 30 days. The 24/48/72 hour snapshot always shows regardless of this setting |
-| `show_sun_events` | `true` | Golden/blue hour, sunrise/sunset |
-| `show_moon_events` | `true` | Moon phase, moonrise/moonset |
-| `show_planets` | `true` | Oppositions, elongations, conjunctions, nightly planet summary |
-| `show_meteor_showers` | `true` | Meteor shower peaks |
-| `show_eclipses` | `true` | Solar/lunar eclipses |
-| `show_milky_way` | `true` | Milky Way core windows |
-| `show_bird_migration` | `true` | Bird migration season banner |
-| `custom_events` | `[]` | Comets and other one-off targets - see below |
+### `photography_events.ingest_report`
 
-### Comets and other one-off events
+Pass a field report or subscription email from a Home Assistant automation. The integration does not connect to your mailbox itself.
 
-Meteor showers recur every year and eclipses are computed centuries ahead, but
-a bright comet is usually only known to be worth chasing a few months out. A
-hardcoded comet list would be stale or wrong more often than right, so instead
-you add one when it is announced and the card runs it through the same
-visibility and moonlight scoring as everything else - how high it gets during
-true darkness, and whether the Moon will wash it out:
+| Field | Meaning |
+| --- | --- |
+| `source` | Required: who supplied the report. |
+| `body` | Required: the report's text. |
+| `subject` | Optional message subject. |
+| `category` | Optional category; otherwise inferred from the text. |
+| `zone_id` | Optional zone context; it does not replace a precise place actually named in the report. |
+| `received` | Optional ISO timestamp, defaulting to arrival now; anchors relative words such as “today.” It does not make old or undated evidence fresh. |
+| `url` | Optional source link. |
 
-```yaml
-custom_events:
-  - name: Comet C/2026 X1
-    ra_deg: 250.4
-    dec_deg: 20.1
-    start: 2026-10-01
-    end: 2026-11-15
-    note: Expected around magnitude 4 near perihelion.
+Parsing is conservative. Animal, behavior, count, place and observation date must belong to the correct assertion. A plan, a negated report, an unrelated animal's behavior or a newly downloaded old report cannot confirm a phenomenon. Only unambiguous context is inherited; broad regional reports remain regional. Email content is parsed as evidence, never executed as instructions.
+
+## Safety and access
+
+NWS checks distinguish **safe**, **caution**, **unsafe** and **unknown** for the relevant exposure. Here, safe means the implemented warning check completed without an applicable hazard being flagged; it is not a guarantee that a location is safe to visit. Unreadable, incomplete or stale coverage cannot establish safety. Readable warnings still apply when another feature in the same response is malformed.
+
+**Boat trips are intentionally held.** Marine-zone warning coverage is not integrated yet, so a boat phenomenon has marine safety unknown even when the land-alert feed is healthy.
+
+Relevant Firefall, Yosemite and Sequoia-type phenomena need usable, current NPS access data. Incomplete pagination, stale or malformed records, unrecognized park associations or no key mean **access unknown**, not open. A usable closure blocks the opportunity. Check the linked official conditions before traveling.
+
+## Forecast integrity and sunsets
+
+A successful HTTP response is not enough. Near-term actionable opportunities need forecast timestamps and values that cover the actual event or required condition window. Duplicate or reversed timestamps, expired coverage, missing hours and unreadable required values leave that condition **unassessed**.
+
+- **Valid unfavorable weather:** assessed, but the opportunity does not qualify on that condition.
+- **Missing required weather:** assessment incomplete; it cannot masquerade as a quiet week.
+- **Long-range planning:** remains available beyond operational forecast coverage, without inventing weather.
+
+Conditions are checked at the relevant forecast point. Snow needs a dated observation and a usable future clearing hour; saying there is no clearing requires the full relevant 48-hour search coverage. Firefall's valley and evening light path are assessed separately from an unrelated sunrise probe.
+
+Sunsets and sunrises are a **home/local feature**. A current SunsetWx prediction is preferred when configured, and covers only the sunrise or sunset it actually predicts. Its model timestamp is checked separately from the fetch timestamp; a fresh download cannot rescue an old model run. Otherwise the local weather model evaluates cloud layers and the light path. Provider percentages are quality scores, not encounter probabilities. Missing or stale optional air-quality data must not suppress an otherwise valid sunset.
+
+## Astronomy and tides
+
+The planner includes:
+
+- Full-Moon instants, illumination, distance and apparent-size ranking within the year.
+- Moonrise/moonset, azimuth, low-altitude timing and overlap with twilight.
+- Meteor showers with changing peak dates and radiant geometry, and usable Milky Way shooting windows.
+- Solar and lunar eclipses from a bundled NASA catalog for 2026–2035, plus planetary events.
+- Published King Tide planning windows, with NOAA station-specific time/height enrichment when available, and predicted minus tides.
+
+Actionable near-term meteor, Milky Way and full-Moon opportunities require weather that covers the relevant time. Geometry alone does not bypass that check. Long-range rows remain planning information. Lunar horizon bearings do not model terrain or guarantee a composition; eclipse screening does not provide exhaustive drivable sites or exact solar contacts, and planetary timings are approximate.
+
+### Solar safety
+
+**Camera or telescope optics need a special-purpose solar filter mounted securely over the front aperture. Unaided-eye viewing needs ISO 12312-2 eclipse glasses or a handheld solar viewer. These are different protections.**
+
+Never use eclipse glasses as a camera filter, or look through optics while wearing them. Ordinary photographic ND filters and sunglasses are not solar protection. Only during actual totality, while inside the path of totality, may solar protection be removed; restore it before the bright Sun reappears. Partial and annular phases always require protection. Read [NASA's eclipse safety guidance](https://science.nasa.gov/eclipses/safety/).
+
+## Birds
+
+- **Bird Spectacle:** the behavior or concentration that makes an exceptional photograph, with sufficient evidence. It can reach Can't Miss only after the shared eligibility checks.
+- **Bird Encounter:** repeated reports of an iconic bird around a public viewing area, without the evidence needed for a spectacle. It stays in the bird view.
+- **Bird Chase:** a notable individual report, ranked as a lead worth investigating. The ranking is not a measured probability of finding or photographing the bird.
+
+Private and sensitive locations are excluded as destinations. Obscured coordinates are not treated as precise places to travel to. Source privacy protections and missing reports limit what can be inferred.
+
+## Gear
+
+Packing plans separate ownership from suggestions:
+
+| Label | Meaning |
+| --- | --- |
+| **Take / Optional / Skip** | Owned kit only. |
+| **Worth adding or renting** | Unowned suggestions, at most two, each with a reason. |
+| **Required** | Safety equipment, whether owned or not. |
+
+The current owned-kit profile is **Sony A7R IV, 16–35 GM, 70–200 GM II, 200–600 G, 2× TC, DJI Osmo Pocket 3 and DJI Mini 3**. It is a packaged profile, not a configurable inventory in the setup form. The 2× teleconverter costs two stops and is not automatically preferred for wildlife. Drone guidance considers land restrictions, wildlife and wind; a recommendation is not permission to fly.
+
+## Data sources and evidence limits
+
+**Read [SOURCE_VALIDATION.md](SOURCE_VALIDATION.md) for the source-by-source register, freshness rules, product thresholds and explicit live-verification gaps.** Historical checks in that document are not certification of today's feeds.
+
+| Source family | Role |
+| --- | --- |
+| Open-Meteo; optional SunsetWx | Weather, cloud layers and local sunset/sunrise quality. |
+| NWS; NPS | Implemented warning checks and park-access information. |
+| NOAA CO-OPS; published California King Tide dates | Tide predictions and longer-range planning windows. |
+| NOAA NDBC; CDIP; NOAA OVATION | Offshore measurements, coastal wave-model guidance and an aurora nowcast. |
+| eBird; iNaturalist | Bird and wildlife evidence with source privacy and observation dates. |
+| Condor Express/operator reports; ingested reports | Dated reports of specified phenomena, subject to conservative parsing. |
+| CDFW | Published expected grunion intervals; a schedule does not prove fish appeared. |
+| Theodore Payne, DesertUSA, California Fall Color | Bloom and foliage reports, with each statement's own observation date. |
+| USGS; bundled NASA catalogs | Basin-flow context and astronomical source data, within documented limits. |
+| Optional Google routing | Routed travel time with provenance and age. |
+
+## Known 0.16.0 limitations and validation status
+
+- Marine-zone warnings are not integrated; boat phenomena remain held with safety unknown.
+- Some evidence depends on credentials, and several live provider payloads still need installed-system confirmation.
+- Moonbows remain candidates until viewpoint-validated predictions can be consumed. Basin flow is not proof of waterfall spray or exact viewing duration.
+- Broad regional reports are not converted into invented precise destinations.
+- Long-range weather is not invented. Published planning windows may lack operational times, access checks or weather until those inputs are available.
+- The catalog and coverage are geographically curated, not universal.
+
+The 0.16.0 implementation passed the repository's complete automated test/CI process and multiple independent adversarial code reviews. The final independent review reported **no material code findings — ready for installed HA / live validation**. This does **not** claim that every live provider has been verified. Tests include synthetic payloads through real Home Assistant coordinator cycles; installed-HA and live-source refinement continue after release.
+
+## Architecture
+
+```text
+sources / geometry → signals → phenomena → evidence / conditions
+  → safety / access / drive → eligibility → Can't Miss / Planner
+  → Home Assistant entities → card
 ```
 
-`name`, `ra_deg` and `dec_deg` are required (right ascension and declination in
-degrees, as published in any comet ephemeris); `start`, `end` and `note` are
-optional. Entries missing coordinates are skipped rather than breaking the
-card. Coordinates are treated as fixed, which is fine over a week or two of a
-slow-moving comet - for a fast one, update the entry as it moves.
+The backend runs independently of the dashboard. Source health, evidence freshness and event choices belong to the integration; the card presents the resulting assessments.
 
-### Why there's no "search within a 30 minute drive"
+## Development and releases
 
-Every event type this card computes - golden hour, moon phases, meteor
-showers, eclipse visibility - is essentially identical across a 30 minute
-driving radius; astronomy doesn't change much over a few tens of kilometers.
-What *does* change over that radius is which specific spot has a clear view
-(an unobstructed ocean horizon, a dark sky away from streetlights), and that's
-local geography this card can't know on its own.
+Development is **main-only**. Pushes to `main` run **Validate**; publishing is a separate, explicit version-tag push or manual **Release** workflow. The release workflow reruns its checks, reads `RELEASE_NOTES.md`, attaches `photography-events-card.js` and preserves existing releases.
 
-Today, the `latitude`/`longitude`/`elevation` overrides are the tool for that:
-point the card at your favorite nearby overlook instead of your house.
-Letting you name and switch between several saved locations (e.g. for an
-upcoming trip) is a natural next step but is intentionally not built yet -
-tracked as a future enhancement.
+Keep `VERSION`, `manifest.json`, `package.json`, the source/generated card version, `CHANGELOG.md` and `RELEASE_NOTES.md` aligned. Edit card source under `custom_components/photography_events/www/src/`, then rebuild the bundled artifact.
 
-## Getting a mailing list into this
+With the existing test dependencies installed in a suitable environment:
 
-Some of the best sources on this coast do not publish an API. They publish a
-mailing list: a person reads the data and writes a paragraph, once a day, and
-sends it to whoever signed up. That paragraph is often *better* evidence than
-anything machine-readable, because a human already decided what mattered.
-
-You do not need a third-party AI reading your inbox to use it. Home Assistant
-has a built-in IMAP integration, and this integration has a service to hand
-text to.
-
-**1. Add the IMAP integration** (Settings → Devices & Services → Add → IMAP).
-Point it at the mailbox, and set the search to match just the sender you care
-about, so nothing else in your inbox is ever read:
-
-```
-FROM "alerts@example.org" UNSEEN
+```sh
+python -m unittest discover -s tests -q
+python -m pyflakes custom_components/photography_events/*.py tools/*.py
+node --test tests/photography-events-card.test.mjs
+node scripts/build-card.mjs
+node scripts/build-card.mjs --check
+node scripts/check-version.mjs
+git diff --check
 ```
 
-**2. Add this automation.** It passes the body of each matching message to the
-integration and nothing else happens to it:
-
-```yaml
-alias: Whale digest into Photography Events
-mode: queued
-triggers:
-  - trigger: event
-    event_type: imap_content
-    event_data:
-      sender: alerts@example.org
-actions:
-  - action: photography_events.ingest_report
-    data:
-      source: "Whale Safe daily alert"
-      subject: "{{ trigger.event.data.subject }}"
-      body: "{{ trigger.event.data.text }}"
-      received: "{{ trigger.event.data.date }}"
-      # Optional. Leave both out and the text is read for a category and a
-      # place name; set them when you subscribe to a single-region digest.
-      category: marine
-      zone_id: channel_islands
-```
-
-That is the whole setup. The integration refreshes as soon as a report lands
-rather than waiting for the next hourly cycle, because an email saying the
-whales are in the channel today is worth acting on today.
-
-### What happens to the text
-
-It is read exactly the way the wildflower hotlines are read - place names
-matched to zones, signal phrases scored, negation honoured - and three rules
-make it safe to point at an inbox:
-
-- **The email is data, never instruction.** Nothing in a message body changes
-  what the integration does. The text is matched against a fixed vocabulary and
-  discarded if it does not fit. A sentence in an email cannot add a zone, move a
-  window, or raise a score by saying so
-- **A report naming no recognisable place is dropped.** Corroboration is
-  distance-based, so a report that cannot be located would otherwise corroborate
-  every window at once. Most days a digest produces nothing, and that is correct
-- **It expires.** A report stops counting as evidence after 14 days and is
-  forgotten after 21. A three-week-old "whales are here" is not evidence about
-  today
-
-A report that does land corroborates any live window of the same category within
-120 km, which releases that window from planning-only to something that can
-actually alert - and the card names the source that did it.
-
-### Why not have an AI read the inbox
-
-It would work, and it is the wrong shape for this. An email routed through a
-model comes back as prose that has to be trusted; the path above never leaves
-your machine, produces a report or produces nothing, and cannot be talked into
-inventing a sighting by anything written in the message. The parser being narrow
-is the feature - if a digest changes format it goes quiet rather than confidently
-wrong, and quiet is the failure mode you want in something you book trips
-against.
-
-## Data accuracy and limitations
-
-**[TRACKING.md](TRACKING.md) is the full inventory** - every phenomenon watched,
-the dates it uses, what evidence those dates rest on, and who to check them
-against before you book anything. It is generated from the code by
-`tools/generate_tracking_inventory.py`, so it cannot drift from what actually
-ships. Read it before trusting any window in here.
-
-- **Nothing biological alerts on a date alone.** Every entry carries an evidence
-  level - `computed` (geometry, exact), `live` (a search season, which may only
-  alert once a sighting of the named species turns up within 120 km in the last
-  14 days), or `static` (a calendar estimate that **never** alerts, because no
-  feed anywhere publishes it). The card states which, and what is still missing
-- **Meteor peaks are derived, not stored.** A stream sits at a fixed solar
-  longitude; the calendar date slides by up to a day with the leap cycle, so a
-  stored date is wrong about one year in two by a whole night. Longitudes are
-  the IMO Working List values, precessed from the J2000 equinox the IMO
-  publishes them for - worth 0.35 degrees today, which is eight hours of Sun.
-  Cross-checked: the derived 2025 Perseid maximum lands at 12 August 19h UT,
-  which is the hour the IMO published
-- **Rates are what you will see, not the ZHR.** A zenithal hourly rate assumes
-  the radiant overhead and perfect skies. The quoted figure is scaled by the
-  sine of the radiant altitude at your site, so the Geminids' 150 becomes about
-  80 with the radiant at 32 degrees
-- **Sun and Moon are computed locally**, not read from an external ephemeris
-  service. The Sun uses Meeus chapter 25 apparent longitude (better than a
-  hundredth of a degree) and the Moon the chapter 47 truncated ELP series with
-  sixty periodic terms. Checked against published full-moon instants, the Moon
-  lands within a minute on 2026-01-03 and two minutes on 2026-03-03. Rise, set
-  and twilight times are good to a minute or two - reliable for planning a
-  shoot, not survey-grade
-- **Planet positions use two-body Keplerian propagation** from mean elements.
-  Jupiter's 2026-01-10 and 2027-02-11 oppositions come out on the published
-  instant; **Mars and Saturn run about a day late** (2027-02-19 and 2026-10-04
-  respectively), because the mutual perturbations between the giant planets are
-  not modelled. That is immaterial for deciding which nights to shoot - a
-  planet is equally well placed for weeks either side of opposition - but read
-  a quoted Moon-planet conjunction separation as approximate for those two
-- **Sky-quality scoring is a heuristic, not a forecast model.** The backend
-  reads Open-Meteo's low, mid and high cloud decks separately and scores the
-  actual mechanism - high cloud as the canvas, low cloud as the blocker,
-  humidity as the mute. The card, used standalone against a `weather_entity`,
-  still only sees a single aggregate percentage and is correspondingly
-  blunter. Treat "epic" as "worth looking outside", not a guarantee
-- **Rare-bird alerts are eBird's "notable" feed**, which flags anything locally
-  unusual - that includes genuinely out-of-range vagrants and merely
-  out-of-season regulars. Reports are grouped per species and location, and the
-  score rewards recent, repeated and reviewer-confirmed reports, because a bird
-  seen by four people this morning is a very different proposition from one
-  person's unreviewed report on Tuesday. It cannot tell you the bird is still
-  there
-- **Whale sightings come from iNaturalist**, which is presence-only data from
-  whoever happened to be looking. No reports does not mean no whales; it often
-  means nobody was on the headland with a phone
-- **Bloom and autumn-colour reports are scraped from prose.** The parser reads
-  the phrases these hotlines actually use, checks for negation ("past peak"
-  contains "peak"), and attaches each to the nearest recognised place name.
-  It is capped below the alert threshold on purpose: somebody wrote that
-  sentence days ago, and it can never on its own tell you to get in the car.
-  If a site is redesigned, the CSS selectors are collected in one table at the
-  top of `field_reports.py`
-- **Drive times are estimates unless you supply a Google Maps key** - see
-  [Drive times](#drive-times) for the error bars
-- **The sourced NASA eclipse catalog covers 2026–2035.** Known viewing sites
-  are screened against published central paths and approximate drive budgets.
-  Exact solar contacts, partial-only visibility and exhaustive road access
-  are not computed. Lunar windows intersect the umbral phase with local visibility.
-- **Bird migration is a coarse seasonal heuristic** (a general spring/fall
-  date range for your hemisphere), not live migration data. For real-time
-  nocturnal migration intensity, check Cornell Lab's BirdCast
-
-## Privacy and security
-
-- **No telemetry.** Nothing here reports back to the author or anyone else.
-- **The card** makes no third-party requests at all. All its astronomy is
-  computed in the browser, and its only network activity is the
-  `weather/get_forecasts` websocket call to your own Home Assistant instance.
-- **The integration does make third-party requests**, which is the point of it.
-  It sends the target zones' coordinates to Open-Meteo, county codes to eBird,
-  a coastal bounding box to iNaturalist, and plain GETs to the three hotline
-  pages. If you configure a Google Maps key it also sends your home coordinates
-  and the destinations being scored. Nothing else leaves your instance, and
-  every source can be switched off by disabling its category.
-- **API keys are stored by Home Assistant** in its config entry storage, the
-  same place every other integration keeps them, and are never written to logs
-  or entity attributes.
-- Card-editor text inputs are escaped before rendering
-- **No inline event handlers**, which keeps the card compatible with strict
-  Content-Security-Policy setups
-
-## Development
-
-```bash
-npm test
-```
-
-Installation needs no build step. After editing `www/src/`, regenerate the
-checked-in `photography-events-card.js` with `node scripts/build-card.mjs`;
-`npm run check` verifies the artifact and synchronized versions.
-
-## Credits
-
-Sun/moon position formulas follow well-known low-precision astronomical
-algorithms described publicly on references such as aa.quae.nl - not copied
-from any single library, but the same standard, widely-implemented math.
-
-## License
-
-MIT
-
-
-## 0.10 planner and event notifications
-
-See [release notes](RELEASE_NOTES.md) and [source validation](SOURCE_VALIDATION.md) for the new feeds and their limits. Select `calendar_outlook` for the expandable planner; `timeline` uses the integration when available and otherwise falls back to browser calculations. Follow/Skip applies to a whole occurrence across its viewpoints and survives Home Assistant restarts. Skipping suppresses the featured opportunity and new event notifications. Show skipped restores it. Follow enables notification of a changed best location; it never bypasses evidence requirements.
-
-To deliver the new deduplicated opportunity events to your phone, replace the example service with your own existing notify target:
-
-```yaml
-alias: Photography opportunity updates
-triggers:
-  - trigger: event
-    event_type: photography_events_opportunity
-actions:
-  - action: notify.mobile_app_your_phone
-    data:
-      title: "{{ trigger.event.data.title }}"
-      message: >-
-        {{ trigger.event.data.reason }} — {{ trigger.event.data.where }}.
-        {{ trigger.event.data.detail }}
-        Starts: {{ trigger.event.data.starts }}.
-mode: queued
-```
-
-Event payloads include `event_id`, `entry_id`, `title`, `reason`, `starts`, `ends`, `where`, `drive_hours`, `verification`, `observed_at`, `detail`, and `source_url`. A timestamped report confirms what was observed, not a future encounter. Existing binary-sensor automations can be replaced with the event trigger to avoid duplicate delivery.
-
-Pushing to main runs Validate without creating a tag or release. Publishing a release requires an explicit version-tag push or manual release-workflow run; the release workflow checks the selected commit before publishing.
-
-
-
-### Development and releases
-
-Install the existing `beautifulsoup4>=4.12.0` requirement before running
-Python tests: HTML heading/context tests require the real parser. Develop
-directly on main and keep Validate passing. Releases are explicitly triggered
-with a version tag or a manual release-workflow run, independently of main pushes.
-Manifest, package, VERSION and card console versions must agree; release
-notes come from RELEASE_NOTES.md (with the version summary in CHANGELOG.md). Existing releases are never overwritten.
-
-
-## Source health and maintaining the card
-
-The compact week and year views have an expandable source-health strip. It names enabled sources and their last successful retrieval. Failed/stale dependencies mark affected rows as **Data degraded**. This does not remove the evidence ceiling or confirm an event. Disabled optional sources do not generate Repair issues. Repeated failures generate an HA Repair that clears on recovery; no phone notification automation is installed.
-
-Card sources are in `custom_components/photography_events/www/src/`. After editing them, run `node scripts/build-card.mjs`; CI rejects an out-of-sync generated card. Installation still uses the single `photography-events-card.js` artifact. `python -m unittest discover -s tests` runs the portable tests without HA; the HA-specific file skips locally when HA is absent and is executed in its own CI job.
-
-The NASA eclipse catalog covers 2026–2035 and contains published central-path coordinates, not inferred region descriptions. Known sites are screened against these paths and approximate drive budgets. Exact solar contacts, partial-only solar visibility and exhaustive road access are not computed. Lunar times intersect the real umbral phase with local Moon visibility. Broad wildlife seasons remain estimates unless qualifying dated evidence supports them.
-
-
-### Reading the cards (0.14.0)
-
-The dashboard starts with five brief event rows and a **Show more** control. Open an event for its overview; expand **Dates & alternatives**, **Locations & access**, **Evidence & source reports** or **Photography gear** as needed. The full supplied date range remains visible even when a particular night ranks highest. Candidate moonbow hours are sky geometry, not an actual moonbow prediction.
-
-The year planner starts later months collapsed with their subject names. Calendar weeks preview five ranked bars and let you reveal the rest. Event type filters and the color legend are expandable. A dated warning appears when the integration is unavailable, Home Assistant disconnects or the calendar update is overdue; saved rows are not evidence of current conditions.
+The full Python run includes Home Assistant tests when HA is installed; otherwise those tests skip. CI runs them separately on Python 3.12/HA 2024.11.3 and Python 3.13/HA 2025.3.4 using [the test constraints](tests/ha-constraints.txt). See [AGENTS.md](AGENTS.md) for repository invariants and [BROWSER_VALIDATION.md](BROWSER_VALIDATION.md) for the browser checks and their limits.

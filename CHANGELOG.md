@@ -8,6 +8,8 @@
 
 ## 0.16.0
 
+Released 2026-09-28 — the first stable snapshot of the regret-prevention architecture.
+
 Regret prevention instead of an encyclopedia. See RELEASE_NOTES.md and DISCOVERY_AUDIT.md.
 
 Final correction pass after the third review (same unreleased version; R1/R2/R3/R5 only):

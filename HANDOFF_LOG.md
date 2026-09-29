@@ -1,5 +1,11 @@
 # Handoff log — current release 0.16.0
 
+## 2026-09-28: main-only development and explicit releases
+
+The user requested publishing all applicable work to main and removing the other branches after their work is preserved. Both existing side-branch heads are ancestors of the final correction commit `81739ae`; no separate feature merge is needed. The full overhaul history remains intact.
+
+Main pushes continue to run Validate. Removed the automatic release trigger after Validate so publishing the development branch respects the user's no-tag/no-release instruction. Explicit version-tag pushes and manual release-workflow runs retain their existing pre-publication checks. Version remains 0.16.0. GitHub publication and branch cleanup must be verified separately; this entry records the workflow change, not a completed push.
+
 ## 2026-09-06: card review and date-choice improvements (0.11.0)
 
 Publication base: 5924f8e3068046333e5e9844d1e9bfeb5c92d354 (released 0.10.0).

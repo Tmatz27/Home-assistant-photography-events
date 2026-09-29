@@ -950,15 +950,16 @@ mode: queued
 
 Event payloads include `event_id`, `entry_id`, `title`, `reason`, `starts`, `ends`, `where`, `drive_hours`, `verification`, `observed_at`, `detail`, and `source_url`. A timestamped report confirms what was observed, not a future encounter. Existing binary-sensor automations can be replaced with the event trigger to avoid duplicate delivery.
 
-A new VERSION on main is published only after Validate succeeds; the release workflow checks the exact commit again before publishing. Tag and manual release triggers remain supported.
+Pushing to main runs Validate without creating a tag or release. Publishing a release requires an explicit version-tag push or manual release-workflow run; the release workflow checks the selected commit before publishing.
 
 
 
 ### Development and releases
 
 Install the existing `beautifulsoup4>=4.12.0` requirement before running
-Python tests: HTML heading/context tests require the real parser. Main
-commits with a new semantic version are released after Validate succeeds.
+Python tests: HTML heading/context tests require the real parser. Develop
+directly on main and keep Validate passing. Releases are explicitly triggered
+with a version tag or a manual release-workflow run, independently of main pushes.
 Manifest, package, VERSION and card console versions must agree; release
 notes come from RELEASE_NOTES.md (with the version summary in CHANGELOG.md). Existing releases are never overwritten.
 

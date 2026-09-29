@@ -75,6 +75,7 @@ def closure_coverage(park_key: str) -> str | None:
 # API's own category names are "Park Closure", "Danger", "Caution" and
 # "Information"; matching only "closure" meant a real NPS closure never blocked.
 BLOCKING_CATEGORIES = {"park closure", "closure", "danger"}
+KNOWN_ALERT_CATEGORIES = BLOCKING_CATEGORIES | {"caution", "information"}
 
 # A grunion run begins roughly this long after the high tide.
 GRUNION_LAG_MIN = timedelta(hours=1)
@@ -288,7 +289,7 @@ def parse_nps_alerts(payload) -> list[ParkAlert]:
     return found
 
 
-def nps_record_problem(entry) -> str:
+def nps_record_problem(entry, requested_codes=None) -> str:
     """Why one alert record cannot count toward a complete read, or "".
 
     Counting raw records proves nothing: an empty object, a record without a
@@ -301,10 +302,17 @@ def nps_record_problem(entry) -> str:
         value = entry.get(field)
         if not isinstance(value, str) or not value.strip():
             return f"record without {field}"
+    # A nonempty but unknown category is not an informational alert. Likewise,
+    # a broken park association cannot establish that a closure is elsewhere.
+    codes = set(NPS_PARK_CODES.values()) if requested_codes is None else set(requested_codes)
+    if entry["parkCode"].strip().lower() not in codes:
+        return "record has an unresolved or unrequested park code"
+    if entry["category"].strip().lower() not in KNOWN_ALERT_CATEGORIES:
+        return "record has an unrecognized category"
     return ""
 
 
-def collect_nps_pages(pages: list) -> list[ParkAlert]:
+def collect_nps_pages(pages: list, requested_codes=None) -> list[ParkAlert]:
     """Every alert across paginated responses, or IncompleteAlertsError.
 
     Complete means: each page is a valid response with the same total, every
@@ -320,7 +328,7 @@ def collect_nps_pages(pages: list) -> list[ParkAlert]:
     total = totals.pop()
     entries = [entry for page in pages for entry in page["data"]]
     for entry in entries:
-        problem = nps_record_problem(entry)
+        problem = nps_record_problem(entry, requested_codes)
         if problem:
             raise IncompleteAlertsError(f"NPS alerts: {problem}")
     identities = [entry["id"].strip() for entry in entries]

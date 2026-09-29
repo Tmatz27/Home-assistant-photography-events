@@ -311,16 +311,13 @@ def _shorten(text: str, limit: int = 160) -> str:
     return text[: limit - 1].rstrip() + "\u2026"
 
 
-def _cloud_unassessed(cloud_lookup, moment, cloud, scorable: bool) -> list[str]:
-    """``["cloud"]`` when the forecast reaches this night but gave no valid cloud.
+def _cloud_unassessed(cloud, scorable: bool) -> list[str]:
+    """Missing near-term weather includes an axis that cannot reach the event.
 
-    That night was not assessed, which is different both from a cloudy night
-    and from a night beyond the forecast.
+    The decision horizon, not the source's claimed coverage, determines which
+    nights need an assessment. Distant planner nights do not require weather.
     """
-    covers = getattr(cloud_lookup, "covers", None)
-    if cloud is None and scorable and covers is not None and covers(moment):
-        return ["cloud"]
-    return []
+    return ["cloud"] if cloud is None and scorable else []
 
 
 def _gear_for(category: str) -> dict[str, str]:
@@ -643,7 +640,7 @@ def build_meteor_opportunities(
                         "cloud_cover": round(cloud, 1) if cloud is not None else None,
                         "cloud_confidence": cloud_confidence(lead_days) if cloud is not None else None,
                         "cloud_is_forecast": bool(cloud is not None and cloud_is_scorable(lead_days)),
-                        "conditions_unassessed": _cloud_unassessed(cloud_lookup, window.start, cloud,
+                        "conditions_unassessed": _cloud_unassessed(cloud,
                                                                    cloud_is_scorable(lead_days)),
                         "moon_illumination": round(window.moon_illumination, 3),
                         "peak_altitude": round(window.peak_target_altitude, 1),
@@ -834,7 +831,7 @@ def build_milky_way_opportunities(
                     # an outlook that ranked the night without promising it.
                     "cloud_confidence": cloud_confidence(lead_days) if cloud is not None else None,
                     "cloud_is_forecast": bool(cloud is not None and forecast_cloud),
-                    "conditions_unassessed": _cloud_unassessed(cloud_lookup, window.start, cloud, forecast_cloud),
+                    "conditions_unassessed": _cloud_unassessed(cloud, forecast_cloud),
                     "moon_illumination": round(window.moon_illumination, 3),
                     "peak_altitude": round(window.peak_target_altitude, 1),
                     "score_ceiling": ceiling,

@@ -14,7 +14,7 @@ Pure: forecasts, rows and alerts in; annotations out. No Home Assistant.
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 
 from . import astronomy, weather_scoring
 
@@ -58,16 +58,7 @@ def _local(bundle):
 
 
 def _times(forecast):
-    out = []
-    for stamp in ((forecast or {}).get("hourly") or {}).get("time") or []:
-        try:
-            moment = datetime.fromisoformat(str(stamp).replace("Z", "+00:00"))
-        except (TypeError, ValueError):
-            moment = None
-        if moment is not None and moment.tzinfo is None:
-            moment = moment.replace(tzinfo=timezone.utc)
-        out.append(moment)
-    return out
+    return weather_scoring.hourly_times(forecast)
 
 
 def _value(forecast, key, index):
@@ -92,9 +83,14 @@ def _unassessed(item, missing: list[str]) -> None:
 def _window_readable(forecast, start: datetime, now: datetime, hours: int = CLEARING_HORIZON_HOURS) -> bool:
     """Every hour of the clearing window is present with a valid cloud value."""
     end = now + timedelta(hours=hours)
-    seen = [moment for index, moment in enumerate(_times(forecast))
-            if moment is not None and start <= moment <= end and _cloud(forecast, index) is not None]
-    return bool(seen) and len(seen) >= int((end - start).total_seconds() // 3600)
+    times = _times(forecast)
+    if not times or start > end or times[0] > start or times[-1] < end:
+        return False
+    # Every interval intersecting the future window must be hourly and have
+    # readable endpoints. Counts alone mistake 49 copies of one hour for 48 h.
+    return all(b - a <= timedelta(hours=1) and _cloud(forecast, index) is not None
+               and _cloud(forecast, index + 1) is not None
+               for index, (a, b) in enumerate(zip(times, times[1:])) if a < end and b > start)
 
 
 def _cloud(forecast, index):
@@ -133,12 +129,13 @@ def annotate_snow(rows, forecasts: dict, now: datetime) -> None:
         after = datetime.fromisoformat(observed) if observed else item.start
         found = clearing_after(forecast, after, now) if forecast else None
         # No clear hour is only an answer when every hour could be read.
-        _unassessed(item, [] if found or (forecast and _window_readable(forecast, max(after, now), now))
-                    else ["clearing forecast"])
+        readable = bool(found or (forecast and _window_readable(forecast, max(after, now), now)))
+        _unassessed(item, [] if readable else ["clearing forecast"])
         item.extra["condition_states"] = {
             "Fresh snow": f"Reported {after:%d %b}" if observed else "Not reported",
             "Clearing": (f"Forecast {found[0]:%a %H:%M} UTC, {found[1]:.0f}% cloud" if found
-                         else "No clearing forecast in the next 48 h" if forecast else "No forecast for this place"),
+                         else "No clearing forecast in the next 48 h" if readable
+                         else "Clearing forecast not assessed: missing or invalid future hours"),
         }
         if found is None:
             item.extra.pop("clearing_at", None)

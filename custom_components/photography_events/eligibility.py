@@ -112,7 +112,12 @@ def _conditions(item, definition, now) -> tuple[bool, str]:
             return False, "upstream light path not modelled; local-only score"
         return bool(extra.get("standout")), "not the standout of the forecast window"
     if key == "meteor_major":
-        return item.score >= 75, f"conditions score {item.score}: moon, radiant or cloud not good enough"
+        from .events import MAX_ASTRO_CLOUD
+        cloud = extra.get("cloud_cover")
+        # A strong radiant/new Moon can keep the score high even under 100%
+        # cloud. A valid unfavorable forecast is an answer, not a recommendation.
+        return (item.score >= 75 and cloud is not None and cloud <= MAX_ASTRO_CLOUD,
+                f"conditions score {item.score}: moon, radiant or cloud not good enough")
     if key == "milky_way":
         forecast = extra.get("cloud_is_forecast") is True
         return (item.score >= 90 and forecast,
@@ -200,6 +205,8 @@ def assess(item, now: datetime, *, max_drive_hours: float, alerts: list | None =
                 blockers.append(f"{definition.policy.replace('_', ' ')}: " + (item.extra.get("awaiting") or BASIS.get(state, state)))
         else:
             ok, why = _conditions(item, definition, now)
+            if ok and _unassessed_conditions(item, definition):
+                ok, why = False, "required conditions have no valid forecast at the event time"
             if not ok:
                 actionable = False
                 # Evidence in hand, conditions not: exactly what a watch is.

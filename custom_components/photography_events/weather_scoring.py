@@ -38,8 +38,9 @@ testable without network access.
 from __future__ import annotations
 
 import math
+from bisect import bisect_left
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 
 from . import astronomy as astro
 
@@ -226,30 +227,57 @@ def _mean(values: list[float]) -> float | None:
 def _series(forecast: dict, key: str) -> list:
     if not isinstance(forecast, dict):
         return []
-    return forecast.get("hourly", {}).get(key) or []
+    hourly = forecast.get("hourly")
+    values = hourly.get(key) if isinstance(hourly, dict) else None
+    return values if isinstance(values, list) else []
+
+
+def hourly_times(forecast: dict | None) -> tuple[datetime, ...]:
+    """Strictly increasing, unique instants, or no usable time axis.
+
+    Do not sort, deduplicate or drop bad timestamps: that would detach the
+    values from their hours, or silently bless conflicting duplicate samples.
+    Open-Meteo is requested in GMT; a naive source timestamp therefore is UTC.
+    """
+    times = _series(forecast or {}, "time")
+    if not isinstance(times, list) or not times:
+        return ()
+    parsed = []
+    for stamp in times:
+        if not isinstance(stamp, str) or not ("T" in stamp or " " in stamp):
+            return ()
+        try:
+            moment = datetime.fromisoformat(stamp.replace("Z", "+00:00"))
+        except (TypeError, ValueError):
+            return ()
+        if moment.tzinfo is None:
+            moment = moment.replace(tzinfo=timezone.utc)
+        moment = moment.astimezone(timezone.utc)
+        if parsed and moment <= parsed[-1]:
+            return ()
+        parsed.append(moment)
+    return tuple(parsed)
+
+
+def hourly_index(times: tuple[datetime, ...], moment: datetime) -> int | None:
+    """Nearest sample only when an hourly axis actually covers this instant.
+
+    A gap around an event is not covered by distant neighboring samples. A
+    distant planner date is left without weather rather than extrapolated.
+    """
+    if not times or moment < times[0] or moment > times[-1]:
+        return None
+    right = bisect_left(times, moment)
+    if times[right] == moment:
+        return right
+    left = right - 1
+    if times[right] - times[left] > timedelta(hours=1):
+        return None
+    return left if moment - times[left] <= times[right] - moment else right
 
 
 def _index_for(forecast: dict, moment: datetime) -> int | None:
-    """Index of the hourly slot nearest the given moment."""
-    times = _series(forecast, "time")
-    if not times:
-        return None
-    target = moment.timestamp()
-    best_index, best_delta = None, None
-    for index, stamp in enumerate(times):
-        try:
-            parsed = datetime.fromisoformat(stamp)
-        except (TypeError, ValueError):
-            continue
-        if parsed.tzinfo is None:
-            parsed = parsed.replace(tzinfo=moment.tzinfo)
-        delta = abs(parsed.timestamp() - target)
-        if best_delta is None or delta < best_delta:
-            best_index, best_delta = index, delta
-    # Beyond 90 minutes the slot no longer describes the event.
-    if best_delta is None or best_delta > 5400:
-        return None
-    return best_index
+    return hourly_index(hourly_times(forecast), moment)
 
 
 def _sample(forecast: dict, key: str, index: int, offsets: tuple[int, ...]) -> list[float]:
@@ -265,8 +293,8 @@ def _sample(forecast: dict, key: str, index: int, offsets: tuple[int, ...]) -> l
 def layer_at(forecast: dict | None, key: str, moment: datetime) -> float | None:
     """A cloud-cover percentage at an event, only when the forecast really has it.
 
-    Present, finite, 0-100 and time-matched (the slot nearest the event, within
-    90 minutes, must itself carry a valid value). Anything less is unknown:
+    Present, finite, 0-100 and time-matched (the slot on a covering hourly
+    interval must itself carry a valid value). Anything less is unknown:
     a missing layer is not a clear one.
     """
     if not forecast:

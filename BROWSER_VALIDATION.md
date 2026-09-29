@@ -60,3 +60,6 @@ Same Playwright/Chromium setup and fixture (synthetic rows only). The fixture's 
 - The incomplete state lists "Conditions for Horsetail Fall firefall"; the held list shows "Conditions not assessed: western light path ...".
 - Previous checks (solar filter wording, incomplete headline, held heading, marine hold, gear order) still pass; no horizontal overflow in any state; no page errors.
 
+### Final R1/R2/R3/R5 correction pass - 2026-09-28
+
+Codex in-app Chromium against the unchanged local synthetic fixture. At 1280x900, 390x844 and 412x915, seven checks each (21 total) passed: collapsed route age, camera-filter label, expanded route age/current-traffic caveat, incomplete note with rows, incomplete empty headline, named condition problem, and Firefall held reason. No horizontal document overflow in default, expanded, incomplete or held states; no warning/error console entries. Viewports were restored and temporary tabs/server closed. This tests browser rendering at phone dimensions, not the native HA Android app or the user's HA instance. Production card source and built artifact are unchanged.

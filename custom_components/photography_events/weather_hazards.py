@@ -50,7 +50,7 @@ it, because the malformed feature may have been the warning for this place.
 
 from __future__ import annotations
 
-import re
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 
@@ -157,9 +157,12 @@ COUNTY_MATCH_KM = 40.0
 
 
 def _valid_geometry(geometry) -> bool:
-    """A Polygon/MultiPolygon whose every ring has 3+ finite, in-range lon/lat points."""
-    import math
+    """Closed, nondegenerate rings of numeric positions, usable by our resolver.
 
+    Finite points alone do not make a polygon: a repeated point or a straight
+    line encloses nothing and used to turn a warning into a checked all-clear.
+    GeoJSON positions/rings: RFC 7946 sections 3.1.1 and 3.1.6.
+    """
     if not isinstance(geometry, dict) or geometry.get("type") not in ("Polygon", "MultiPolygon"):
         return False
     coords = geometry.get("coordinates")
@@ -170,28 +173,43 @@ def _valid_geometry(geometry) -> bool:
         if not isinstance(polygon, list) or not polygon:
             return False
         for ring in polygon:
-            if not isinstance(ring, list) or len(ring) < 3:
+            if not isinstance(ring, list) or len(ring) < 4:
                 return False
             for pair in ring:
-                if not isinstance(pair, (list, tuple)) or len(pair) < 2:
+                if not isinstance(pair, (list, tuple)) or len(pair) not in (2, 3):
                     return False
-                try:
-                    lon, lat = float(pair[0]), float(pair[1])
-                except (TypeError, ValueError):
+                if any(isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value)
+                       for value in pair):
                     return False
-                if not (math.isfinite(lon) and math.isfinite(lat) and -180 <= lon <= 180 and -90 <= lat <= 90):
+                lon, lat = pair[:2]
+                if not (-180 <= lon <= 180 and -90 <= lat <= 90):
                     return False
+            points = [tuple(pair[:2]) for pair in ring]
+            if ring[0] != ring[-1] or len(set(points)) < 3:
+                return False
+            # Translate before the shoelace sum to avoid cancellation for
+            # small polygons far from the coordinate origin.
+            x0, y0 = points[0]
+            area = math.fsum((a[0] - x0) * (b[1] - y0) - (b[0] - x0) * (a[1] - y0)
+                             for a, b in zip(points, points[1:]))
+            if area == 0:
+                return False
     return True
 
 
-_SAME_CODE = re.compile(r"^\d{6}$")
+# The fetched feed is explicitly area=CA. All 58 California county codes are
+# the odd numbers 001..115 (NWS: https://www.weather.gov/hnx/cafips).
+# PSSCCC subdivisions (P != 0) are not resolved here; do not accept one just
+# because it has six digits. A valid county outside our viewing points can
+# safely match none of them; an impossible/unsupported code cannot.
+COUNTY_SAME_CODES = frozenset(f"006{county:03d}" for county in range(1, 116, 2))
 
 
 def validate_feature(feature) -> tuple[dict | None, str]:
     """(compact alert, "") for a usable feature, or (None, why it is unusable).
 
     "Usable geography" is defined by what ``alerts_at`` can resolve: a valid
-    polygon, or a *list* of six-digit county SAME codes. Anything else - UGC
+    polygon, or a *list* of recognized full-county California SAME codes. Anything else - UGC
     zone codes alone, junk or scalar SAME values, non-finite coordinates - is
     a warning this gate cannot place, so it makes the check incomplete rather
     than silently matching nowhere (which read as "safe").
@@ -211,9 +229,9 @@ def validate_feature(feature) -> tuple[dict | None, str]:
     raw_same = geocode.get("SAME")
     if raw_same is not None and not isinstance(raw_same, list):
         return None, f"{event}: SAME codes are not a list"
-    same = [code for code in (raw_same or []) if isinstance(code, str) and _SAME_CODE.match(code.strip())]
+    same = [code for code in (raw_same or []) if isinstance(code, str) and code.strip() in COUNTY_SAME_CODES]
     if raw_same and len(same) != len(raw_same):
-        return None, f"{event}: malformed SAME codes"
+        return None, f"{event}: unresolved SAME county or subdivision codes"
     raw_ugc = geocode.get("UGC")
     if raw_ugc is not None and not isinstance(raw_ugc, list):
         return None, f"{event}: UGC codes are not a list"

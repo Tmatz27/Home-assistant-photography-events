@@ -10,6 +10,12 @@
 
 Regret prevention instead of an encyclopedia. See RELEASE_NOTES.md and DISCOVERY_AUDIT.md.
 
+Final correction pass after the third review (same unreleased version; R1/R2/R3/R5 only):
+- Require recognized NPS categories and requested park associations before calling access open.
+- Reject unresolvable NWS county subdivisions and degenerate/malformed polygons from authoritative safety coverage; retain readable warnings.
+- Bind animal behavior, count, place and date to the same assertion; hold ambiguous grammar and conflicting headers.
+- Require usable forecast chronology and coverage of near-term conditions; distinguish an assessed bad forecast from missing coverage. A high meteor score no longer overrides an overcast forecast.
+
 - New SIGNAL → PHENOMENON → OPPORTUNITY data flow: `signals.py` (raw evidence), `curation.py` (curated phenomena, significance, trigger policies, product classes), `eligibility.py` (hard Can't Miss gate before ranking; separate significance, confidence, urgency, encounter, access, condition quality).
 - New `sensor.photography_events_can_t_miss`; the action binary sensor now requires an eligible occurrence.
 - Raw sightings no longer become rows; hotline and emailed reports merge into matching phenomena. Fixed: ingested emails and scraped hotline pages could never corroborate anything (they never carried an observation date or phenomenon key).

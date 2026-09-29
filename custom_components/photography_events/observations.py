@@ -16,8 +16,7 @@ sentence. Three real failures followed:
 So text is first split into statements (sentences, then clauses at ``;`` and
 contrastive joins such as ", but"), and each statement yields observations
 whose subject, behaviour, polarity, count, place and date all come from that
-statement - or, only where the whole message leaves no ambiguity, from the
-message (one subject, one place, one date). A number counts a subject only
+statement - or from a genuine, unambiguous place/date header. A number counts a subject only
 when it is written against that subject's noun. A negation cue negates the
 behaviour it precedes inside its own clause, never a neighbouring statement.
 
@@ -94,10 +93,16 @@ _SENTENCE = re.compile(r"(?<=[.!?])\s+|\n+")
 _CLAUSE = re.compile(r";|,?\s+\bbut\b\s+|,\s*(?:while|whereas|although|though)\s+", re.IGNORECASE)
 _SAME_DAY = re.compile(r"\b(?:today|this morning|this afternoon|this evening|tonight)\b", re.IGNORECASE)
 _YESTERDAY = re.compile(r"\b(?:yesterday|last night)\b", re.IGNORECASE)
+# This explicit continuation states an observation on both days, including
+# today. Unordered or conflicting date lists still have no single date.
+_CONTINUING_TODAY = re.compile(r"\b(?:yesterday|last night)\s+and\s+today\b", re.IGNORECASE)
 # Explicitly older than a day and without a date: it cannot inherit today's.
 _VAGUE_PAST = re.compile(r"\b(?:last week|earlier this week|recently|a few days ago|last month|previous(?:ly)?)\b",
                          re.IGNORECASE)
 _NUMBER = r"(\d{1,3}(?:,\d{3})+|\d+)"
+_NON_OBSERVATION = re.compile(
+    r"\b(?:planning|planned|plans?\s+to|hoping|hope\s+to|cancelled|canceled|expecting|"
+    r"might|could|would|looking\s+for|wish|if)\b", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
@@ -172,18 +177,41 @@ def _canonical_subjects(key: str) -> set[str]:
     return {_CANONICAL.get(term, term) for term in SUBJECT_TERMS.get(key, ())}
 
 
+_ASSERTION_JOIN = re.compile(r"\b(?:and|or|but|while|whereas|although|though|as)\b|,\s+", re.IGNORECASE)
+_RELATIONAL_SUBJECT = re.compile(r"\b(?:beside|alongside|with|among|near|behind|around|next\s+to)\s+(?:the\s+)?$")
+
+
+def _assertion_span(text: str, start: int, end: int) -> tuple[int, int]:
+    """Local assertion around a phrase; do not split inside the phrase itself."""
+    continuing = list(_CONTINUING_TODAY.finditer(text))
+    joins = [join for join in _ASSERTION_JOIN.finditer(text)
+             if not any(period.start() <= join.start() < period.end() for period in continuing)]
+    left = max((join.end() for join in joins if join.end() <= start), default=0)
+    right = min((join.start() for join in joins if join.start() >= end), default=len(text))
+    return left, right
+
+
 def _bound_animal(lowered: str, start: int, end: int) -> str | None:
-    """The animal a phrase at [start, end) is written against: the nearest one
-    before it in its clause, else the nearest after, else None."""
-    mentions = animal_mentions(lowered)
-    inside = [m for m in mentions if m[0] >= start and m[1] <= end]
-    if inside:
-        return inside[0][2]
-    before = [m for m in mentions if m[1] <= start]
-    if before:
-        return before[-1][2]
-    after = [m for m in mentions if m[0] >= end]
-    return after[0][2] if after else None
+    """One unambiguous animal in this assertion, never merely the nearest noun.
+
+    Both orders of "dolphins beside humpbacks were lunge feeding" are held:
+    this fixed-vocabulary parser cannot prove the grammatical attachment.
+    An empty string means ambiguous; None means genuinely unnamed behavior.
+    """
+    left, right = _assertion_span(lowered, start, end)
+    mentions = animal_mentions(lowered[left:right])
+    # "First pups" at a monitored rookery is the existing colony rule, not
+    # another animal's assertion. Pups elsewhere still cannot name a species.
+    mentions = [(a, b, animal) for a, b, animal in mentions
+                if not (animal == "other:pups?" and a + left < end and b + left > start)]
+    if len(mentions) != 1:
+        return "" if mentions else None
+    first, _last, animal = mentions[0]
+    # An unlisted animal can be the subject too. "Squirrels beside condors"
+    # must not become condor behavior just because squirrels are not curated.
+    if _RELATIONAL_SUBJECT.search(lowered[left:left + first]):
+        return ""
+    return animal
 
 
 # A header is pure context: places, dates and a few report words. "Trip
@@ -205,7 +233,8 @@ def _is_header(clause: str, catalog) -> bool:
     lowered = clause.lower()
     if len(clause.split()) > HEADER_MAX_WORDS:
         return False
-    if animal_mentions(lowered) or any(term in lowered for item in catalog.values() for term in item.behavior_terms):
+    if (_NON_OBSERVATION.search(clause) or animal_mentions(lowered)
+            or any(term in lowered for item in catalog.values() for term in item.behavior_terms)):
         return False
     for name in sorted({*(row[0] for row in PLACE_POINTS), *(hint for hint, _ in ZONE_HINTS)}, key=len, reverse=True):
         lowered = lowered.replace(name, " ")
@@ -249,19 +278,21 @@ def _negated(clause: str, position: int) -> bool:
 
 def _clause_date(clause: str, received: datetime | None):
     """(date, explicit) from the clause itself; (None, vague) when it points elsewhere in time."""
-    from .field_reports import explicit_date
+    from .field_reports import explicit_date, _NAMED_DATE, _NUMERIC_DATE
 
     if received is None:
         return None, False
-    stated = explicit_date(clause, received)
-    if stated is not None:
-        return stated, True
+    clause = _CONTINUING_TODAY.sub("today", clause)
+    dates = [explicit_date(match.group(), received) for pattern in (_NAMED_DATE, _NUMERIC_DATE)
+             for match in pattern.finditer(clause)]
     if _YESTERDAY.search(clause):
-        return received - timedelta(days=1), True
+        dates.append(received - timedelta(days=1))
     if _SAME_DAY.search(clause):
-        return received, True
+        dates.append(received)
     if _VAGUE_PAST.search(clause):
-        return None, True  # explicitly not today; never inherits
+        dates.append(None)
+    if dates:
+        return (dates[0] if len({d.date() if d else None for d in dates}) == 1 else None), True
     return None, False
 
 
@@ -269,10 +300,10 @@ AMBIGUOUS = {"ambiguous": True}
 
 
 def _clause_place(clause: str):
-    """The one place a clause names, AMBIGUOUS when it names several zones, or None.
+    """The one place a clause names, AMBIGUOUS when it names distinct places, or None.
 
     "Avila and Monterey Bay today" names two regions: nothing in it may be
-    placed at either. Two points inside one zone keep the zone but no point.
+    placed at either. Two distinct points inside one zone are ambiguous too.
     """
     from .field_reports import PLACE_POINTS, zones_in
 
@@ -287,6 +318,8 @@ def _clause_place(clause: str):
     if len(set(zones)) > 1:
         return AMBIGUOUS
     points = {(lat, lon) for _, lat, lon in names}
+    if len(points) > 1:
+        return AMBIGUOUS
     point = next(iter(points)) if len(points) == 1 else None
     return {"point": point, "zone": zones[0] if zones else "", "name": names[0][0] if len(points) == 1 else ""}
 
@@ -297,9 +330,10 @@ def _one_place(places):
     if any(place is AMBIGUOUS for place in real):
         return AMBIGUOUS
     zones = {place["zone"] for place in real}
-    if len(zones) > 1:
+    points = {place["point"] for place in real if place.get("point") is not None}
+    if len(zones) > 1 or len(points) > 1:
         return AMBIGUOUS
-    return real[0] if real else None
+    return next((place for place in real if place.get("point") is not None), real[0] if real else None)
 
 
 def observe(text: str, received: datetime | None, *, category: str | None = None,
@@ -323,8 +357,7 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
     # Sept report", "Avila update:"). A place or date written in another
     # content sentence is never borrowed - "Lunge feeding off Monterey today.
     # Humpbacks passing Avila." must not put the lunge feeding at Avila.
-    animals_named = {terms for terms in SUBJECT_TERMS.values() if any(term in whole for term in terms)}
-    context = [clause for clauses in statements(subject_hint) for clause in clauses]
+    context = [clause for clauses in statements(subject_hint) for clause in clauses if _is_header(clause, CATALOG)]
     context += [clause for clauses in parsed for clause in clauses if _is_header(clause, CATALOG)]
     message_place = _one_place([_clause_place(clause) for clause in context])
     if default_zone:
@@ -336,28 +369,39 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
 
     found: list[Observation] = []
     for clauses in parsed:
-        sentence_place = _one_place([_clause_place(c) for c in clauses])
-        sentence_date, sentence_explicit = None, False
+        headers = [c for c in clauses if _is_header(c, CATALOG)]
+        sentence_place = _one_place([_clause_place(c) for c in headers])
+        dated = [moment for moment, explicit in (_clause_date(c, received) for c in headers) if explicit]
+        sentence_explicit = bool(dated)
+        sentence_date = dated[0] if dated and len({d.date() if d else None for d in dated}) == 1 else None
         for clause in clauses:
-            moment, explicit = _clause_date(clause, received)
-            if explicit:
-                sentence_date, sentence_explicit = moment, True
-                break
-        for clause in clauses:
+            if _NON_OBSERVATION.search(clause):
+                continue
             lowered = clause.lower()
-            clause_date, clause_explicit = _clause_date(clause, received)
-            if clause_explicit:
-                observed = clause_date
-            elif sentence_explicit:
-                observed = sentence_date
-            else:
-                observed = message_date
-            own = _clause_place(clause)
-            # A clause that names several regions is placed nowhere, and never
-            # inherits a place from its sentence or the message.
-            place = None if own is AMBIGUOUS else own or (
-                None if sentence_place is AMBIGUOUS else sentence_place) or (
-                None if message_place is AMBIGUOUS else message_place)
+            # Coordination is an assertion boundary. Only pure context on the
+            # other side may supply metadata; a second animal's statement may not.
+            local_headers = [part for part in _ASSERTION_JOIN.split(clause) if _is_header(part, CATALOG)]
+            heading, colon, _body = clause.partition(":")
+            if colon and _is_header(heading, CATALOG):
+                local_headers.append(heading)
+            local_place = _one_place([_clause_place(part) for part in local_headers])
+            local_dates = [moment for moment, explicit in (_clause_date(part, received) for part in local_headers)
+                           if explicit]
+
+            def metadata(left, right):
+                assertion = clause[left:right]
+                own = _one_place([_clause_place(assertion), local_place])
+                inherited = sentence_place if sentence_place is not None else message_place
+                place = own if own is not None else inherited
+                place = None if place is AMBIGUOUS else place
+                moment, explicit = _clause_date(assertion, received)
+                dates = ([moment] if explicit else []) + local_dates
+                if dates:
+                    observed = dates[0] if len({d.date() if d else None for d in dates}) == 1 else None
+                else:
+                    observed = sentence_date if sentence_explicit else message_date
+                return place, observed
+
             for definition in CATALOG.values():
                 if category and definition.category != category and not (
                         category == CATEGORY_RARE and definition.category in (CATEGORY_RARE, CATEGORY_BIRDS)):
@@ -365,17 +409,15 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
                 subjects = SUBJECT_TERMS.get(definition.key, ())
                 subject = next((term for term in subjects if term in lowered), "")
                 if definition.key in PRESENCE_EVIDENCE:
-                    hits = [(lowered.find(subject), subject)] if subject else []
+                    terms = (subject,) if subject else ()
                 else:
-                    hits = [(lowered.find(term), term) for term in definition.behavior_terms if term in lowered]
+                    terms = definition.behavior_terms
+                hits = [(match.start(), term) for term in terms for match in re.finditer(re.escape(term), lowered)]
                 if not hits:
                     continue
                 if subjects and definition.key not in PRESENCE_EVIDENCE:
-                    # Each behaviour phrase must be written against *this*
-                    # animal: the nearest animal before it in the clause (else
-                    # the nearest after). "Humpbacks passed Avila and dolphins
-                    # were lunge feeding" is dolphins feeding; "Condors at
-                    # Pinnacles and sea lions feeding" is sea lions feeding.
+                    # Require a subject-specific assertion. A nearby noun or
+                    # a subject in an unrelated sentence cannot supply one.
                     wanted = _canonical_subjects(definition.key)
                     bound = []
                     for position, term in hits:
@@ -384,12 +426,14 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
                             continue
                         animal = _bound_animal(lowered, position, position + len(term))
                         if animal is None:
-                            where = f"{lowered} {(place or {}).get('name') or ''}"
-                            if any(site in where for site in SITE_SUBJECTS.get(definition.key, ())) or (
-                                    len(animals_named) == 1 and subjects in animals_named):
-                                # A monitored colony names its animal; one animal
-                                # in the whole message is what an unnamed clause
-                                # is about ("Humpbacks off Avila. Lunge feeding at 9.").
+                            left, right = _assertion_span(lowered, position, position + len(term))
+                            place, _observed = metadata(left, right)
+                            where = f"{lowered[left:right]} {(place or {}).get('name') or ''}"
+                            prefix = lowered[left:position].strip(" :,-")
+                            if (_is_header(prefix, CATALOG) and
+                                    any(site in where for site in SITE_SUBJECTS.get(definition.key, ()))):
+                                # Only a monitored colony can supply an unnamed
+                                # animal, and no unexplained subject may precede it.
                                 bound.append((position, term))
                         elif animal in wanted:
                             bound.append((position, term))
@@ -397,25 +441,29 @@ def observe(text: str, received: datetime | None, *, category: str | None = None
                     if not hits:
                         continue
                     subject = subject or next((term for term in subjects if term in whole), subjects[0])
-                if definition.location_terms and not any(t in lowered or (place and t in (place.get("name") or ""))
-                                                         for t in definition.location_terms):
-                    # Sibling phenomena sharing vocabulary are told apart by place.
-                    siblings = [other for other in CATALOG.values() if other.key != definition.key
-                                and other.behavior_terms == definition.behavior_terms and other.location_terms]
-                    if any(any(t in lowered for t in other.location_terms) for other in siblings):
-                        continue
-                negated = all(_negated(clause, position) for position, _ in hits)
-                count_term = subject or ""
-                # Only a number written against this subject's own noun.
-                count = _subject_count(clause, count_term) if count_term else None
-                point = (place or {}).get("point")
-                found.append(Observation(
-                    phenomenon=definition.key, polarity=NEGATIVE if negated else POSITIVE, text=clause,
-                    behaviors=tuple(term for _, term in hits), subject=subject, count=count,
-                    observed_at=observed,
-                    latitude=point[0] if point else None, longitude=point[1] if point else None,
-                    place=(place or {}).get("name") or "", zone_id=(place or {}).get("zone") or "",
-                ))
+                groups = {}
+                for position, term in hits:
+                    groups.setdefault(_assertion_span(clause, position, position + len(term)), []).append((position, term))
+                for (left, right), local_hits in groups.items():
+                    assertion = clause[left:right]
+                    place, observed = metadata(left, right)
+                    if definition.location_terms and not any(
+                            t in assertion.lower() or (place and t in (place.get("name") or ""))
+                            for t in definition.location_terms):
+                        siblings = [other for other in CATALOG.values() if other.key != definition.key
+                                    and other.behavior_terms == definition.behavior_terms and other.location_terms]
+                        if any(any(t in assertion.lower() for t in other.location_terms) for other in siblings):
+                            continue
+                    negated = all(_negated(assertion, position - left) for position, _ in local_hits)
+                    count = _subject_count(assertion, subject) if subject else None
+                    point = (place or {}).get("point")
+                    found.append(Observation(
+                        phenomenon=definition.key, polarity=NEGATIVE if negated else POSITIVE, text=assertion,
+                        behaviors=tuple(term for _, term in local_hits), subject=subject, count=count,
+                        observed_at=observed,
+                        latitude=point[0] if point else None, longitude=point[1] if point else None,
+                        place=(place or {}).get("name") or "", zone_id=(place or {}).get("zone") or "",
+                    ))
     return _resolve_siblings(found)
 
 

@@ -310,7 +310,9 @@ class TestC5StatementNormalization(unittest.TestCase):
     def test_contradictory_multi_sentence_emails(self):
         cases = {
             "Humpbacks were lunge feeding at Avila last week. Today they are just passing.": False,
-            "We saw lunge feeding at Avila today. No humpbacks at Pismo.": True,
+            # The only humpback statement is negated and about another place;
+            # it cannot supply the subject of the unnamed feeding assertion.
+            "We saw lunge feeding at Avila today. No humpbacks at Pismo.": False,
             "No bait balls today, but humpbacks lunge feeding off Avila this morning.": True,
             "Lunge feeding reported off Monterey today. Humpbacks passing Avila.": False,
         }
@@ -924,7 +926,7 @@ class TestPayloadSize(unittest.TestCase):
         rows = []
         for i in range(60):
             item = opp("meteor_major", "astronomy", start=NOW + timedelta(hours=3 + i), zone=f"z{i}",
-                       evidence_state="computed")
+                       evidence_state="computed", cloud_cover=0, cloud_is_forecast=True)
             item.roll = f"meteor-{i}"
             item.extra["behavior_evidence"] = [{"source": "x" * 40, "text": "y" * 220}] * 3
             rows.append(item)

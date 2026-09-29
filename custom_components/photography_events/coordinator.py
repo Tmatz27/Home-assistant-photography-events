@@ -663,6 +663,8 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             copy.extra["cloud_cover"] = round(cloud, 1) if cloud is not None else None
             copy.extra["cloud_is_forecast"] = bool(cloud is not None and weather_scoring.cloud_is_scorable(lead))
             copy.extra["cloud_confidence"] = weather_scoring.cloud_confidence(lead) if cloud is not None else None
+            copy.extra["conditions_unassessed"] = event_builder._cloud_unassessed(
+                cloud, weather_scoring.cloud_is_scorable(lead))
             fresh.append(copy)
         return fresh
 
@@ -1116,7 +1118,7 @@ class PhotographyEventsCoordinator(DataUpdateCoordinator):
             read = sum(len(page["data"]) for page in pages)
             if read >= total or not payload["data"]:
                 break
-        return verify_module.collect_nps_pages(pages)
+        return verify_module.collect_nps_pages(pages, requested_codes=codes)
 
     @property
     def park_alerts_needed(self) -> bool:
@@ -1330,52 +1332,28 @@ def _point(item) -> tuple[float, float] | None:
 
 
 def _usable_forecast(part) -> bool:
-    """One Open-Meteo location: an hourly block with a time axis."""
-    return isinstance(part, dict) and isinstance(part.get("hourly"), dict) and bool(part["hourly"].get("time"))
+    """One location with interpretable chronology; event coverage is checked later."""
+    return (isinstance(part, dict) and isinstance(part.get("hourly"), dict)
+            and bool(weather_scoring.hourly_times(part)))
 
 
 def _make_cloud_lookup(forecast: dict | None):
-    """Total cloud cover nearest a moment, or None when there is no forecast.
-
-    ``lookup.covers(moment)`` says whether the forecast's time axis reaches
-    that moment at all. A lookup that returns None for a covered moment is a
-    missing or invalid value - a condition that could not be assessed - and
-    not a night beyond the forecast.
-    """
+    """Cloud at an actually covered event, retaining value-to-hour alignment."""
     if not forecast:
         return None
     hourly = forecast.get("hourly", {})
-    times = hourly.get("time") or []
+    times = weather_scoring.hourly_times(forecast)
     clouds = hourly.get("cloud_cover") or []
-    if not times:
-        return None
-
-    def parse(stamp):
-        try:
-            moment = datetime.fromisoformat(stamp)
-        except (TypeError, ValueError):
-            return None
-        return moment.replace(tzinfo=timezone.utc) if moment.tzinfo is None else moment
-
-    axis = [moment.timestamp() for moment in map(parse, times) if moment is not None]
-    parsed: list[tuple[float, float]] = []
-    for stamp, value in zip(times, clouds):
-        if (not isinstance(value, (int, float)) or isinstance(value, bool)
-                or not math.isfinite(value) or not 0 <= value <= 100):
-            continue
-        moment = parse(stamp)
-        if moment is not None:
-            parsed.append((moment.timestamp(), float(value)))
-
-    if not axis:
-        return None
 
     def lookup(moment: datetime) -> float | None:
-        if not parsed:
+        index = weather_scoring.hourly_index(times, moment)
+        if index is None or not isinstance(clouds, list) or index >= len(clouds):
             return None
-        target = moment.timestamp()
-        stamp, value = min(parsed, key=lambda item: abs(item[0] - target))
-        return value if abs(stamp - target) <= 5400 else None
+        value = clouds[index]
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or not 0 <= value <= 100):
+            return None
+        return float(value)
 
-    lookup.covers = lambda moment: any(abs(stamp - moment.timestamp()) <= 5400 for stamp in axis)
+    lookup.covers = lambda moment: weather_scoring.hourly_index(times, moment) is not None
     return lookup

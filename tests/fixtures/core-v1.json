@@ -1,0 +1,72 @@
+{
+  "core_version": "0.1.0-dev",
+  "api_version": "v1",
+  "schema_version": "0001",
+  "generated_at": "2026-09-27T17:00:00Z",
+  "data_as_of": "2026-09-27T17:00:00Z",
+  "assessment_state": "complete",
+  "missing_required_sources": [],
+  "degraded_sources": [],
+  "items": [
+    {
+      "occurrence_key": "tule_elk_rut-2026-09-15",
+      "phenomenon_key": "tule_elk_rut",
+      "title": "Tule elk rut",
+      "category": "mammals",
+      "location": {
+        "key": "carrizo_plain_soda_lake",
+        "name": "Carrizo Plain, Soda Lake Road foothills",
+        "latitude": 35.1914,
+        "longitude": -119.7929,
+        "policy": "curated_public_site"
+      },
+      "starts_at": "2026-09-15T00:00:00Z",
+      "ends_at": "2026-10-10T23:59:59.999999Z",
+      "presentation": "cant_miss",
+      "eligibility": true,
+      "significance": 85,
+      "confidence": 78,
+      "urgency": 85,
+      "evidence_state": "calendar_presence",
+      "access_state": "public",
+      "safety_state": "safe",
+      "condition_state": "not_required",
+      "drive_minutes": 81.0,
+      "drive_basis": "estimate",
+      "reason": "Peak of the documented annual cycle, with a recent report near the site.",
+      "awaiting": "Documented annual cycle and a recent report near the site. Conditions and access on the day still matter.",
+      "blockers": [],
+      "held": false,
+      "watching": false,
+      "bird_classification": null,
+      "gear": {
+        "take": "Sony FE 200-600mm f/5.6-6.3 G OSS",
+        "optional": [
+          "Sony FE 70-200mm f/2.8 GM OSS II for animals in their landscape"
+        ],
+        "skip": [
+          "Sony FE 2x Teleconverter: dawn light and moving animals need shutter speed more than reach. The 2x costs two stops (f/12.6 on the 200-600), slows autofocus and magnifies shimmer and shake; an APS-C crop of the 61 MP file keeps about 26 MP."
+        ],
+        "start": "1/1000 s or faster, f/6.3, auto ISO; animal-eye AF, continuous.",
+        "support": "Beanbag on the car window or a gimbal head; stay in or beside the vehicle",
+        "technique": "Burst for sparring; backlit breath and dust at first light is the frame.",
+        "video": "DJI Osmo Pocket 3 for bugling audio",
+        "drone": "DJI Mini 3: not appropriate - wildlife is the subject, and a drone disturbs it.",
+        "drone_status": "not_appropriate"
+      },
+      "ethics": "Stay in or beside the vehicle; keep well back from bulls.",
+      "safety_summary": "No NWS warnings for this place and time.",
+      "safety_notes": [
+        "Carrizo roads are impassable clay when wet."
+      ],
+      "best_time_of_day": "Dawn, 06:00-08:30",
+      "detail": "Bugling, sparring and harem defence, and the whole thing runs on first light. Shoot from the vehicle where possible - it is a far better hide than standing, and keeps you the legal distance back. Backlit dust and breath in dawn light is the shot worth driving for.",
+      "data_as_of": "2026-09-27T17:00:00Z",
+      "valid_until": "2026-09-27T20:00:00Z",
+      "definition_key": "tule_elk_rut",
+      "definition_version": "legacy-0.16.1-1",
+      "definition_hash": "c5c21074b0b0b8be7ad03590a3901fb979df1ec302bf318637388c1b91adf1e4",
+      "engine_version": "0.1.0-dev"
+    }
+  ]
+}

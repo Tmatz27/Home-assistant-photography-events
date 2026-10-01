@@ -506,5 +506,31 @@ class TestCatalogIntegrity(unittest.TestCase):
         self.assertEqual(found, [], "no recognisable place: discarded")
 
 
+class TestFoliageVisibilityScope(unittest.TestCase):
+    def test_only_underway_unreported_foliage_enters_watching_without_changing_assessment(self):
+        for day, visible in ((20, False), (27, True)):
+            now = datetime(2026, 9, day, 17, tzinfo=UTC)
+            aspen = row(seasonal(now), "aspen_tier1_high")
+            before = dict(aspen.extra["assessment"])
+            board = eligibility.dashboard([aspen], now)
+            self.assertEqual(bool(board["watch"]), visible)
+            self.assertEqual(aspen.extra["assessment"], before)
+            self.assertFalse(before["eligible"])
+            self.assertEqual(board["events"], [])
+
+    def test_foliage_planner_retention_does_not_relax_other_drive_filters_or_the_gate(self):
+        from dataclasses import replace
+        now = datetime(2026, 9, 27, 17, tzinfo=UTC)
+        aspen = row(seasonal(now), "aspen_tier1_high")
+        aspen.planning_only = False
+        aspen.drive_hours = 7
+        aspen.extra["evidence_state"] = "behavior_confirmed"
+        other = replace(aspen, category=const.CATEGORY_MAMMALS, phenomenon="tule_elk_rut", extra=dict(aspen.extra))
+        self.assertEqual(events.within_drive([aspen, other], 6), [aspen])
+        assessment = eligibility.assess(aspen, now, max_drive_hours=6, alerts=[])
+        self.assertFalse(assessment["eligible"])
+        self.assertIn("beyond the 6 h Can't Miss drive limit", assessment["blockers"])
+
+
 if __name__ == "__main__":
     unittest.main()

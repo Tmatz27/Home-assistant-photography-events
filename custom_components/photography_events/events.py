@@ -14,6 +14,7 @@ from . import astronomy as astro
 from .event_state import event_id
 from .const import (
     CATEGORY_ASTRO,
+    CATEGORY_FOLIAGE,
     CATEGORY_PARKS,
     CATEGORY_SUNSET,
     DEFAULT_HOME,
@@ -273,7 +274,7 @@ class Opportunity:
             "feed_status", "confidence_note", "coastal_advisories",
             "moon_illumination", "peak_altitude", "cloud_cover", "comparison_through",
             "cloud_confidence", "cloud_is_forecast", "degraded_sources", "source_health_note", "degraded_required", "fallback_note",
-            "evidence_state", "behavior_evidence", "presence_count", "count", "current_phase", "phases",
+            "evidence_state", "behavior_evidence", "unconfirmed_reports", "presence_count", "count", "current_phase", "phases",
             "provider_quality", "provider_percent", "provider_model", "provider_valid_at", "provider_note",
             "sunset_at", "color_window_start", "color_window_end", "moonrise", "moonset",
             "moonrise_azimuth", "moonrise_compass", "moonset_compass", "moon_climb", "distance_km",
@@ -1026,6 +1027,8 @@ def build_seasonal_opportunities(
                     "verify_urls": list(window.verify_urls),
                     "presence_count": sum(max(1, item.reports) for item in evidence.presence) if near else 0,
                     "behavior_evidence": [_report_summary(item) for item in evidence.behavior] if near else [],
+                    # Context remains distinct from admissible confirmation.
+                    "unconfirmed_reports": [_report_summary(item) for item in evidence.undated + evidence.insufficient] if near else [],
                     "count": evidence.count if near else None,
                     "merged_reports": [report_id(item) for item in (evidence.behavior + evidence.undated + evidence.insufficient)] if near else [],
                     "latest_observed": evidence.latest.isoformat() if near and evidence.latest else None,
@@ -1355,7 +1358,12 @@ def within_drive(
     limits = category_limits or {}
     kept = []
     for item in opportunities:
-        if item.planning_only:
+        # Confirmation must not make an existing fall-color season disappear
+        # from the planner just because its route exceeds the trip budget.
+        # The separate Can't Miss gate still rejects that drive unchanged.
+        foliage_window = (item.category == CATEGORY_FOLIAGE and item.phenomenon in WINDOWS_BY_KEY
+                          and item.extra.get("precision") in ("peak", "season"))
+        if item.planning_only or foliage_window:
             kept.append(item)
             continue
         cap = min(max_hours, limits.get(item.category, max_hours))

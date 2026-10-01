@@ -29,6 +29,9 @@ class PhotographyEventsCard extends HTMLElement {
     this._showSkipped = false;
     this._choicePending = false;
     this._choiceError = "";
+    this._selectedView = null;
+    this._detailState = new Map();
+    this._anchorGeneration = 0;
   }
 
   set hass(hass) {
@@ -85,6 +88,7 @@ class PhotographyEventsCard extends HTMLElement {
       outlook_through_days: clamp(
         Number.parseInt(config.outlook_through_days, 10) || DEFAULT_CONFIG.outlook_through_days, 1, 365),
     };
+    this._selectedView = mode;
     this._lastHtml = "";
     if (this._connected && this._hass && this._initialized) {
       if (weatherChanged) this._refreshWeather().then(() => this._recomputeAndRender());
@@ -118,6 +122,8 @@ class PhotographyEventsCard extends HTMLElement {
 
   disconnectedCallback() {
     this._connected = false;
+    this._anchorGeneration++;
+    this._cancelAnchor?.();
     this._clearIntervals();
   }
 
@@ -196,7 +202,94 @@ class PhotographyEventsCard extends HTMLElement {
     this._render();
   }
 
-  _render() {
+  // Follow the composed tree: a slotted card's scroll owner can live inside
+  // the slot host's shadow root, outside the parentElement chain.
+  _scrollOwners(element) {
+    const owners = [];
+    let node = element;
+    while (node) {
+      if (node.scrollHeight > node.clientHeight && typeof getComputedStyle === "function" &&
+          /auto|scroll|overlay/.test(getComputedStyle(node).overflowY)) owners.push(node);
+      node = node.assignedSlot || node.parentElement || node.getRootNode?.().host;
+    }
+    if (document.scrollingElement && !owners.includes(document.scrollingElement)) owners.push(document.scrollingElement);
+    return owners;
+  }
+
+  _visualAnchor(control) {
+    if (!this._root?.getBoundingClientRect) return null;
+    const attrs = ["data-expand", "data-category", "data-view", "data-month", "data-more", "data-skipped", "data-tab"];
+    const identity = el => {
+      if (el?.tagName === "SUMMARY") {
+        const section = el.parentElement;
+        const attr = section?.hasAttribute("data-section") ? "data-section" : "data-bucket";
+        return section?.getAttribute(attr) != null ? [attr, section.getAttribute(attr), true] : null;
+      }
+      return el && attrs.map(attr => [attr, el.getAttribute?.(attr)]).find(([, value]) => value != null);
+    };
+    const focused = this.shadowRoot.activeElement;
+    let target = control || (identity(focused) ? focused : null);
+    const viewport = typeof innerHeight === "number" ? innerHeight : Infinity;
+    if (!target) target = [...this._root.querySelectorAll("button, summary")].find(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.top >= 0 && rect.top < viewport && rect.height && identity(el);
+    });
+    target ||= this._root;
+    const rect = target.getBoundingClientRect();
+    if (!rect.height || rect.bottom < 0 || rect.top > viewport) return null;
+    return { identity: identity(target), top: rect.top, fallbackTop: this._root.getBoundingClientRect().top,
+      focus: identity(focused) };
+  }
+
+  _anchorElement(identity) {
+    if (!identity) return this._root;
+    const [attr, value, summary] = identity;
+    const el = [...this._root.querySelectorAll(`[${attr}]`)].find(item => item.getAttribute(attr) === value);
+    return summary ? el?.querySelector("summary") : el;
+  }
+
+  _restoreAnchor(anchor) {
+    this._cancelAnchor?.();
+    const generation = ++this._anchorGeneration;
+    if (!anchor) return;
+    const owners = this._scrollOwners(this._anchorElement(anchor.identity) || this._root);
+    const cancel = () => { this._anchorGeneration++; cleanup(); };
+    const types = ["wheel", "touchstart", "keydown", "pointerdown"];
+    const cleanup = () => {
+      for (const owner of owners) for (const type of types) owner.removeEventListener?.(type, cancel);
+      if (this._cancelAnchor === cleanup) this._cancelAnchor = null;
+    };
+    this._cancelAnchor = cleanup;
+    for (const owner of owners) for (const type of types) owner.addEventListener?.(type, cancel, { passive: true });
+    const restore = () => {
+      if (generation !== this._anchorGeneration || !this._connected) return;
+      const equivalent = this._anchorElement(anchor.identity);
+      const element = equivalent || this._root;
+      const top = equivalent ? anchor.top : anchor.fallbackTop;
+      for (const owner of this._scrollOwners(element)) {
+        const delta = element.getBoundingClientRect().top - top;
+        if (Math.abs(delta) < 0.5) break;
+        owner.scrollTop += delta;
+      }
+    };
+    this._anchorElement(anchor.focus)?.focus?.({ preventScroll: true });
+    restore();
+    // Lit custom elements and HA dashboard layout settle after the DOM write.
+    // Bounded frames handle that second layout; a new interaction/scroll cancels
+    // them so we never drag the user back after they deliberately move away.
+    if (typeof requestAnimationFrame === "function") {
+      let frames = 3;
+      const settle = () => {
+        if (generation !== this._anchorGeneration) { cleanup(); return; }
+        restore();
+        if (--frames) requestAnimationFrame(settle);
+        else cleanup();
+      };
+      requestAnimationFrame(settle);
+    } else cleanup();
+  }
+
+  _render(control) {
     if (!this.shadowRoot) return;
     const body = this._hass ? this._bodyHtml() : this._loadingHtml("Waiting for Home Assistant");
     if (this._dialog?.open) this._updateEventDialog();
@@ -213,13 +306,7 @@ class PhotographyEventsCard extends HTMLElement {
     }
     this._setHidden(false);
 
-    const html = `
-      <ha-card>
-        <div class="card-content">
-          ${body}
-        </div>
-      </ha-card>
-    `;
+    const html = `<div class="card-content">${this._navigationHtml()}${body}</div>`;
 
     // Ticks that produce byte-identical markup leave the live DOM untouched
     // instead of destroying and re-upgrading every ha-icon in the timeline -
@@ -230,29 +317,26 @@ class PhotographyEventsCard extends HTMLElement {
     if (!this._root) {
       const style = document.createElement("style");
       style.textContent = this._styles();
-      const root = document.createElement("div");
+      // Keep ha-card connected. Recreating a Lit host briefly removes its
+      // slotted content until its first update, collapsing the dashboard height
+      // and clamping scrollTop before a synchronous restoration can succeed.
+      const root = document.createElement("ha-card");
       root.className = "pe-root";
       this.shadowRoot.replaceChildren(style, root);
       this._root = root;
     }
-    // Replacing the scroll container reset it to zero on every expansion.
-    // Preserve both its offset and HA's outer scrollers (including shadow hosts).
+    // Keep the planner's internal offset, then preserve a visual anchor in
+    // the enclosing dashboard instead of guessing which ancestor scrolls.
     const innerScroll = this._root.querySelector(".outlook")?.scrollTop || 0;
-    const scrollers = [];
-    let ancestor = this;
-    while (ancestor) {
-      if (typeof ancestor.scrollTop === "number") scrollers.push([ancestor, ancestor.scrollTop, ancestor.scrollLeft]);
-      ancestor = ancestor.parentElement || ancestor.getRootNode?.().host;
-    }
-    if (document.scrollingElement) scrollers.push([document.scrollingElement, document.scrollingElement.scrollTop, document.scrollingElement.scrollLeft]);
-    const detailState = new Map([...this._root.querySelectorAll("[data-section]")].map(el => [el.dataset.section, el.open]));
+    const anchor = this._visualAnchor(control);
+    for (const el of this._root.querySelectorAll("[data-section]")) this._detailState.set(el.dataset.section, el.open);
     const focused = this.shadowRoot.activeElement;
     const focusedSection = focused?.tagName === "SUMMARY" ? focused.parentElement?.dataset.section : null;
     const focusAttributes = ["data-expand", "data-category", "data-view", "data-month", "data-more", "data-skipped"];
     const focusIdentity = focused && focusAttributes.map(attr => [attr, focused.getAttribute?.(attr)]).find(([, value]) => value != null);
     this._root.innerHTML = html;
     for (const el of this._root.querySelectorAll("[data-section]")) {
-      if (detailState.has(el.dataset.section)) el.open = detailState.get(el.dataset.section);
+      if (this._detailState.has(el.dataset.section)) el.open = this._detailState.get(el.dataset.section);
     }
     this._bindEvents();
     if (focusIdentity) [...this._root.querySelectorAll(`[${focusIdentity[0]}]`)]
@@ -261,7 +345,7 @@ class PhotographyEventsCard extends HTMLElement {
       .find(el => el.dataset.section === focusedSection)?.querySelector("summary")?.focus?.({preventScroll: true});
     const inner = this._root.querySelector(".outlook");
     if (inner) inner.scrollTop = innerScroll;
-    for (const [element, top, left] of scrollers) { element.scrollTop = top; element.scrollLeft = left; }
+    this._restoreAnchor(anchor);
     if (this._focusKey) {
       [...this._root.querySelectorAll("[data-expand]")].find(button => button.dataset.expand === this._focusKey)?.focus?.({ preventScroll: true });
       this._focusKey = null;
@@ -275,6 +359,20 @@ class PhotographyEventsCard extends HTMLElement {
    */
   _bindEvents() {
     if (!this._root) return;
+    for (const button of this._root.querySelectorAll("[data-tab]")) {
+      button.addEventListener("click", () => {
+        if (this._selectedView === button.dataset.tab) return;
+        this._selectedView = button.dataset.tab;
+        this._render(button);
+      });
+    }
+    for (const summary of this._root.querySelectorAll("summary")) {
+      summary.addEventListener("click", () => {
+        const anchor = this._visualAnchor(summary);
+        // Native details stays native: no DOM rebuild for a disclosure.
+        this._restoreAnchor(anchor);
+      });
+    }
     for (const section of this._root.querySelectorAll("[data-bucket]")) {
       section.addEventListener("toggle", () => {
         if (section.open) { this._collapsed.delete(section.dataset.bucket); this._openedBuckets.add(section.dataset.bucket); }
@@ -286,20 +384,20 @@ class PhotographyEventsCard extends HTMLElement {
         const key = button.dataset.more;
         if (this._moreBuckets.has(key)) this._moreBuckets.delete(key);
         else this._moreBuckets.add(key);
-        this._render();
+        this._render(button);
       });
     }
     for (const button of this._root.querySelectorAll("[data-view]")) {
-      button.addEventListener("click", () => { this._calendarView = button.dataset.view === "calendar"; this._render(); });
+      button.addEventListener("click", () => { this._calendarView = button.dataset.view === "calendar"; this._render(button); });
     }
     for (const button of this._root.querySelectorAll("[data-month]")) {
-      button.addEventListener("click", () => { this._calendarOffset = clamp(this._calendarOffset + Number(button.dataset.month), 0, 12); this._render(); });
+      button.addEventListener("click", () => { this._calendarOffset = clamp(this._calendarOffset + Number(button.dataset.month), 0, 12); this._render(button); });
     }
     for (const button of this._root.querySelectorAll("[data-open]")) {
       button.addEventListener("click", () => this._openCalendarEvent(button.dataset.open));
     }
     for (const button of this._root.querySelectorAll("[data-skipped]")) {
-      button.addEventListener("click", () => { this._showSkipped = !this._showSkipped; this._render(); });
+      button.addEventListener("click", () => { this._showSkipped = !this._showSkipped; this._render(button); });
     }
     for (const button of this._root.querySelectorAll("[data-choice]")) {
       button.addEventListener("click", () => this._saveChoice(button.dataset.eventid, button.dataset.choice));
@@ -310,7 +408,7 @@ class PhotographyEventsCard extends HTMLElement {
         if (!category || !this._activeFilters) return;
         if (this._activeFilters.has(category)) this._activeFilters.delete(category);
         else this._activeFilters.add(category);
-        this._render();
+        this._render(button);
       });
     }
     for (const button of this._root.querySelectorAll("[data-expand]")) {
@@ -320,7 +418,7 @@ class PhotographyEventsCard extends HTMLElement {
         this._focusKey = key;
         if (this._expanded.has(key)) this._expanded.delete(key);
         else this._expanded.add(key);
-        this._render();
+        this._render(button);
       });
     }
   }

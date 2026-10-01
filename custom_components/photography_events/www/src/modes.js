@@ -6,15 +6,25 @@
 const SUPPRESSED = new Set(["skip", "seen"]);
 
 const CARD_MODES = {
+  _navigationHtml() {
+    if (!this._hass || (!this._isBackendMode() && !this._cantMissEntityId())) return "";
+    const selected = this._selectedView || this._config.mode;
+    return `<nav class="pe-navigation" aria-label="Photography views">${[
+      [MODE_HERO, "CAN'T MISS"], ["watching", "WATCHING"], [MODE_OUTLOOK, "YEAR PLANNER"], [MODE_BIRDS, "BIRDS"],
+    ].map(([view, label]) => `<button type="button" data-tab="${view}" aria-pressed="${selected === view || (view === MODE_OUTLOOK && selected === MODE_TIMELINE)}">${label}</button>`).join("")}</nav>`;
+  },
+
   _bodyHtml() {
+    const mode = this._selectedView || this._config.mode;
     // The default dashboard is Can't Miss. Against an older backend without
     // that sensor, the 0.15 seven-day view and then the legacy hero remain.
-    if (this._config.mode === MODE_HERO) {
+    if (mode === MODE_HERO) {
       if (this._cantMissEntityId()) return this._cantMissHtml();
       return this._outlookEntityId() ? this._weekHtml() : this._heroHtml();
     }
-    if (this._config.mode === MODE_BIRDS) return this._birdsHtml();
-    if (this._config.mode === MODE_OUTLOOK || this._outlookEntityId()) return this._outlookHtml();
+    if (mode === "watching") return this._watchingHtml();
+    if (mode === MODE_BIRDS) return this._birdsHtml();
+    if (mode === MODE_OUTLOOK || this._outlookEntityId()) return this._outlookHtml();
     // Installed integrations share one event truth, even for older dashboard
     // configs. The legacy calculator remains only for standalone installations.
 
@@ -638,7 +648,7 @@ const CARD_MODES = {
     const options = event.nightOptions || [event, ...(event.alternatives || [])];
     const drives = options.map(e => e.drive_hours).filter(d => Number.isFinite(d) && d > 0);
     const places = Array.isArray(event.locations_detail) && event.locations_detail.length ? event.locations_detail.map(p=>p.name) : event.locations || [event.where || event.zone || park?.name].filter(Boolean);
-    const evidence = [["Status", VERIFICATION_META[event.verification]?.label], ["What is known", event.evidence_note], ["Still needed", event.awaiting], ["Observed", event.observed_at ? absoluteLabel(parseEventDate(event.observed_at)) : null], ["Priority", `${event.score}/100 — ranking, not a probability`], ["Fallback in use", event.fallback_note], ["Data degraded", event.source_health_note]];
+    const evidence = [["Status", VERIFICATION_META[event.verification]?.label], ["What is known", event.evidence_note], ["Still needed", event.awaiting], ["Why not Can't Miss", (event.blockers || []).join("; ")], ["Observed", event.observed_at ? absoluteLabel(parseEventDate(event.observed_at)) : null], ["Priority", `${event.score}/100 — ranking, not a probability`], ["Fallback in use", event.fallback_note], ["Data degraded", event.source_health_note]];
     if (event.condition_states && typeof event.condition_states === "object") evidence.push(...Object.entries(event.condition_states));
     if (Number.isFinite(event.cloud_cover)) evidence.push([cloudLabel(event), `${event.cloud_cover}%`]);
     if (Number.isFinite(event.streamflow_cfs)) evidence.push(["Basin flow observation", `${event.streamflow_cfs} cfs · ${event.streamflow_trend || "trend unknown"} · ${absoluteLabel(parseEventDate(event.streamflow_observed_at))}. Merced basin proxy, not waterfall spray or future flow.`]);

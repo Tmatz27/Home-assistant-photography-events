@@ -1,4 +1,16 @@
-# Handoff log — current release 0.16.0
+# Handoff log — current release 0.16.1
+
+## 2026-09-30: 0.16.1 scroll preservation and Watching
+
+Publication base: `4884dc787c2d86fc8ef796566861d1e147dfa9da`. The user approved both foliage visibility exceptions and explicitly authorized committing, pushing main and releasing v0.16.1 after validation.
+
+The card retains its ha-card host, follows slotted/shadow scroll ancestry and restores the initiating control's visual anchor through bounded layout settling. In-card Can't Miss / Watching / Year Planner / Birds navigation retains configured initial modes and performs no provider refresh. Watching displays backend report context and blockers, with a compact summary under Can't Miss. Foliage is labelled Fall Color.
+
+Approved backend exceptions retain existing underway foliage peaks in Watching while awaiting a first report and preserve confirmed distant foliage windows in Year Planner. Undated reports remain context only. The Can't Miss assessment function, including its drive and evidence gates, is unchanged. No new coverage, source architecture, map or v0.17 work was added.
+
+Local validation: 472 portable Python tests, 89 real-HA tests (HA 2024.11.3 / Python 3.12), 127 JavaScript tests and 60 browser checks passed. The full Python run exposed one legacy drive-filter assertion inconsistent with the approved foliage retention; it was updated to test both retained foliage and filtered non-foliage, then all 472 portable tests passed again. Six new HA foliage cases cover no report, undated context, confirmed over/under the drive cap, disabled foliage and source failure. A confirming-source outage keeps the window visible but assessment incomplete.
+
+Build synchronization, JavaScript syntax, pyflakes, version consistency and diff whitespace checks passed. Browser checks cover desktop, 390x844 and 412x915 with no errors or horizontal overflow; the v0.16.0 baseline reproduces large jumps in the asynchronous layout fixture. Installed HA and live-provider verification remain outstanding. Remote CI and publication are verified separately after this commit.
 
 ## 2026-09-28: main-only development and explicit releases
 

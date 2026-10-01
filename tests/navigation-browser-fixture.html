@@ -1,0 +1,94 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>0.16.1 deep dashboard regression</title>
+<style>
+body { margin:0; background:#141719; color:#eee; font:14px system-ui; --primary-text-color:#eee; --secondary-text-color:#bbb; --card-background-color:#202629; --primary-color:#94c8a3; --divider-color:#ffffff22; }
+header { padding:10px; height:100px; box-sizing:border-box; } button { padding:8px; } #results { white-space:pre-wrap; } dashboard-fixture { display:block; }
+</style></head><body><header><button id="run" disabled>Run dashboard regression</button> <button id="show">Show Watching</button> <button id="editor">Show editor</button><span id="status">Loading</span></header>
+<dashboard-fixture><photography-events-card></photography-events-card></dashboard-fixture><pre id="results"></pre>
+<script type="module">
+// Synthetic Lit-like first update: a newly connected ha-card has no slot until
+// its asynchronous update. Replacing this host collapses its contribution to
+// the surrounding scroll height. Real installed HA still needs verification.
+customElements.define('ha-card', class extends HTMLElement {
+  constructor(){super(); this.attachShadow({mode:'open'});}
+  connectedCallback(){ requestAnimationFrame(()=>{this.shadowRoot.innerHTML='<style>:host{display:block}</style><slot></slot>';}); }
+});
+const params=new URLSearchParams(location.search);
+await import(params.has('baseline') ? '/outputs/photography-events-card-v0.16.0.js' : '../custom_components/photography_events/www/photography-events-card.js');
+const host=document.querySelector('dashboard-fixture');
+const root=host.attachShadow({mode:'open'});
+root.innerHTML=`<style>:host{display:block} .scroller{height:calc(100vh - 100px);overflow:auto;overflow-anchor:none}.above{height:2400px;background:repeating-linear-gradient(#1b2226 0 220px,#141719 220px 240px)}.layout{max-width:640px;margin:auto;display:grid;grid-template-columns:minmax(0,1fr)}.below{height:1000px}</style><div class="scroller"><div class="above">Substantial dashboard content above the card</div><div class="layout"><slot></slot></div><div class="below">Dashboard content below</div></div>`;
+const scroller=root.querySelector('.scroller'), above=root.querySelector('.above');
+const card=host.querySelector('photography-events-card');
+const now=Date.now(), at=d=>new Date(now+d*86400000).toISOString();
+const watch={key:'aspen',event_id:'aspen',phenomenon:'aspen_tier1_high',title:'Eastern Sierra aspen, high elevation',category:'foliage',where:'Bishop Creek: North Lake',start:at(-2),end:at(7),all_day:true,drive_hours:6.66,drive_source:'Google Routes',drive_basis:'current',status:'Undated report; not confirmation',presentation:'watch',significance:80,detail:'High-elevation aspens turn first; a hard freeze or wind event can end the color.',awaiting:'A dated live confirmation.',blockers:["live confirmation required", "beyond the 6 h Can't Miss drive limit"],unconfirmed_reports:[{source:'California Fall Color',text:'North Lake aspen near peak.',observed_at:null}]};
+const events=Array.from({length:12},(_,i)=>({key:`event-${i}`,event_id:`event-${i}`,title:`Synthetic event ${i+1}`,category:i%2?'mammals':'astronomy',where:'Public viewpoint',zone:'Public viewpoint',start:at(0),end:at(3),all_day:true,score:95-i,significance:90,drive_hours:2,status:'Synthetic confirmed event',detail:'Synthetic details for testing only.',gear_plan:{take:'70-200 GM II'},verification:'computed'}));
+let calls=0;
+const states={'sensor.preview_can_t_miss':{state:'12',attributes:{events,watch:[watch],held:[],signals:[],generated:new Date().toISOString(),preferences:{},sources:{},birds:{spectacle:[],encounter:[],chase:[]},show_limit:5}},'sensor.preview_planning_outlook':{state:'13',attributes:{events:[...events,watch],generated:new Date().toISOString(),categories:['astronomy','mammals','foliage'],all_categories:['astronomy','mammals','foliage'],sources:{}}}};
+card.setConfig({mode:'action_hero'}); card.hass={connected:true,states,callService:async()=>{calls++},callWS:async()=>{calls++}};
+const frame=()=>new Promise(resolve=>requestAnimationFrame(resolve));
+const settle=async()=>{for(let i=0;i<7;i++)await frame()};
+const output=document.querySelector('#results'), status=document.querySelector('#status');
+await settle(); status.textContent='Ready'; document.querySelector('#run').disabled=false;
+// A dashboard can relayout a preceding grid/masonry item after observing a
+// descendant update. Toggle a small height only in this explicit stress case.
+if(params.has('relayout')) new MutationObserver(()=>requestAnimationFrame(()=>{above.style.height=above.style.height==='2440px'?'2400px':'2440px'})).observe(card.shadowRoot,{childList:true,subtree:true});
+document.querySelector('#show').onclick=async()=>{card.shadowRoot.querySelector('[data-tab="watching"]')?.click();await settle();scroller.scrollTop=card.getBoundingClientRect().top-scroller.getBoundingClientRect().top+scroller.scrollTop-25;};
+document.querySelector('#editor').onclick=()=>{
+  const editor=document.createElement('photography-events-card-editor');
+  editor.hass={states};editor.setConfig({mode:'action_hero'});
+  editor.addEventListener('config-changed',event=>{status.textContent=`Editor emitted ${event.detail.config.mode}`});
+  root.querySelector('.below').replaceChildren(editor);
+  scroller.scrollTop+=editor.getBoundingClientRect().top-120;
+};
+document.querySelector('#run').onclick=async()=>{
+  if(document.querySelector('#run').disabled)return;
+  document.querySelector('#run').disabled=true;
+  const results=[]; status.textContent='Running'; output.textContent='';
+  const check=(name,pass,detail='')=>results.push({name,pass,detail});
+  const click=async(name,selector,index=0)=>{
+    const controls=card.shadowRoot.querySelectorAll(selector), control=controls[index];
+    if(!control){check(name,false,`Missing ${selector}`);return;}
+    // Fixture setup only: place the actual initiating control inside the outer
+    // viewport, well below the dashboard top. No scrollIntoView in production.
+    scroller.scrollTop+=control.getBoundingClientRect().top-230;
+    await settle(); const before=control.getBoundingClientRect().top, scrollBefore=scroller.scrollTop;
+    control.focus({preventScroll:true});control.click();await settle();
+    const replacement=card.shadowRoot.querySelectorAll(selector)[index];
+    const after=replacement?.getBoundingClientRect().top;
+    check(name,Number.isFinite(after)&&Math.abs(after-before)<3&&scroller.scrollTop>1500,
+      `top ${before.toFixed(1)} -> ${after?.toFixed(1)}; scroll ${scrollBefore.toFixed(0)} -> ${scroller.scrollTop.toFixed(0)}`);
+  };
+  try {
+    await click('Expand event','[data-expand]',3);
+    await click('Open evidence details','[data-section="event-3-evidence"] summary');
+    await click('Close evidence details','[data-section="event-3-evidence"] summary');
+    await click('Collapse event','[data-expand]',3);
+    await click('Show more','[data-more="cant-miss"]');
+    await click('Show fewer','[data-more="cant-miss"]');
+    if(params.has('baseline')) {card.setConfig({mode:'calendar_outlook'});await settle();}
+    else {
+      await click('Watching tab','nav [data-tab="watching"]');
+      check('Watch context/drive/missing evidence visible',/California Fall Color/.test(card.shadowRoot.textContent)&&/undated; not confirmation/.test(card.shadowRoot.textContent)&&/6 h/.test(card.shadowRoot.textContent)&&/dated live confirmation/.test(card.shadowRoot.textContent));
+      await click('Year Planner tab','nav [data-tab="calendar_outlook"]');
+    }
+    await click('Category off','[data-category="foliage"]');
+    await click('Category on','[data-category="foliage"]');
+    await click('Calendar view','[data-view="calendar"]');
+    await click('Next month','[data-month="1"]');
+    await click('Previous month','[data-month="-1"]');
+    await click('List view','[data-view="list"]');
+    if(!params.has('baseline')) {
+      await click('Birds tab','nav [data-tab="birds"]');
+      await click('Return to Cant Miss','nav [data-tab="action_hero"]');
+      check('Config unchanged',card._config.mode==='action_hero');
+    }
+    check('No backend calls on navigation',calls===0,`${calls} calls`);
+    check('No horizontal overflow',scroller.scrollWidth<=scroller.clientWidth+1&&document.documentElement.scrollWidth<=innerWidth);
+  } catch(error) {check('Uncaught test exception',false,String(error));}
+  output.textContent=JSON.stringify({viewport:[innerWidth,innerHeight],baseline:params.has('baseline'),results},null,2);
+  status.textContent=`${results.filter(r=>r.pass).length}/${results.length} PASS`;
+  document.querySelector('#run').disabled=false;
+};
+</script></body></html>

@@ -164,3 +164,10 @@ YosemiteMoonbow.com publishes its Lower Fall and Upper Fall predictions as page 
 These are implemented against documentation, published clients or earlier saved responses, and **have not been confirmed against a live response** from this environment: SunsetWx login and quality responses (including `last_updated`); eBird species responses; the statewide NWS active-alerts payload (including polygon versus county-only alerts and real malformed features); the Friends of the Elephant Seal "what's happening now" page (no scraper exists); the Condor Express feed's real wording; real Open-Meteo condition bundles; NPS pagination and access (`total`, `start`, category names); current CDFW grunion parsing; NOAA station/timezone enrichment.
 
 Drone legality: NPS Policy Memorandum 14-05 under 36 CFR 1.5 (national parks); 50 CFR 27.34 and 27.51 (national wildlife refuges).
+
+
+### 0.16.1 foliage presentation (user-approved product rules)
+
+Existing foliage peak windows that are underway and have `evidence_state=watching` are included in the Watching payload even when their unchanged assessment is planner-only. A first report is not required for discoverability; a qualifying dated report is still required for eligibility. Future unreported peaks remain in Year Planner.
+
+An existing foliage window is retained by the planner's drive filter after confirmation. The separate Can't Miss gate still applies the configured drive cap and publishes the over-limit blocker. This exception does not apply to other categories or add any places/phenomena. Unconfirmed report snippets are exposed as context, never included in `behavior_evidence`. California Fall Color failure preserves the season but makes category assessment incomplete; it is not evidence of an empty week.

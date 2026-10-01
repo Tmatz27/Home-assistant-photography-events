@@ -109,8 +109,8 @@ class PhotographyEventsCardEditor extends HTMLElement {
 
       <div class="section">
         <div class="title">Display</div>
-        <div class="row"><span class="label">Mode</span>
-          <select data-select="mode">
+        <div class="row"><span class="label">Initial view</span>
+          <select data-select="mode" aria-label="Initial view">
             ${this._timelineIsDistinct(cfg) ? `
             <option value="${MODE_TIMELINE}" ${cfg.mode === MODE_TIMELINE ? "selected" : ""}>Timeline (browser calculator)</option>` : ""}
             <option value="${MODE_HERO}" ${cfg.mode === MODE_HERO ? "selected" : ""}>Can't miss (next seven days)</option>
@@ -119,7 +119,7 @@ class PhotographyEventsCardEditor extends HTMLElement {
           </select>
         </div>
         <div class="hint">${backendMode
-          ? "Reads the Photography Events integration's entities. Everything below the mode is about which entities to read."
+          ? "Reads the Photography Events integration's entities. The card's navigation switches views without changing this initial view."
           : "Computes everything in the browser from your coordinates. Works without the integration installed."}</div>
         <div class="row"><span class="label">Card title</span>
           <input type="text" data-text="title" value="${escapeHtml(cfg.title)}">
@@ -224,7 +224,7 @@ class PhotographyEventsCardEditor extends HTMLElement {
         <div class="section">
           <div class="title">Can't miss</div>
           ${this._toggleRow("show_gear", "Show the gear recommendation")}
-          <div class="hint">Only what passed the integration's Can't Miss gate this week, usually zero to five rows. Everything else stays in the year planner and a collapsed background list.</div>
+          <div class="hint">Only what passed the integration's Can't Miss gate this week, usually zero to five rows. Use Watching for pending phenomena, Year Planner for seasons, and Birds for spectacle, encounter and chase.</div>
         </div>` : `
         <div class="section">
           <div class="title">Range</div>

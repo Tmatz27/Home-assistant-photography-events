@@ -63,7 +63,7 @@ const CATEGORY_META = Object.freeze({
   mammals: { color: "#d9b78b", label: "Mammals", icon: "mdi:paw" },
   birds: { color: "#d4ce72", label: "Birds", icon: "mdi:bird" },
   blooms: { color: "#ed9cc8", label: "Blooms", icon: "mdi:flower" },
-  foliage: { color: "#e8ab66", label: "Autumn", icon: "mdi:leaf-maple" },
+  foliage: { color: "#e8ab66", label: "Fall Color", icon: "mdi:leaf-maple" },
   parks: { color: "#92ca96", label: "Parks", icon: "mdi:pine-tree" },
   rare_phenomena: { color: "#c9a4ef", label: "Rare", icon: "mdi:star-shooting" },
 });

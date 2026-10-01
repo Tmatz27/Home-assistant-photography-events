@@ -81,7 +81,8 @@ function driveBasisLabel(row, now) {
 function whereLabel(row, now = new Date()) {
   const place = row.where || row.zone || "";
   const hours = Number(row.drive_hours);
-  if (!Number.isFinite(hours) || hours <= 0.05) return place ? `${place} · at home` : "At home";
+  if (row.drive_hours == null || !Number.isFinite(hours)) return `${place ? `${place} · ` : ""}drive unavailable`;
+  if (hours <= 0.05) return place ? `${place} · at home` : "At home";
   let basis = "";
   if (row.drive_basis === "recent") {
     const age = routeAgeLabel(row, now);
@@ -158,9 +159,45 @@ const CANT_MISS_MODES = {
         (events.length > board.showLimit ? `<button type="button" class="show-more" data-more="cant-miss" aria-expanded="${all}">${all ? "Show fewer" : `Show ${events.length - board.showLimit} more`}</button>` : "")
         : this._cantMissEmptyHtml(board, stale)}
       ${this._heldHtml(board)}
+      ${this._watchSummaryHtml(board)}
       ${this._backgroundHtml(board, now)}
       ${healthStripHtml(board.sources)}
     </div>`;
+  },
+
+  _watchSummaryHtml(board) {
+    if (!board.watch.length) return "";
+    return `<aside class="cm-watch-summary"><strong>WATCHING ${board.watch.length} OPPORTUNIT${board.watch.length === 1 ? "Y" : "IES"}</strong>
+      <p>${board.watch.slice(0, 3).map(row => escapeHtml(row.title)).join(" · ")}</p>
+      <button type="button" class="show-more" data-tab="watching">View Watching</button></aside>`;
+  },
+
+  _watchingHtml() {
+    const board = cantMissFromState(this._hass.states[this._cantMissEntityId()]);
+    const now = new Date();
+    return `<div class="cm-card"><div class="cm-heading"><span>Watching</span><span class="cm-sub">tracked · not yet Can't Miss</span></div>
+      ${this._freshnessHtml({ generated: board.generated, events: board.watch, unavailable: board.unavailable }, now, "Watching")}
+      <p class="cm-none">Potentially exceptional phenomena awaiting their event-specific evidence or conditions. These are not recommendations to go.</p>
+      ${board.watch.map((row, index) => {
+        const category = CATEGORY_META[row.category];
+        const reports = (row.behavior_evidence || []).map(report => `${report.source || "Report"}: ${report.text || ""}`).join(" ");
+        const context = (row.unconfirmed_reports || []).map(report => `${report.source || "Report"} (${report.observed_at ? "not qualifying confirmation" : "undated; not confirmation"}): ${report.text || ""}`).join(" ");
+        return `<article class="cm-watch-row" style="--event-color:${categoryColor(row.category)}">
+          <h4>${category ? `<ha-icon icon="${category.icon}"></ha-icon> ` : ""}${escapeHtml(row.title)}</h4>
+          <p>${category ? `${escapeHtml(category.label)} · ` : ""}WATCHING · ${escapeHtml(row.status || "Awaiting confirmation")}</p>
+          <p>${escapeHtml(whereLabel(row, now))}<br>${escapeHtml(whenLabel(row, now))}</p>
+          ${row.drive_basis ? `<p>${escapeHtml(driveBasisLabel(row, now))}</p>` : ""}
+          ${row.detail ? `<p><strong>Why it matters:</strong> ${escapeHtml(row.detail)}</p>` : ""}
+          ${reports ? `<p><strong>Evidence:</strong> ${escapeHtml(reports)}</p>` : ""}
+          ${context ? `<p><strong>Report context:</strong> ${escapeHtml(context)}</p>` : ""}
+          ${row.awaiting ? `<p><strong>Waiting for:</strong> ${escapeHtml(row.awaiting)}</p>` : ""}
+          ${row.blockers?.length ? `<p><strong>Why not Can't Miss:</strong> ${escapeHtml(row.blockers.join("; "))}</p>` : ""}
+          ${row.source_health_note ? `<p>${escapeHtml(row.source_health_note)}</p>` : ""}
+          <details data-section="watch-${escapeHtml(row.key || row.phenomenon || String(index))}" class="detail-section"><summary>Evidence & details</summary>
+            ${this._cantMissDetailHtml({ ...row, key: `watch-${row.key || row.phenomenon || index}` }, board, now, false)}</details>
+        </article>`;
+      }).join("") || `<p class="cm-none">${board.unavailable ? "Waiting for the Watching payload." : "No assessed Watch opportunities in the current watch window. The year planner still lists longer-range seasons."}</p>`}
+      ${this._backgroundHtml({ ...board, watch: [] }, now)}${healthStripHtml(board.sources)}</div>`;
   },
 
   /** Held: every other check passed, but one could not be made. Never silently dropped, never presented as clear. */
@@ -197,7 +234,7 @@ const CANT_MISS_MODES = {
     const watched = board.watch.length;
     return `<div class="cm-empty" role="status"><ha-icon icon="mdi:check-circle-outline"></ha-icon>
       <strong>${escapeHtml(board.headline || "Nothing worth changing plans for this week.")}</strong>
-      <span>${watched ? `${watched} phenomen${watched === 1 ? "on is" : "a are"} being watched below.` : "Nothing is building either."} The year planner still lists every season.</span></div>`;
+      <span>${watched ? `${watched} opportunit${watched === 1 ? "y is" : "ies are"} being watched.` : "Nothing is building either."} The year planner still lists every season.</span></div>`;
   },
 
   _cantMissRowHtml(row, board, now) {
@@ -222,7 +259,7 @@ const CANT_MISS_MODES = {
     </div>`;
   },
 
-  _cantMissDetailHtml(row, board, now) {
+  _cantMissDetailHtml(row, board, now, showChoices = true) {
     const list = rows => `<dl class="outlook-detail-grid">${rows.filter(([, v]) => v !== undefined && v !== null && v !== "" && !(Array.isArray(v) && !v.length))
       .map(([k, v]) => `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(Array.isArray(v) ? v.join(" ") : v)}</dd>`).join("")}</dl>`;
     const section = (id, title, body) => `<details class="detail-section" data-section="${escapeHtml(row.key)}-${id}"><summary>${title}</summary>${body}</details>`;
@@ -248,13 +285,13 @@ const CANT_MISS_MODES = {
     // Required safety kit first; owned kit next; unowned suggestions last and
     // labelled as such, so the two are never read as one packing list.
     const gear = gearPlanRows(plan);
-    const access = [["Where", row.where || row.zone], ["Approximate drive", Number(row.drive_hours) > 0.05 ? `${driveLabel(Math.round(row.drive_hours * 60))} (${driveBasisLabel(row, now)})` : "At home"],
+    const access = [["Where", row.where || row.zone], ["Approximate drive", row.drive_hours == null ? "Unavailable" : Number(row.drive_hours) > 0.05 ? `${driveLabel(Math.round(row.drive_hours * 60))} (${driveBasisLabel(row, now)})` : "At home"],
       ["Drive estimate", row.drive_basis === "recent" && Number(row.estimated_drive_hours) > 0 ? `${driveLabel(Math.round(row.estimated_drive_hours * 60))} by distance` : ""],
       ["Access", row.access_note], ["Safety", [row.safety_summary, ...(row.safety_notes || [])].filter(Boolean).join(" ")],
       ["Wildlife ethics", row.ethics], ["Closures", (row.closures || []).join("; ")]];
     return `<div class="outlook-detail">
       ${row.detail ? `<p class="event-intro">${escapeHtml(row.detail)}</p>` : ""}
-      ${this._eventControlsHtml(row.event_id || row.key, board.preferences[row.event_id || row.key]?.choice)}
+      ${showChoices ? this._eventControlsHtml(row.event_id || row.key, board.preferences[row.event_id || row.key]?.choice) : ""}
       ${section("evidence", "Evidence & sources", list(evidence) + reports + reportLinkHtml(row) + `<div class="outlook-verify">${links}</div>`)}
       ${section("dates", "Dates & timing", list(dates))}
       ${this._config.show_gear !== false ? section("gear", "Gear & technique", list(gear)) : ""}
@@ -264,9 +301,8 @@ const CANT_MISS_MODES = {
 
   /** One collapsed section for everything that is building but not yet a reason to go. */
   _backgroundHtml(board, now) {
-    const total = board.watch.length + board.signals.length;
+    const total = board.signals.length;
     if (!total) return "";
-    const watch = board.watch.map(item => `<li><strong>${escapeHtml(item.title)}</strong> · ${escapeHtml(item.status || "")}<br><span>${escapeHtml(item.awaiting || "")}</span></li>`).join("");
     const signals = board.signals.map(signal => {
       const stamp = parseEventDate(signal.observed_at || signal.valid_at);
       const url = safeExternalUrl(signal.url);
@@ -275,7 +311,6 @@ const CANT_MISS_MODES = {
     }).join("");
     return `<details class="cm-background" data-section="cant-miss-background"><summary>Watching ${total} background signal${total === 1 ? "" : "s"}</summary>
       <p>Evidence that something may be building. None of it is a reason to go on its own; a sighting is a signal, not an event.</p>
-      ${watch ? `<h4>Phenomena being watched</h4><ul>${watch}</ul>` : ""}
       ${signals ? `<h4>Recent signals</h4><ul>${signals}</ul>` : ""}</details>`;
   },
 

@@ -27,9 +27,12 @@ A sighting is evidence. A season is context. A photographic phenomenon is an eve
 | View | What it is for |
 | --- | --- |
 | **Can't Miss** | The next seven days, usually 0–5 displayed rows. Eligibility is checked before ranking. A fully assessed empty week says **“Nothing worth changing plans for this week.”** Missing required data instead shows **assessment incomplete**, with reasons and held opportunities where available. |
+| **Watching** | Assessed phenomena awaiting event-specific evidence or conditions, with the missing confirmation, report context and drive limits shown. These are not recommendations to go. Foliage appears as **Fall Color**, including an underway peak awaiting its first report. Confirmed foliage beyond the drive limit remains in Year Planner. |
 | **Year Planner** | Long-range seasons, astronomy, tides, park windows and planning-only candidates. Broad seasons remain broad; available shooting windows retain their times and alternatives. |
 | **Birds** | Separate Bird Spectacle, Bird Encounter and Bird Chase lists. |
-| **Background signals** | Collapsed evidence and watch material beneath Can't Miss. A raw sighting is not promoted just because something was seen. |
+| **Background signals** | Collapsed raw evidence beneath Can't Miss and Watching. A raw sighting is not promoted just because something was seen. |
+
+**Can't Miss | Watching | Year Planner | Birds** are available inside one card. Can't Miss also shows a compact summary when Watch opportunities exist. Switching views changes only local UI state; it does not poll providers or refresh the integration.
 
 Follow, Skip and **Seen it · Got the shot** apply to an occurrence and persist across dashboards and restarts. Skip and Seen suppress that occurrence; a future year's occurrence remains separate. Calendar views retain full date ranges, and the card distinguishes stale data from an empty result.
 
@@ -38,7 +41,7 @@ Follow, Skip and **Seen it · Got the shot** apply to an occurrence and persist 
 This repository is **one HACS Integration install**, including the card. Its `hacs.json` declares **Home Assistant 2024.11.0 or newer**; your installed HACS version may have its own requirements.
 
 1. In HACS, open **Custom repositories** and add `https://github.com/Tmatz27/Home-assistant-photography-events` with type **Integration**.
-2. Find **Photography Events** and install version **0.16.0**.
+2. Find **Photography Events** and install version **0.16.1**.
 3. Restart Home Assistant.
 4. Open **Settings → Devices & services → Add integration**.
 5. Search for **Photography Events**.
@@ -83,7 +86,7 @@ None of these keys is required for the integration itself to load. Clearing a cr
 
 ## Add the card
 
-A new card from the picker starts on **Can't Miss** when the integration's entities are available. For compatibility, an older YAML card without `mode` renders the planner. Set the mode explicitly when choosing a view:
+A new card from the picker starts on **Can't Miss** when the integration's entities are available. For compatibility, an older YAML card without `mode` renders the planner. The configured mode chooses the initial view; the in-card navigation can switch views without rewriting YAML:
 
 ```yaml
 type: custom:photography-events-card

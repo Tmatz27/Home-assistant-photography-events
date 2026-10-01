@@ -1,3 +1,23 @@
+# Browser validation — 0.16.1 candidate
+
+Synthetic DOM checks in the Codex Chromium browser. The user's installed Home Assistant was not accessed.
+
+Fixture: `tests/navigation-browser-fixture.html`. Serve the workspace root, then open `/work/repo/tests/navigation-browser-fixture.html?relayout`. The card is below 2,400 px of dashboard content, slotted through a shadow root into an outer scroll viewport. A simulated dashboard observer changes an earlier grid item's height by 40 px after card mutations. A minimal Lit-like `ha-card` delays its first slot render.
+
+- Desktop 1280×900: 20/20 passed.
+- Mobile 390×844: 20/20 passed.
+- Mobile 412×915: 20/20 passed.
+- Expand/collapse, native detail open/close, Show more/fewer, category off/on, list/calendar, previous/next month and all four top-level views preserve the initiating control within 0.1 px in these runs (3 px allowed).
+- Visual editor: switching among Birds, Year Planner and Can't Miss emitted the expected unchanged mode values.
+- Navigation generated zero backend calls, left configuration unchanged, and displayed undated California Fall Color context, missing confirmation and the over-limit drive reason. No horizontal overflow or browser console errors.
+- Baseline 0.16.0: 12/14 checks passed; Show more moved its control from 229.8 to 1400.6 px, and Show fewer from 229.7 to 460.1 px. Run with `?baseline` and provide the original bundle at `/outputs/photography-events-card-v0.16.0.js` (outside the repo).
+
+The reproduced causes are full `ha-card` replacement (an asynchronously rendered host temporarily loses its slot/height), synchronous offset restoration, missing assigned-slot traversal, and keeping an offset rather than the clicked control's position when preceding content changes. Home Assistant's [`ha-card` source](https://github.com/home-assistant/frontend/blob/dev/src/components/ha-card.ts) is a Lit element whose render creates that slot. The fixture demonstrates the mechanism; it does not prove the exact timing/layout of the user's installed frontend.
+
+The fix retains the host, captures a stable control/section identity and viewport top, follows the composed tree to real scrolling containers, restores focus without scrolling, and compensates anchor movement synchronously plus three animation frames. New interaction cancels pending corrections. Native disclosures do not rebuild the DOM. Installed-HA verification remains necessary, including dashboard layouts or delayed reflows beyond the bounded settling interval.
+
+---
+
 # Browser validation — 0.14.0
 
 2026-09-17, Codex in-app Chromium browser. This is a real-DOM test with synthetic events, not the user's installed Home Assistant or live sightings.

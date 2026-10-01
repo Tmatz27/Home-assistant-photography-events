@@ -90,6 +90,7 @@ class FakeNode {
 }
 
 class FakeHTMLElement {
+  addEventListener() {}
   constructor() {
     // Real elements always have one, and the hero mode hides itself through it.
     this.style = {};
@@ -1973,7 +1974,8 @@ test("background signals stay in one collapsed, subordinate section", () => {
     watch: [{ title: "Humpback lunge feeding", status: "Species reported; behaviour unconfirmed", awaiting: "A dated behaviour report." }] }) } };
   card.connectedCallback();
   const html = card._root.innerHTML;
-  assert.match(html, /<details class="cm-background" data-section="cant-miss-background"><summary>Watching 13 background signals/);
+  assert.match(html, /<details class="cm-background" data-section="cant-miss-background"><summary>Watching 12 background signals/);
+  assert.match(html, /WATCHING 1 OPPORTUNITY/);
   assert.doesNotMatch(html, /data-section="cant-miss-background" open/);
   assert.equal(card._root.querySelectorAll("[data-expand]").length, 0, "signals are never primary rows");
   card.disconnectedCallback();
@@ -2182,4 +2184,98 @@ test("a six-day-old route is never drawn like current traffic", () => {
   assert.match(recent.html, /Drive estimate/);
   assert.doesNotMatch(recent.html, /Routes API, current traffic/, "never labelled as current traffic");
   assert.notEqual(recent.html.replace(/Milky Way core \((current|recent) route\)/g, ""), current.html.replace(/Milky Way core \((current|recent) route\)/g, ""));
+});
+
+function navigationCard(mode = 'action_hero', extra = {}) {
+  const card = new Card();
+  card.setConfig(mode === null ? {} : {mode});
+  const calls=[];
+  const states={'sensor.photography_events_can_t_miss':cantMissState([cantMissRow(0)],extra),
+    'sensor.photography_events_planning_outlook':outlookState([cantMissRow(0)])};
+  card.hass={connected:true,states,callService:(...args)=>calls.push(args),callWS:(...args)=>calls.push(args)};
+  card.connectedCallback();
+  return {card,calls,states};
+}
+function tab(card, name) {card._root.querySelectorAll('[data-tab]').find(b=>b.dataset.tab===name).click()}
+
+for (const [mode, selected] of [['action_hero','action_hero'],['calendar_outlook','calendar_outlook'],['birds','birds'],[null,'calendar_outlook']]) {
+  test(`navigation preserves initial mode ${mode}`,()=>{
+    const {card,calls}=navigationCard(mode);
+    assert.equal(card._selectedView,selected);
+    const config=JSON.stringify(card._config);
+    for(const view of ['watching','birds','calendar_outlook','action_hero']) tab(card,view);
+    assert.equal(JSON.stringify(card._config),config);
+    assert.equal(calls.length,0);
+    assert.match(card._root.innerHTML,/CAN'T MISS.*WATCHING.*YEAR PLANNER.*BIRDS/s);
+    card.disconnectedCallback();
+  });
+}
+
+test('tab state survives HA updates and returning restores expanded rows',()=>{
+  const {card,states}=navigationCard();
+  card._root.querySelectorAll('[data-expand]')[0].click();
+  tab(card,'watching');
+  card.hass={connected:true,states:{...states,'sensor.photography_events_can_t_miss':cantMissState([cantMissRow(0)])}};
+  assert.equal(card._selectedView,'watching');
+  tab(card,'action_hero');
+  assert.match(card._root.innerHTML,/data-expand="cm-0" aria-expanded="true"/);
+  const writes=card._root.writes;
+  tab(card,'action_hero');
+  assert.equal(card._root.writes,writes);
+  card.disconnectedCallback();
+});
+
+test('Watching renders backend evidence, missing confirmation, location, route and blockers without promotion',()=>{
+  const watch=[cantMissRow('aspen',{title:'Eastern Sierra aspen, high elevation',category:'foliage',presentation:'watch',eligible:false,
+    where:'Bishop Creek: North Lake',drive_hours:6.66,detail:'One hard freeze ends this window.',status:'Reported undated',
+    awaiting:'A dated report from the listed sources.',blockers:["beyond the 6 h Can't Miss drive limit"],
+    unconfirmed_reports:[{source:'California Fall Color',text:'North Lake at peak <script>unsafe</script>',observed_at:null}]})];
+  const {card}=navigationCard('action_hero',{events:[],watch});
+  assert.match(card._root.innerHTML,/WATCHING 1 OPPORTUNITY/);
+  assert.match(card._root.innerHTML,/Nothing worth changing plans for this week\./);
+  assert.equal(card._root.querySelectorAll('[data-expand]').length,0);
+  tab(card,'watching');
+  const html=card._root.innerHTML;
+  for(const text of ['Fall Color','mdi:leaf-maple','Bishop Creek: North Lake','6 h 40','One hard freeze','California Fall Color','undated; not confirmation','A dated report','beyond the 6 h']) assert.ok(html.includes(text),text);
+  assert.doesNotMatch(html,/<script>/);
+  assert.match(html,/&lt;script&gt;/);
+  card.disconnectedCallback();
+});
+
+test('empty Watching creates no category or summary and unavailable stays distinct',()=>{
+  const {card}=navigationCard('action_hero',{events:[],watch:[]});
+  assert.doesNotMatch(card._root.innerHTML,/cm-watch-summary/);
+  tab(card,'watching');
+  assert.doesNotMatch(card._root.innerHTML,/Fall Color|mdi:leaf-maple/);
+  assert.match(card._root.innerHTML,/No assessed Watch opportunities/);
+  card.hass={states:{'sensor.photography_events_can_t_miss':{state:'unavailable'}}};
+  assert.match(card._root.innerHTML,/Waiting for the Watching payload/);
+  card.disconnectedCallback();
+});
+
+test('Watching supports the compact 0.16.0 payload without inventing drive or eligibility',()=>{
+  const {card}=navigationCard('action_hero',{events:[],watch:[{title:'Aspen',phenomenon:'aspen',where:'Bishop',status:'Undated report',awaiting:'Dated report'}]});
+  tab(card,'watching');
+  assert.match(card._root.innerHTML,/Aspen/);
+  assert.match(card._root.innerHTML,/Dated report/);
+  assert.doesNotMatch(card._root.innerHTML,/undefined|NaN/);
+  card.disconnectedCallback();
+});
+
+test('scroll owners follow assigned slots and correct the surviving visual anchor after layout',()=>{
+  const local=baseSandbox(), frames=[];
+  local.getComputedStyle=()=>({overflowY:'auto'});
+  local.requestAnimationFrame=fn=>frames.push(fn);
+  vm.runInNewContext(source,local);
+  const C=local.customElements.get('photography-events-card'), card=new C();
+  card._connected=true;
+  const owner={scrollHeight:3000,clientHeight:800,scrollTop:1800};
+  const slot={parentElement:owner};
+  const element={assignedSlot:slot,parentElement:{},getBoundingClientRect:()=>({top:2100-owner.scrollTop}),focus(){}};
+  card._root=element;card._anchorElement=()=>element;
+  assert.equal(card._scrollOwners(element)[0],owner);
+  card._restoreAnchor({identity:null,top:200,fallbackTop:200});
+  assert.equal(owner.scrollTop,1900);
+  owner.scrollTop=1850;frames.shift()();assert.equal(owner.scrollTop,1900,'asynchronous layout corrected');
+  card._anchorGeneration++;owner.scrollTop=1700;frames.shift()();assert.equal(owner.scrollTop,1700,'new user interaction cancels old correction');
 });

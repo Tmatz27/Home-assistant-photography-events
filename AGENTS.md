@@ -20,7 +20,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.16.0.** `main` is the working branch; there is no PR flow.
+**Current version: 0.16.1.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 
@@ -31,6 +31,13 @@ Everything below exists to prevent that. A confident wrong answer is worse than
 an admitted unknown, every time.
 
 ---
+
+## 0.16.1 presentation amendments
+
+- In-card navigation is UI state; configured modes retain their initial views and do not trigger provider refreshes.
+- Keep the `ha-card` host connected and preserve the initiating control's visual anchor through composed-tree scroll owners and bounded layout settling.
+- User-approved foliage visibility exceptions: existing underway peak windows awaiting a first report enter the Watching payload without changing their assessment; existing confirmed foliage windows remain in the planner even beyond the drive cap. The separate Can't Miss gate and all evidence rules remain unchanged.
+- `unconfirmed_reports` is display context only, separate from admissible `behavior_evidence`.
 
 ## 0.16.0 handoff amendments — Can't Miss
 

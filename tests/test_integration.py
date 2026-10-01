@@ -512,12 +512,10 @@ class TestOpportunities(unittest.TestCase):
         for item in summer:
             self.assertLessEqual(item.end.timestamp() - item.start.timestamp(), 16 * 3600)
 
-    def test_drive_time_gates_peaks_but_not_background_seasons(self):
-        """A season is a note in a calendar; a peak window is a trip.
+    def test_drive_filter_preserves_seasons_and_foliage_planner_windows(self):
+        """Foliage remains planner context; other distant peaks are filtered.
 
-        Gating the former on drive time would blank the year view for anyone
-        with a short limit. Not gating the latter would alert about a bighorn
-        rut six hours away to someone who will not drive two.
+        Can't Miss separately enforces its drive gate for every category.
         """
         # Corroborated windows are the ones that behave like trips; give the
         # builder the evidence it needs so there are some to gate.
@@ -542,9 +540,15 @@ class TestOpportunities(unittest.TestCase):
         far_peaks = [
             item for item in built
             if not item.planning_only and item.drive_hours > 2.0
+            and item.category != const.CATEGORY_FOLIAGE
         ]
         self.assertTrue(far_peaks, "expected at least one distant peak window to gate")
         self.assertTrue(all(item.key not in {n.key for n in near} for item in far_peaks))
+
+        far_foliage = [item for item in built if not item.planning_only
+                       and item.drive_hours > 2.0 and item.category == const.CATEGORY_FOLIAGE]
+        self.assertTrue(far_foliage, "expected confirmed distant foliage to remain visible")
+        self.assertTrue(all(item.key in {n.key for n in near} for item in far_foliage))
 
         seasons = [item for item in built if item.planning_only]
         self.assertTrue(seasons)

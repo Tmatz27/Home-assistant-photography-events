@@ -6,6 +6,16 @@
 
 
 
+## 0.16.1
+
+Maintenance release; installed-Home-Assistant verification remains outstanding.
+
+- Preserve the dashboard interaction anchor across card updates; keep the `ha-card` host connected and account for shadow slots and asynchronous layout.
+- Add in-card Can't Miss, Watching, Year Planner and Birds navigation. Existing YAML modes still choose the initial view.
+- Show backend-assessed Watch opportunities with evidence, missing confirmation, location, timing, drive and gate reasons; summarize them beneath Can't Miss.
+- Label foliage as Fall Color. Preserve undated report context without treating it as confirmation. Show in-window foliage awaiting a report in Watching, and retain confirmed over-limit foliage windows in Year Planner.
+- Can't Miss evidence, significance, safety and drive eligibility remain unchanged. No geographic, map or v0.17 work.
+
 ## 0.16.0
 
 Released 2026-09-28 — the first stable snapshot of the regret-prevention architecture.

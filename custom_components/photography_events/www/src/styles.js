@@ -1,4 +1,13 @@
 const CARD_STYLES = `
+      .pe-navigation { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-bottom: 18px; }
+      .pe-navigation button { min-width: 0; padding: 12px 2px; font-family: inherit; font-size: 10px; font-weight: 700; line-height: 1.3; color: var(--pe-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
+      .pe-navigation button[aria-pressed="true"] { color: var(--pe-text); border-color: var(--primary-color, #85d481); }
+      .cm-watch-summary { margin: 18px 0; padding: 12px; border: 1px solid var(--pe-border); border-radius: 12px; font-size: .85rem; }
+      .cm-watch-summary p { color: var(--pe-muted); }
+      .cm-watch-row { padding: 16px 0; border-top: 1px solid var(--pe-border); overflow-wrap: anywhere; }
+      .cm-watch-row h4 { margin: 0 0 8px; }
+      .cm-watch-row p { font-size: .85rem; line-height: 1.5; margin: 8px 0; }
+      .cm-watch-row ha-icon { color: var(--event-color); --mdc-icon-size: 20px; }
       .source-health { margin: 10px 0; font-size: .82rem; }
       .source-health summary { cursor: pointer; }
       .source-health-entry { margin: 10px 0; line-height: 1.5; }

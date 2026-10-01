@@ -32,6 +32,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 
 from . import conditions, curation, gear, weather_hazards
+from .const import CATEGORY_FOLIAGE
 from .curation import (
     CLASS_BIRD_CHASE, CLASS_BIRD_ENCOUNTER, CLASS_BIRD_SPECTACLE, CLASS_CANT_MISS, CLASS_PLANNER,
     CLASS_WATCH, SIGNIFICANCE_FLOOR,
@@ -569,15 +570,25 @@ def dashboard(opportunities: list, now: datetime, *, suppressed=lambda key: Fals
     watch, seen = [], set()
     for item in sorted(opportunities, key=lambda item: -((item.extra.get("assessment") or {}).get("significance") or 0)):
         assessment = item.extra.get("assessment") or {}
-        if assessment.get("presentation") != CLASS_WATCH or assessment.get("eligible"):
+        # An existing fall-color peak with no report is still worth watching
+        # while its window is underway. This is a display selection only: its
+        # planner assessment and unmet confirmation gate remain unchanged.
+        foliage_watch = (item.category == CATEGORY_FOLIAGE and item.extra.get("precision") == "peak"
+                         and assessment.get("evidence_state") == "watching"
+                         and item.start <= now <= (item.end or item.start))
+        if (assessment.get("presentation") != CLASS_WATCH and not foliage_watch) or assessment.get("eligible"):
             continue
         if item.start > horizon or (item.end or item.start) < now or item.phenomenon in seen:
             continue
         seen.add(item.phenomenon)
-        watch.append({"title": item.title.replace(" (season)", ""), "phenomenon": item.phenomenon,
+        # The dedicated Watching view needs the same evidence, location and
+        # route provenance as the planner. Keep the old payload keys while
+        # exposing the gate's reasons; the card must not infer eligibility.
+        watch.append({**cant_miss_row(item), "title": item.title.replace(" (season)", ""), "phenomenon": item.phenomenon,
                       "status": assessment.get("status"), "awaiting": item.extra.get("awaiting") or (assessment.get("blockers") or [""])[0],
                       "start": item.start.isoformat(), "end": (item.end or item.start).isoformat(),
-                      "where": item.zone_name, "significance": assessment.get("significance")})
+                      "significance": assessment.get("significance"),
+                      "blockers": assessment.get("blockers") or []})
     watch = watch[:limit]
 
     # Rows that passed everything except a check that could not be made

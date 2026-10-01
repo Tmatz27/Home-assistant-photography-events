@@ -148,3 +148,14 @@ class CoreClientContracts(unittest.IsolatedAsyncioTestCase):
         await bridge.initialize()
         self.assertIsNone(bridge.cached)
 
+    async def test_incomplete_response_preserves_last_complete_cache(self):
+        incomplete = {**PAYLOAD, "assessment_state": "incomplete", "items": []}
+        client, _ = self.client(Response(HEALTH), Response(incomplete), OSError())
+        store = type("Store", (), {"async_load": AsyncMock(return_value={"saved_at": NOW.isoformat(), "payload": PAYLOAD}),
+                                  "async_save": AsyncMock()})()
+        bridge = CoreBridge(client, store, lambda: NOW)
+        await bridge.initialize()
+        self.assertEqual((await bridge.refresh())["items"], [])
+        store.async_save.assert_not_called()
+        self.assertEqual(len((await bridge.refresh())["items"]), 1)
+

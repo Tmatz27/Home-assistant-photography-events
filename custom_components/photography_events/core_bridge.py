@@ -33,8 +33,9 @@ class CoreBridge:
             result = await self.client.opportunities()
             stamp = self.clock()
             # Persist only validated API products, never provider payloads.
-            await self.store.async_save({"saved_at": stamp.isoformat(), "payload": result.payload})
-            self.cached, self.saved_at = result, stamp
+            if result.payload["assessment_state"] == "complete":
+                await self.store.async_save({"saved_at": stamp.isoformat(), "payload": result.payload})
+                self.cached, self.saved_at = result, stamp
             return {**copy.deepcopy(result.payload), "stale": False, "core_error": None}
         except CoreError as exc:
             result = None

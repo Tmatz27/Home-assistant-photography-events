@@ -43,7 +43,11 @@ class CoreBridge:
                 result = copy.deepcopy(self.cached.payload)
                 for row in result["items"]:
                     row.update(eligibility=False, presentation="held", held=True, watching=False,
-                               safety_state="unknown", safety_summary="STALE: safety has not been checked.")
+                               safety_state="unknown", access_state="unknown", condition_state="unknown",
+                               reason="STALE: cached context is not a current travel assessment.",
+                               awaiting="Core to reconnect and complete a current assessment.",
+                               blockers=["current Core assessment unavailable"], safety_notes=[],
+                               safety_summary="STALE: safety has not been checked.")
             if result is None:
                 result = {"items": [], "data_as_of": None, "missing_required_sources": ["core"], "degraded_sources": []}
             result.update(stale=True, assessment_state="incomplete", core_error=exc.code,

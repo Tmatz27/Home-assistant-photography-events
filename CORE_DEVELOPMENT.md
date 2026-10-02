@@ -1,5 +1,9 @@
 # Optional Core development scaffold (Milestone 1)
 
+Independent-review correction: stale cache explanations, blockers, access and
+condition state are neutralized along with eligibility and safety. Historical
+reason text cannot imply that conditions are still current while Core is offline.
+
 The v0.16.1 local engine remains authoritative and unchanged. Core is not a
 production dependency. No card, entity, notification, config flow or websocket
 has switched backends. This work has no public release or version bump.

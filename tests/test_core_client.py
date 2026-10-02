@@ -129,6 +129,13 @@ class CoreClientContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["assessment_state"], "incomplete")
         self.assertFalse(result["items"][0]["eligibility"])
         self.assertTrue(result["items"][0]["held"])
+        row = result["items"][0]
+        self.assertEqual(row["condition_state"], "unknown")
+        self.assertEqual(row["access_state"], "unknown")
+        self.assertIn("STALE", row["reason"])
+        self.assertEqual(row["blockers"], ["current Core assessment unavailable"])
+        self.assertIn("reconnect", row["awaiting"])
+        self.assertEqual(row["safety_notes"], [])
         self.assertTrue(saved["payload"]["items"][0]["eligibility"], "fallback must not mutate the saved success")
 
     async def test_expired_cache_is_not_a_quiet_week(self):

@@ -46,3 +46,18 @@ deliberate cutover. None is silently activated by these modules.
 
 Tests: `python -m unittest discover -s tests -q`; real HA Store tests are in
 `test_ha_core_bridge.py` and run in the existing Home Assistant CI matrix.
+
+## Milestone 2 observation intelligence (shadow only)
+
+Core schema 0003 adds qualified report identity, canonical behavior assertions,
+generation-scoped PostGIS clusters and persistent pattern episodes. Core owns
+this intelligence. Its `CORE_PATTERNS_MODE` defaults to `off`; explicit `shadow`
+mode computes development artifacts while the normal opportunity API retains
+the accepted M1 decisions. Provisional thresholds cannot promote notifications.
+
+Authenticated `/api/v1/debug/patterns` inspection and held opportunity previews
+apply privacy redaction. The HA bridge and Lovelace card do not consume these
+debug endpoints, clusters or raw records. Existing additive-field whitelisting
+continues to protect HA payloads. No deduplication, clustering, episode matching,
+backend cutover or card change is introduced in HA for M2. Any future production
+promotion requires independent policy review and current travel checks.

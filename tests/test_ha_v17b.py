@@ -68,7 +68,7 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
     def make_entry(self,version=3,data=None,options=None,entry_id="v17b-test"):
         values=dict(domain="photography_events",entry_id=entry_id,title="Photography Events",source="user",version=version,minor_version=1,
                     data=data if data is not None else {"core_url":"http://core.invalid","core_token":"PRIVATE_TOKEN"},
-                    options=options or {},unique_id="photography_events",discovery_keys=MappingProxyType({}))
+                    options=options or {},unique_id="photography_events",discovery_keys=MappingProxyType({}),subentries_data=())
         entry = ConfigEntry(**{k:v for k,v in values.items() if k in inspect.signature(ConfigEntry).parameters})
         entry._async_set_state(self.hass, ConfigEntryState.SETUP_IN_PROGRESS, None)
         return entry

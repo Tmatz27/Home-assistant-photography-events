@@ -52,6 +52,11 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.addAsyncCleanup(self.hass.async_stop,force=True)
         self.hass.config_entries=ConfigEntries(self.hass,{})
         await er.async_load(self.hass)
+        await dr.async_load(self.hass)
+        # HA 2025's shared HTTP resolver expects the normal network bootstrap.
+        loader.async_setup(self.hass)
+        self.hass.auth=await auth.auth_manager_from_config(self.hass,[{"type":"homeassistant"}],[])
+        self.assertTrue(await async_setup_component(self.hass,"network",{}))
         self.entry=self.make_entry()
         self.hass.config_entries._entries[self.entry.entry_id]=self.entry
         self.clock=NOW
@@ -106,8 +111,7 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         # Complete the vertical slice through actual HA platform setup too.
         target=Path(self.directory.name)/"custom_components"/"photography_events"
         shutil.copytree(Path(integration.__file__).parent,target,ignore=shutil.ignore_patterns("__pycache__"))
-        loader.async_setup(self.hass);await dr.async_load(self.hass)
-        self.hass.auth=await auth.auth_manager_from_config(self.hass,[{"type":"homeassistant"}],[])
+        loader.async_setup(self.hass)
         self.hass.config_entries.async_update_entry(self.entry,data=dict(entry.data))
         self.entry._async_set_state(self.hass,ConfigEntryState.NOT_LOADED,None)
         self.assertTrue(await async_setup_component(self.hass,"photography_events",{}),
@@ -296,8 +300,6 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         target=Path(self.directory.name)/"custom_components"/"photography_events"
         shutil.copytree(Path(integration.__file__).parent,target,ignore=shutil.ignore_patterns("__pycache__"))
         loader.async_setup(self.hass)
-        await dr.async_load(self.hass)
-        self.hass.auth=await auth.auth_manager_from_config(self.hass,[{"type":"homeassistant"}],[])
         self.hass.config_entries.async_update_entry(self.entry,data={"enabled_categories":[],"ebird_api_key":"OLD_PRIVATE"},version=1)
         self.entry._async_set_state(self.hass,ConfigEntryState.NOT_LOADED,None)
         self.assertTrue(await async_setup_component(self.hass,"photography_events",{}),

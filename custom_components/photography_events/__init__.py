@@ -1,152 +1,97 @@
-"""The Photography Events integration."""
-
-from __future__ import annotations
-
+"""Read-only Core integration; resources retain their existing URL."""
 import logging
 from pathlib import Path
-
-import voluptuous as vol
-from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import Platform
-from homeassistant.core import HomeAssistant, ServiceCall
+from homeassistant.exceptions import ServiceValidationError, ConfigEntryError
+from homeassistant.helpers import issue_registry as ir
 from homeassistant.helpers import config_validation as cv
-from homeassistant.util import dt as dt_util
-
-from .const import ALL_CATEGORIES, DOMAIN
+from .const import DOMAIN
 from .coordinator import PhotographyEventsCoordinator
+from .websocket import async_register
 
 _LOGGER = logging.getLogger(__name__)
-
-PLATFORMS: list[Platform] = [Platform.BINARY_SENSOR, Platform.CALENDAR, Platform.SENSOR]
-
+PLATFORMS = [Platform.BINARY_SENSOR, Platform.CALENDAR, Platform.SENSOR]
 CARD_FILENAME = "photography-events-card.js"
 CARD_URL = f"/{DOMAIN}/{CARD_FILENAME}"
-
-SERVICE_INGEST_REPORT = "ingest_report"
-INGEST_REPORT_SCHEMA = vol.Schema(
-    {
-        vol.Required("source"): cv.string,
-        vol.Required("body"): cv.string,
-        vol.Optional("subject", default=""): cv.string,
-        vol.Optional("category"): vol.In(list(ALL_CATEGORIES)),
-        vol.Optional("zone_id"): cv.string,
-        vol.Optional("received"): cv.datetime,
-        vol.Optional("url", default=""): cv.string,
-    }
-)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
-async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Versioned, one-time migrations of stored settings.
-
-    1 -> 2: the stored category list becomes literal. Nothing in a version-1
-    entry records whether "every category but Waves" was the old default or a
-    deliberate choice, so the list is kept exactly as saved: an explicit
-    selection is never rewritten. An entry with no stored list already gets
-    the current defaults, Waves included. Anyone upgrading from a pre-Waves
-    install turns Waves on once in the options (see the release notes).
-    """
-    if entry.version > 2:
+async def async_migrate_entry(hass, entry):
+    if entry.version > 3:
         return False
-    if entry.version == 1:
-        hass.config_entries.async_update_entry(entry, version=2)
-        _LOGGER.debug("Migrated Photography Events entry to version 2; stored categories unchanged")
+    if entry.version < 3:
+        data = dict(entry.data)
+        data["connection_state"] = "configured" if data.get("core_url") and data.get("core_token") else "needs_connection"
+        # Both v1 and v2 lists, including [], remain literal; options and private
+        # credentials remain untouched and inactive. No network or Store load.
+        hass.config_entries.async_update_entry(entry, data=data, version=3)
     return True
 
 
-async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Set up Photography Events from a config entry."""
+async def async_setup_entry(hass, entry):
     await _async_register_card(hass)
-
     coordinator = PhotographyEventsCoordinator(hass, entry)
-    await coordinator.async_initialize()
-    await coordinator.async_config_entry_first_refresh()
-
+    try:
+        await coordinator.async_initialize()
+        await coordinator.async_config_entry_first_refresh()
+    except ValueError:
+        await coordinator.async_shutdown()
+        raise ConfigEntryError("Core connection requires reconfiguration") from None
+    except Exception:
+        await coordinator.async_shutdown()
+        raise
+    if coordinator.bridge and coordinator.bridge.availability in {"incompatible", "invalid_response"}:
+        await coordinator.async_shutdown()
+        ir.async_create_issue(hass, DOMAIN, f"core_connection_required_{entry.entry_id}", is_fixable=True, is_persistent=True,
+                              severity=ir.IssueSeverity.WARNING, translation_key="core_connection_required", data={"entry_id": entry.entry_id})
+        raise ConfigEntryError("Core connection requires reconfiguration")
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = coordinator
-    await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
-    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
+    async_register(hass)
     _async_register_services(hass)
+    issue = f"core_connection_required_{entry.entry_id}"
+    if not coordinator.bridge:
+        ir.async_create_issue(hass, DOMAIN, issue, is_fixable=True, is_persistent=True,
+                              severity=ir.IssueSeverity.WARNING, translation_key="core_connection_required",
+                              data={"entry_id": entry.entry_id})
+    else:
+        ir.async_delete_issue(hass, DOMAIN, issue)
+    try:
+        await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
+    except Exception:
+        hass.data[DOMAIN].pop(entry.entry_id, None)
+        await coordinator.async_shutdown()
+        raise
+    entry.async_on_unload(entry.add_update_listener(_async_reload_entry))
     return True
 
 
-def _async_register_services(hass: HomeAssistant) -> None:
-    """Register the report ingestion service, once per Home Assistant.
-
-    The way in for sources that publish a mailing list rather than an API. An
-    automation on the built-in IMAP integration's ``imap_content`` event passes
-    the body here; parsing, and the decision to discard it, happen in
-    ``email_reports``.
-    """
-    if hass.services.has_service(DOMAIN, SERVICE_INGEST_REPORT):
-        return
-
-    async def _async_ingest(call: ServiceCall) -> None:
-        received = call.data.get("received") or dt_util.utcnow()
-        if received.tzinfo is None:
-            received = received.replace(tzinfo=dt_util.DEFAULT_TIME_ZONE)
-        reports = await hass.async_add_executor_job(
-            _parse_ingested_report,
-            call.data.get("subject", ""),
-            call.data["body"],
-            call.data["source"],
-            call.data.get("category"),
-            call.data.get("zone_id"),
-            received,
-            call.data.get("url", ""),
-        )
-        if not reports:
-            _LOGGER.debug("Ingested message from %s produced no usable report", call.data["source"])
-            return
-        for coordinator in list(hass.data.get(DOMAIN, {}).values()):
-            await coordinator.async_add_ingested_reports(reports)
-
-    async def _async_choice(call: ServiceCall):
-        for coordinator in list(hass.data.get(DOMAIN, {}).values()):
-            await coordinator.async_set_event_choice(call.data["event_id"], call.data["choice"])
-
-    hass.services.async_register(DOMAIN, "set_event_choice", _async_choice, schema=vol.Schema({
-        vol.Required("event_id"): cv.string,
-        vol.Required("choice"): vol.In(["default", "follow", "skip", "seen"]),
-    }))
-    hass.services.async_register(
-        DOMAIN, SERVICE_INGEST_REPORT, _async_ingest, schema=INGEST_REPORT_SCHEMA
-    )
+def _async_register_services(hass):
+    async def retired(_call):
+        raise ServiceValidationError("Unavailable: Core choices and report ingestion are not supported in this read-only build")
+    for name in ("ingest_report", "set_event_choice"):
+        if not hass.services.has_service(DOMAIN, name):
+            hass.services.async_register(DOMAIN, name, retired)
 
 
-def _parse_ingested_report(subject, body, source, category, zone_id, received, url):
-    """Run the parser off the event loop - it walks the whole message body."""
-    from .email_reports import parse_email_report
-
-    return parse_email_report(
-        subject=subject,
-        body=body,
-        source_name=source,
-        category=category,
-        zone_id=zone_id,
-        received=received,
-        url=url,
-    )
-
-
-async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload a config entry."""
+async def async_unload_entry(hass, entry):
     unloaded = await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
     if unloaded:
-        coordinator = hass.data[DOMAIN].pop(entry.entry_id, None)
-        if coordinator is not None:
+        coordinator = hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
+        if coordinator:
             await coordinator.async_shutdown()
+        from .websocket import clear_entry
+        clear_entry(hass, entry.entry_id)
         if not hass.data.get(DOMAIN):
-            hass.services.async_remove(DOMAIN, SERVICE_INGEST_REPORT)
-            hass.services.async_remove(DOMAIN, "set_event_choice")
+            for name in ("ingest_report", "set_event_choice"):
+                hass.services.async_remove(DOMAIN, name)
     return unloaded
 
 
-async def _async_reload_entry(hass: HomeAssistant, entry: ConfigEntry) -> None:
-    """Reload when options change, so category toggles take effect immediately."""
+async def _async_reload_entry(hass, entry):
     await hass.config_entries.async_reload(entry.entry_id)
 
 
-async def _async_register_card(hass: HomeAssistant) -> None:
+async def _async_register_card(hass) -> None:
     """Serve and register the bundled Lovelace card.
 
     Shipping the card inside the integration means one HACS install covers both

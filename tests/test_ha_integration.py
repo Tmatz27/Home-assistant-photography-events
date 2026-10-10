@@ -16,14 +16,14 @@ from unittest.mock import AsyncMock, Mock, patch
 HAS_HA = importlib.util.find_spec("homeassistant") is not None
 if HAS_HA:
     from homeassistant.core import HomeAssistant
-    from custom_components.photography_events import coordinator as module
-    from custom_components.photography_events import async_unload_entry
-    from custom_components.photography_events.events import Opportunity
-    from custom_components.photography_events.event_state import event_id
-    from custom_components.photography_events.sensor import PlanningOutlookSensor, NextOpportunitySensor, BestSkyScoreSensor
-    from custom_components.photography_events.binary_sensor import PhotographyActionOpportunity
-    from custom_components.photography_events.calendar import PhotographyCalendar
-    from custom_components.photography_events import source_health
+    from legacy_v16 import coordinator as module
+    from legacy_v16 import async_unload_entry
+    from legacy_v16.events import Opportunity
+    from legacy_v16.event_state import event_id
+    from legacy_v16.sensor import PlanningOutlookSensor, NextOpportunitySensor, BestSkyScoreSensor
+    from legacy_v16.binary_sensor import PhotographyActionOpportunity
+    from legacy_v16.calendar import PhotographyCalendar
+    from legacy_v16 import source_health
 
 NOW = datetime(2026, 9, 7, 12, tzinfo=timezone.utc)
 
@@ -91,7 +91,7 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
         self.coordinator._fetch_surf_alerts = AsyncMock(return_value=[])
 
     async def test_unchecked_safety_holds_travel_instead_of_recommending_it(self):
-        from custom_components.photography_events.sensor import CantMissSensor
+        from legacy_v16.sensor import CantMissSensor
         self.fake_cycle([self.opportunity()])
         self.coordinator._fetch_surf_alerts.side_effect = ValueError("NWS alerts unavailable")
         self.coordinator.data = await self.coordinator._async_update_data()
@@ -213,7 +213,7 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(build.call_args.args[5], upstream)
 
     async def test_cant_miss_sensor_publishes_a_healthy_empty_state(self):
-        from custom_components.photography_events.sensor import CantMissSensor
+        from legacy_v16.sensor import CantMissSensor
         self.fake_cycle([])
         self.coordinator.data = await self.coordinator._async_update_data()
         sensor = CantMissSensor(self.coordinator, self.entry)
@@ -221,7 +221,7 @@ class HomeAssistantContracts(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(sensor.extra_state_attributes["headline"], "Nothing worth changing plans for this week.")
 
     async def test_eligible_occurrence_reaches_cant_miss_and_the_action_sensor(self):
-        from custom_components.photography_events.sensor import CantMissSensor
+        from legacy_v16.sensor import CantMissSensor
         self.fake_cycle([self.opportunity()])
         self.coordinator.data = await self.coordinator._async_update_data()
         self.assertEqual(CantMissSensor(self.coordinator, self.entry).native_value, 1)

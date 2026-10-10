@@ -1,4 +1,9 @@
 const CARD_STYLES = `
+      .core-calendar-week { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; padding: 8px 0; border-bottom: 1px solid var(--pe-border); }
+      .core-calendar-day { color: var(--pe-muted); min-height: 24px; font-size: 12px; }
+      .core-duration-bar { min-width: 0; padding: 8px; text-align: left; overflow: hidden; text-overflow: ellipsis; border-radius: 7px; border: 1px solid rgba(133,212,129,.35); background: rgba(133,212,129,.12); color: var(--pe-text); cursor: pointer; }
+      dialog { max-width: min(680px, 92vw); max-height: 85vh; overflow: auto; background: var(--pe-surface); color: var(--pe-text); border: 1px solid var(--pe-border); border-radius: 18px; padding: 24px; }
+      dialog::backdrop { background: rgba(0,0,0,.65); }
       .pe-navigation { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; margin-bottom: 18px; }
       .pe-navigation button { min-width: 0; padding: 12px 2px; font-family: inherit; font-size: 10px; font-weight: 700; line-height: 1.3; color: var(--pe-muted); background: transparent; border: 0; border-bottom: 2px solid transparent; cursor: pointer; }
       .pe-navigation button[aria-pressed="true"] { color: var(--pe-text); border-color: var(--primary-color, #85d481); }
@@ -567,7 +572,7 @@ const CARD_STYLES = `
       .dialog-close { float:right; padding:8px 12px; cursor:pointer; }
       @media(max-width:450px) { .card-content { padding:16px; } .simple-row .outlook-badge { max-width:76px; } .outlook-detail-grid { grid-template-columns:1fr; } .outlook-detail-grid dd { margin:0 0 9px; } }
 
-    
+
       /* Can't Miss: few rows, each readable at a glance on a phone. */
       .cm-heading { display:flex; flex-wrap:wrap; align-items:baseline; justify-content:space-between; gap:4px 12px; font-weight:700; font-size:16px; margin-bottom:8px; }
       .cm-sub { color:var(--secondary-text-color); font-size:12px; font-weight:400; }

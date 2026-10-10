@@ -1,0 +1,1359 @@
+"""Fetches every source on its own schedule and assembles scored opportunities.
+
+Five external services feed this: Open-Meteo for layered cloud, eBird for rare
+birds, iNaturalist for marine mammals, three hotline pages for blooms and
+autumn colour, and optionally the Google Maps platform for real drive times.
+Their appetites differ wildly - Open-Meteo is a CDN-backed forecast API that
+will happily serve twelve requests a minute, while the Theodore Payne hotline
+is a volunteer-run page that changes once a week.
+
+So the coordinator's cycle is not the polling rate. Each service carries its own
+minimum interval and its own cache in a ``Source``, and a cycle refreshes only
+what is actually due. Three consequences worth knowing:
+
+- **A restart cannot cause a stampede.** Sources are fetched in priority groups
+  with a pause between them, concurrency inside a group is capped, and the
+  hotline scrapers are pushed to a background task so Home Assistant's setup
+  never waits on three page loads.
+- **A failure costs freshness, not data.** The last good payload is kept and
+  reused, and a failed source retries on a short backoff rather than waiting
+  out its whole interval.
+- **Nothing is fetched for a category that is switched off.**
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import math
+import json
+from copy import deepcopy
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
+from typing import Any, Awaitable, Callable
+
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
+from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
+from homeassistant.helpers import issue_registry as ir
+from homeassistant.util import dt as dt_util
+
+from . import events as event_builder
+from .event_state import EventState, event_id
+from . import waves, spectacles, grunion, source_health, eclipses
+from . import birds as birds_module, conditions, eligibility, lunar, signals as signals_module, sunburst, weather_hazards
+from homeassistant.helpers.storage import Store
+from . import field_reports as reports_module
+
+# An ingested report is held a little longer than it can corroborate for, so it
+# still shows on the card as context after it has stopped counting as evidence.
+INGESTED_REPORT_TTL_DAYS = 21
+MAX_INGESTED_REPORTS = 200
+from . import routing as routing_module
+from . import verification as verify_module
+from . import wildlife as wildlife_module
+from .const import (
+    ALL_CATEGORIES,
+    CATEGORY_ASTRO,
+    CATEGORY_BIRDS,
+    CATEGORY_BLOOMS,
+    CATEGORY_FOLIAGE,
+    CATEGORY_MARINE,
+    CATEGORY_PARKS,
+    CATEGORY_RARE,
+    CATEGORY_SUNSET,
+    CONF_ALERT_SCORE,
+    CONF_EBIRD_API_KEY,
+    CONF_ENABLE_FIELD_REPORTS,
+    CONF_ENABLED_CATEGORIES,
+    CONF_GOOGLE_API_KEY,
+    CONF_HOME_LATITUDE,
+    CONF_HOME_LONGITUDE,
+    CONF_MAX_DRIVE_HOURS,
+    CONF_NPS_API_KEY,
+    CONF_ROUTING_MODE,
+    CONF_SUNSET_SCORE,
+    CONF_SUNSETWX_CLIENT_ID,
+    CONF_SUNSETWX_CLIENT_SECRET,
+    DEFAULT_ALERT_SCORE,
+    DEFAULT_HOME,
+    DEFAULT_MAX_DRIVE_HOURS,
+    DEFAULT_SUNSET_SCORE,
+    DEFAULT_UPDATE_MINUTES,
+    DOMAIN,
+    EBIRD_REGIONS,
+    INATURALIST_URL,
+    MARINE_TAXA,
+    MIN_INTERVAL_EBIRD,
+    MIN_INTERVAL_EBIRD_SPECIES,
+    MIN_INTERVAL_SUNSETWX,
+    MIN_INTERVAL_FIELD_REPORTS,
+    MIN_INTERVAL_INATURALIST,
+    MIN_INTERVAL_PARK_ALERTS,
+    MIN_INTERVAL_ROUTING,
+    MIN_INTERVAL_TIDES,
+    MIN_INTERVAL_AIR_QUALITY,
+    CONF_SUNSET_DRIVE_HOURS,
+    DEFAULT_SUNSET_DRIVE_HOURS,
+    MIN_INTERVAL_WEATHER,
+    OPEN_METEO_AIR_QUALITY_URL,
+    OPEN_METEO_URL,
+    ROUTING_AUTO,
+    ROUTING_LEGACY,
+    ROUTING_OFF,
+    ROUTING_ROUTES,
+    TARGET_ZONES,
+)
+from .throttle import Source
+from . import phenomena as phenomena_module
+from . import streamflow as streamflow_module
+from . import weather_scoring
+from .weather_scoring import build_air_quality_params, build_open_meteo_params
+
+_LOGGER = logging.getLogger(__name__)
+
+CALENDAR_HORIZON_DAYS = 365
+ASTRO_HORIZON_DAYS = 365
+MILKY_WAY_HORIZON_DAYS = 35
+REQUEST_TIMEOUT = 30
+
+# Open-Meteo sits behind a CDN and tolerates parallelism well; the others do
+# not, so they are held to one request at a time.
+WEATHER_CONCURRENCY = 4
+
+# iNaturalist asks for no more than roughly one request a second sustained.
+INATURALIST_SPACING_SECONDS = 1.1
+
+# Breathing room between priority groups, so a restart does not open a dozen
+# connections in the same tick.
+GROUP_STAGGER_SECONDS = 2.0
+
+# Routing is only asked about opportunities this close, and only about ones not
+# already far outside the drive limit.
+ROUTING_HORIZON_HOURS = 48
+ROUTING_SLACK = 1.5
+
+
+# SunsetWx forecasts older than this are not used (product threshold: two
+# fetch intervals).
+SUNSETWX_MAX_AGE_HOURS = 6
+
+# Routed drive times age. Product thresholds:
+# - "in current traffic" only while the route is at most an hour old;
+# - a route older than three hours is re-requested when it is needed;
+# - a route older than seven days is expired: the calibrated estimate is used
+#   instead, and labelled as one. A cached duration never renews itself.
+ROUTE_CURRENT_MINUTES = 60
+ROUTE_REFRESH_MINUTES = 180
+ROUTE_RECENT_DAYS = 7
+
+
+class PartialFetchError(ValueError):
+    """Keep successful parts and cached failed parts without claiming success."""
+
+    def __init__(self, message, value):
+        super().__init__(message)
+        self.value = value
+
+
+class PhotographyEventsCoordinator(DataUpdateCoordinator):
+    """Polls every source on its own cadence and rebuilds the opportunity list."""
+
+    def __init__(self, hass: HomeAssistant, entry: ConfigEntry) -> None:
+        super().__init__(
+            hass,
+            _LOGGER,
+            name=DOMAIN,
+            update_interval=timedelta(minutes=DEFAULT_UPDATE_MINUTES),
+        )
+        self.entry = entry
+        self._sources: dict[str, Source] = {
+            "grunion": Source("CDFW expected grunion schedule", 1440),
+            # Snowmelt moves over hours, not minutes, and this is a small
+            # volunteer-scale service run by a public agency.
+            "streamflow": Source("USGS Merced River discharge", 180),
+            "ndbc": Source("NOAA offshore waves", 30),
+            "cdip": Source("CDIP coastal forecast", 180),
+            # All California alerts: coastal ones for the swell text, and every
+            # warning as the safety gate on Can't Miss. Key kept for continuity.
+            "surf_alerts": Source("NWS active alerts", 60),
+            "sunsetwx": Source("SunsetWx sunset quality", MIN_INTERVAL_SUNSETWX),
+            "ebird_species": Source("eBird iconic species", MIN_INTERVAL_EBIRD_SPECIES),
+            "condor_reports": Source("Condor Express dated trip reports", 180),
+            "aurora": Source("NOAA OVATION", 15),
+            "weather": Source("Open-Meteo", MIN_INTERVAL_WEATHER),
+            "air_quality": Source("Open-Meteo air quality", MIN_INTERVAL_AIR_QUALITY),
+            "ebird": Source("eBird", MIN_INTERVAL_EBIRD),
+            "inaturalist": Source("iNaturalist", MIN_INTERVAL_INATURALIST),
+            "field_reports": Source("Wildflower and colour hotlines", MIN_INTERVAL_FIELD_REPORTS),
+            "routing": Source("Google routing", MIN_INTERVAL_ROUTING),
+            "tides": Source("NOAA tide predictions", MIN_INTERVAL_TIDES),
+            "park_alerts": Source("National Park Service alerts", MIN_INTERVAL_PARK_ALERTS),
+        }
+        # Reports handed in by an automation rather than fetched. Kept here
+        # rather than in a Source because they arrive on somebody else's
+        # schedule - an email lands when it lands - so there is nothing to poll
+        # and nothing to throttle, only something to expire.
+        self._ingested_reports: list = []
+        # {(origin, routing mode, destination): (DriveTime, fetched_at)}. The
+        # origin and mode are part of the key so a moved home or a changed
+        # endpoint preference never reuses another trip's duration.
+        self._routing_cache: dict[tuple, tuple] = {}
+        self._routing_endpoint: str | None = None
+        self._cold_start = True
+        self.event_state = EventState()
+        self._store = Store(hass, 1, f"{DOMAIN}.{entry.entry_id}.events")
+        self._choice_lock = asyncio.Lock()
+        self._batch_cache: dict[str, dict] = {}
+        self._deferred_task = None
+        self._sunsetwx_token: tuple[str, datetime] | None = None
+        # Full-Moon geometry changes once a day; cloud is re-read every cycle.
+        self._lunar_cache: tuple | None = None
+        self._last_signals: list = []
+        self._last_birds: dict = {}
+        # {forecast point id: {"fetched_at", "failed"}} - see source_health.point_health.
+        self._weather_points: dict[str, dict] = {}
+        self._last_coverage: dict | None = None
+        for source in reports_module.REPORT_SOURCES:
+            self._sources[source["id"]] = Source(source["name"], MIN_INTERVAL_FIELD_REPORTS)
+
+    async def async_initialize(self):
+        self.event_state = EventState(await self._store.async_load())
+        self._calibration = await self.hass.async_add_executor_job(
+            lambda: json.loads(Path(__file__).with_name("wave_calibration.json").read_text()))
+        self._eclipse_catalog = await self.hass.async_add_executor_job(
+            lambda: json.loads(Path(__file__).with_name("eclipse_catalog.json").read_text(encoding="utf-8")))
+
+    async def async_set_event_choice(self, key, choice):
+        async with self._choice_lock:
+            items = (self.data or {}).get("opportunities", [])
+            matching = [item for item in items if event_id(item) == key]
+            if not matching:
+                raise ValueError("This occurrence is no longer in the planning outlook")
+            expires = max(item.end or item.start for item in matching) + timedelta(days=31)
+            candidate = EventState(deepcopy(self.event_state.dump()))
+            candidate.set_choice(key, choice, expires)
+            await self._store.async_save(candidate.dump())
+            self.event_state = candidate
+            data = dict(self.data or {})
+            data["preferences"] = dict(self.event_state.choices)
+            action = [item for item in data.get("action_events", []) if not self.event_state.suppressed(event_id(item))]
+            data["top_action"] = next((item for item in action if event_builder.alert_candidate(item, self.alert_score)), None)
+            # A skipped or seen row must leave Can't Miss immediately, not
+            # at the next fetch cycle.
+            data["cant_miss"] = eligibility.dashboard(
+                data.get("opportunities", []), dt_util.utcnow(), suppressed=self.event_state.suppressed,
+                signals=self._last_signals, birds=self._last_birds, coverage=self._last_coverage)
+            self.async_set_updated_data(data)
+
+    # --- Configuration ------------------------------------------------------
+
+    @property
+    def _options(self) -> dict:
+        return {**self.entry.data, **self.entry.options}
+
+    @property
+    def enabled_categories(self) -> set[str]:
+        """Exactly what the user selected; every category only when nothing was ever set.
+
+        An explicit empty list is "none". Reading a setting must never change
+        it: the old "all but Waves means Waves too" rule re-enabled Waves on
+        every read for anyone who had deliberately switched it off. The legacy
+        case it was for is migrated once (__init__.async_migrate_entry).
+        """
+        configured = self._options.get(CONF_ENABLED_CATEGORIES)
+        if configured is None:
+            return set(ALL_CATEGORIES)
+        return {category for category in configured if category in ALL_CATEGORIES}
+
+    @property
+    def max_drive_hours(self) -> float:
+        return float(self._options.get(CONF_MAX_DRIVE_HOURS, DEFAULT_MAX_DRIVE_HOURS))
+
+    @property
+    def category_drive_limits(self) -> dict:
+        """Tighter radii for the categories a long drive makes no sense for."""
+        return {
+            CATEGORY_SUNSET: float(
+                self._options.get(CONF_SUNSET_DRIVE_HOURS, DEFAULT_SUNSET_DRIVE_HOURS)
+            )
+        }
+
+    @property
+    def alert_score(self) -> int:
+        return int(self._options.get(CONF_ALERT_SCORE, DEFAULT_ALERT_SCORE))
+
+    @property
+    def sunset_score(self) -> int:
+        return int(self._options.get(CONF_SUNSET_SCORE, DEFAULT_SUNSET_SCORE))
+
+    @property
+    def home(self) -> tuple[float, float]:
+        options = self._options
+        latitude = options.get(CONF_HOME_LATITUDE)
+        longitude = options.get(CONF_HOME_LONGITUDE)
+        if latitude is not None and longitude is not None:
+            return float(latitude), float(longitude)
+        # Home Assistant's own configured location beats the packaged default.
+        if self.hass.config.latitude is not None and self.hass.config.longitude is not None:
+            return float(self.hass.config.latitude), float(self.hass.config.longitude)
+        return DEFAULT_HOME
+
+    @property
+    def home_zone(self) -> dict:
+        """Home as a forecast point: the only place sunsets are scored."""
+        latitude, longitude = self.home
+        return {"id": "home", "name": "Home coast", "latitude": latitude, "longitude": longitude,
+                "drive_hours": 0.0, "bortle": 4, "specialties": (CATEGORY_SUNSET,)}
+
+    @property
+    def sunsetwx_credentials(self) -> tuple[str, str] | None:
+        client = (self._options.get(CONF_SUNSETWX_CLIENT_ID) or "").strip()
+        secret = (self._options.get(CONF_SUNSETWX_CLIENT_SECRET) or "").strip()
+        return (client, secret) if client and secret else None
+
+    @property
+    def ebird_key(self) -> str:
+        return (self._options.get(CONF_EBIRD_API_KEY) or "").strip()
+
+    @property
+    def google_key(self) -> str:
+        return (self._options.get(CONF_GOOGLE_API_KEY) or "").strip()
+
+    @property
+    def nps_key(self) -> str:
+        return (self._options.get(CONF_NPS_API_KEY) or "").strip()
+
+    @property
+    def routing_mode(self) -> str:
+        return self._options.get(CONF_ROUTING_MODE, ROUTING_AUTO)
+
+    @property
+    def field_reports_enabled(self) -> bool:
+        return bool(self._options.get(CONF_ENABLE_FIELD_REPORTS, True))
+
+    # --- Update cycle -------------------------------------------------------
+
+    async def _async_update_data(self) -> dict:
+        now = dt_util.utcnow()
+        categories = self.enabled_categories
+        zones = [zone for zone in TARGET_ZONES if zone["drive_hours"] <= self.max_drive_hours]
+        session = async_get_clientsession(self.hass)
+
+        # Group 1: weather. Everything that can raise a drop-everything alert in
+        # the next 48 hours depends on it, so it goes first and alone.
+        # Plus the spots whose conditions are checked where they happen (the
+        # Pismo grove's dawn), never borrowed from the home forecast.
+        forecast_zones = [*zones, self.home_zone, *conditions.CONDITION_POINTS]
+        if categories & {CATEGORY_SUNSET, CATEGORY_ASTRO, CATEGORY_RARE}:
+            await self._refresh(self._sources["weather"], now, lambda: self._fetch_forecasts(session, forecast_zones, now))
+        forecasts = self._sources["weather"].value or {}
+        if CATEGORY_SUNSET in categories:
+            await self._refresh(self._sources["air_quality"], now, lambda: self._fetch_air_quality(session, [self.home_zone]))
+            if self.sunsetwx_credentials:
+                await self._refresh(self._sources["sunsetwx"], now, lambda: self._fetch_sunsetwx(session, now))
+        air_quality = self._sources["air_quality"].value or {}
+
+        # Group 2: the wildlife APIs, spaced away from the weather burst.
+        if categories & {CATEGORY_BIRDS, CATEGORY_MARINE}:
+            await asyncio.sleep(GROUP_STAGGER_SECONDS)
+        if CATEGORY_BIRDS in categories and self.ebird_key:
+            await self._refresh(self._sources["ebird"], now, lambda: self._fetch_ebird(session))
+            await self._refresh(self._sources["ebird_species"], now, lambda: self._fetch_ebird_species(session))
+        if categories & {"marine", "mammals", "rare_phenomena", "birds"}:
+            await self._refresh(self._sources["inaturalist"], now, lambda: self._fetch_inaturalist(session, now))
+
+        # Group 3: the hotline scrapers. On a cold start they are deferred to a
+        # background task, so setup never blocks on three page loads for data
+        # that only changes once a week.
+        if self.field_reports_enabled and categories & {CATEGORY_BLOOMS, CATEGORY_FOLIAGE}:
+            if self._cold_start:
+                if self._deferred_task is None or self._deferred_task.done():
+                    self._deferred_task = self.hass.async_create_task(self._async_deferred_field_reports())
+            else:
+                await self._refresh(
+                    self._sources["field_reports"], now, lambda: self._fetch_field_reports(session, now)
+                )
+
+        # Group 4: verification. Tide predictions turn a run night into an hour,
+        # and park alerts are the only source that can say the road is shut.
+        if CATEGORY_RARE in categories:
+            await self._refresh(self._sources["grunion"], now, lambda: self._fetch_grunion(session))
+            await self._refresh(self._sources["streamflow"], now, lambda: self._fetch_streamflow(session))
+        if CATEGORY_RARE in categories or "waves" in categories:
+            await self._refresh(self._sources["tides"], now, lambda: self._fetch_tides(session, now))
+        if self.park_alerts_needed:
+            await self._refresh(self._sources["park_alerts"], now, lambda: self._fetch_park_alerts(session))
+
+        # These bounded public feeds carry their own timestamps and cadence.
+        # An HTTP success with an unusable payload is not a successful refresh.
+        # The alert feed is a safety gate for every category, not a wave extra.
+        await self._refresh(self._sources["surf_alerts"], now, lambda: self._fetch_surf_alerts(session))
+        if "waves" in categories:
+            await self._refresh(self._sources["ndbc"], now, lambda: self._fetch_wave_data(session, False, now))
+            await self._refresh(self._sources["cdip"], now, lambda: self._fetch_wave_data(session, True, now))
+        if CATEGORY_MARINE in categories:
+            await self._refresh(self._sources["condor_reports"], now, lambda: self._fetch_condor(session, now))
+        if CATEGORY_ASTRO in categories:
+            await self._refresh(self._sources["aurora"], now, lambda: self._fetch_aurora(session))
+
+        self._last_signals, self._last_birds = [], {}
+        opportunities = await self._build(now, zones, forecasts, air_quality, categories)
+        signals, bird_views = self._last_signals, self._last_birds
+        opportunities = await self._apply_routing(session, now, opportunities)
+
+        # The planner's travel policy: long trips (parks, planning windows)
+        # stay listed. Can't Miss applies its own six-hour gate below, which
+        # planning_only does not bypass.
+        opportunities = event_builder.within_drive(
+            opportunities, self.max_drive_hours, self.category_drive_limits
+        )
+        health = source_health.snapshot(self._sources, self._enabled_sources(), now)
+        points = source_health.point_health(self._weather_points, now)
+        source_health.annotate(opportunities, health, points)
+        self._update_repairs(health)
+        # Park access for the phenomena that depend on it, from the NPS
+        # source's real state: never "open" without a current, complete read.
+        parks = self._sources["park_alerts"]
+        conditions.annotate_access(opportunities, parks.value if self.park_alerts_needed else None,
+                                   parks.fetched_at if self.park_alerts_needed else None, parks.failures, now)
+        alerts_source = self._sources["surf_alerts"]
+        # A failed or stale alert feed is "safety unknown", never "all clear".
+        alerts = weather_hazards.current_alerts(alerts_source.value, alerts_source.fetched_at,
+                                                alerts_source.failures, now)
+        await self.hass.async_add_executor_job(lambda: eligibility.annotate(
+            opportunities, now, max_drive_hours=self.max_drive_hours, alerts=alerts,
+            sunset_drive_hours=self.category_drive_limits.get(CATEGORY_SUNSET)))
+        sunset_gaps = None
+        if CATEGORY_SUNSET in categories:
+            home_bundle = forecasts.get("home") or {}
+            sunset_gaps = event_builder.sunset_assessment_gaps(
+                self.home_zone, home_bundle.get("local"), home_bundle.get("upstream"), now,
+                provider=self._current_sunsetwx(now)[0], points=points)
+        coverage = source_health.assessment_coverage(
+            health, self.enabled_categories, points, sunset_gaps=sunset_gaps)
+        self._last_coverage = coverage
+        cant_miss = eligibility.dashboard(
+            opportunities, now, suppressed=self.event_state.suppressed, signals=signals, birds=bird_views,
+            coverage=coverage)
+        action = event_builder.action_window(opportunities, now)
+        top = next((item for item in action if not self.event_state.suppressed(event_id(item))
+                    and event_builder.alert_candidate(item, self.alert_score)), None)
+        async with self._choice_lock:
+            candidate = EventState(deepcopy(self.event_state.dump()))
+            notices = candidate.changes(opportunities, now,
+                lambda item: item.start <= now + timedelta(hours=48)
+                and event_builder.alert_candidate(item, self.alert_score))
+            # Persist before publishing so restart cannot replay a notice.
+            await self._store.async_save(candidate.dump())
+            self.event_state = candidate
+        for notice in notices:
+            self.hass.bus.async_fire(f"{DOMAIN}_opportunity", {**notice, "entry_id": self.entry.entry_id})
+        self._cold_start = False
+
+        return {
+            "generated": now,
+            "opportunities": sorted(opportunities, key=lambda item: item.start),
+            "action_events": action,
+            "top_action": top,
+            "preferences": dict(self.event_state.choices),
+            "zone_count": len(zones),
+            "forecast_zones": sorted(forecasts),
+            "sources": health,
+            "routing_endpoint": self._routing_endpoint,
+            "cant_miss": cant_miss,
+        }
+
+    async def _build(self, now, zones, forecasts, air_quality, categories):
+        """Collect signals, resolve them into phenomena, build opportunities.
+
+        Returns the opportunities; the background signals and bird views are
+        left on ``_last_signals`` / ``_last_birds`` for the dashboard. Raw
+        sightings and hotline text are *signals*: they corroborate phenomena
+        and fill the background list, and never become rows of their own.
+        """
+        opportunities: list = []
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        home_bundle = forecasts.get("home") or {}
+        home_forecast = home_bundle.get("local") or (home_bundle if "hourly" in home_bundle else None)
+
+        # Sunsets are a home feature: tonight's sky over Vandenberg, not a
+        # regional sky map nobody drives six hours for.
+        if CATEGORY_SUNSET in categories:
+            # Inputs are resolved *before* anything is scored, by their roles:
+            # a source that may not decide must not be allowed to change the
+            # score either (a retained, failed air-quality value used to pull
+            # a valid local sunset under the threshold and discard it).
+            provider, provider_note = self._current_sunsetwx(now)
+            usable_air = air_quality.get("home") if self._usable(self._sources["air_quality"], now) else None
+            if home_forecast or provider:
+                rows = await self.hass.async_add_executor_job(
+                    event_builder.build_sunset_opportunities,
+                    self.home_zone,
+                    home_forecast or {},
+                    now,
+                    self.sunset_score,
+                    3,
+                    home_bundle.get("upstream") or {},
+                    usable_air,
+                    provider,
+                )
+                for row in rows:
+                    if provider_note and not row.extra.get("provider_quality"):
+                        row.extra["provider_fallback"] = provider_note
+                    if air_quality.get("home") and usable_air is None:
+                        row.extra["air_quality_note"] = "Air quality unavailable or stale; clarity from humidity and visibility only."
+                opportunities.extend(rows)
+
+        for zone in zones:
+            bundle = forecasts.get(zone["id"]) or {}
+            # A value cached from before the bundle shape existed is a flat
+            # forecast. Tolerating it costs a line and saves a cycle.
+            forecast = bundle.get("local") or (bundle if "hourly" in bundle else None)
+            cloud_lookup = _make_cloud_lookup(forecast)
+            if CATEGORY_ASTRO in categories:
+                opportunities.extend(
+                    await self.hass.async_add_executor_job(
+                        event_builder.build_meteor_opportunities, zone, now, ASTRO_HORIZON_DAYS, cloud_lookup
+                    )
+                )
+                opportunities.extend(
+                    await self.hass.async_add_executor_job(
+                        event_builder.build_milky_way_opportunities,
+                        zone,
+                        now,
+                        MILKY_WAY_HORIZON_DAYS,
+                        cloud_lookup,
+                    )
+                )
+
+        raw_sightings = (list(self._sources["ebird"].value or []) + list(self._sources["ebird_species"].value or [])
+                         + list(self._sources["inaturalist"].value or []))
+        # Corroboration needs the whole 14-day allowance.
+        corroboration = wildlife_module.digest(raw_sightings, now, 14 * 24)
+        reports = list(self._sources["field_reports"].value or []) + self._fresh_ingested(now) \
+            + list(self._sources["condor_reports"].value or [])
+        signals = [signals_module.from_sighting(item) for item in wildlife_module.digest(raw_sightings, now, 7 * 24)]
+        signals += [signals_module.from_report(item) for item in reports]
+
+        # Reports merge into the phenomenon they describe; only the rest may
+        # stand as planning rows of their own.
+        seasonal = await self.hass.async_add_executor_job(
+            event_builder.build_seasonal_opportunities,
+            now,
+            CALENDAR_HORIZON_DAYS,
+            self.home,
+            corroboration or None,
+            reports or None,
+        )
+        opportunities.extend(seasonal)
+        merged = {ident for item in seasonal for ident in item.extra.get("merged_reports", [])}
+        unmatched = [report for report in reports if event_builder.report_id(report) not in merged
+                     and report.category in (CATEGORY_BLOOMS, CATEGORY_FOLIAGE) and not report.phenomenon_key]
+        if unmatched:
+            opportunities.extend(event_builder.build_field_report_opportunities(unmatched, now))
+        conditions.annotate_monarchs(seasonal, forecasts, now, local_tz)
+        # Access is annotated for every row after the build (_annotate_access).
+        conditions.annotate_firefall(seasonal, forecasts, now)
+
+        bird_views = {"spectacle": [], "encounter": [], "chase": []}
+        if CATEGORY_BIRDS in categories or CATEGORY_RARE in categories:
+            bird_views = await self.hass.async_add_executor_job(
+                birds_module.classify, raw_sightings, now, self.home, self.max_drive_hours, reports)
+            leftovers = eligibility.merge_into_phenomena(opportunities, bird_views["spectacle"], now)
+            opportunities.extend(leftovers)
+            upgraded = [item for item in seasonal if item.extra.get("evidence_state") == "behavior_confirmed"
+                        and item.category in (CATEGORY_BIRDS, CATEGORY_RARE) and item.phenomenon in
+                        {row.phenomenon for row in bird_views["spectacle"]}]
+            bird_views["spectacle"] = [*leftovers, *upgraded]
+        if CATEGORY_MARINE in categories:
+            # Raw observations, never the 14-day digest: orca presence needs each
+            # observation's own place, time and observer (birds.marine_presence).
+            opportunities.extend(birds_module.marine_presence(raw_sightings, now, self.home, reports))
+
+        if CATEGORY_RARE in categories:
+            opportunities.extend(grunion.opportunities(self._sources["grunion"].value or [], now, self.home))
+
+        if CATEGORY_PARKS in categories:
+            opportunities.extend(
+                await self.hass.async_add_executor_job(
+                    event_builder.build_park_opportunities,
+                    now,
+                    CALENDAR_HORIZON_DAYS,
+                    self._sources["park_alerts"].value,
+                )
+            )
+
+        opportunities.extend(
+            await self.hass.async_add_executor_job(
+                spectacles.watch_opportunities, now, self.home, self._fresh_streamflow(now),
+                _make_cloud_lookup((forecasts.get("yosemite_valley") or {}).get("local")), reports
+            )
+        )
+        reported = spectacles.report_opportunities(reports, now, self.home)
+        conditions.annotate_snow(reported, forecasts, now)
+        opportunities.extend(reported)
+        if "waves" in categories:
+            # A failed download cannot keep a forecast authoritative indefinitely.
+            source = self._sources["cdip"]
+            coastal = source.value if not source.failures and source.fetched_at and now - source.fetched_at <= timedelta(hours=6) else {}
+            opportunities.extend(waves.build_opportunities(now, self._sources["ndbc"].value or {},
+                coastal or {}, self._calibration, self.event_state, self.home,
+                weather_hazards.alert_list(self._sources["surf_alerts"].value)))
+            opportunities.extend(lunar.tide_opportunities(self._sources["tides"].value or [], now, self.home, local_tz))
+            # Published dates immediately; NOAA times and the buoy when in range.
+            opportunities.extend(lunar.king_tide_opportunities(
+                now, self.home, local_tz, self._sources["tides"].value or [],
+                (self._sources["ndbc"].value or {}).get("46011")))
+        if CATEGORY_ASTRO in categories:
+            opportunities.extend(spectacles.aurora_opportunities(self._sources["aurora"].value or {}, now, zones, self.event_state))
+            opportunities.extend(await self.hass.async_add_executor_job(
+                eclipses.opportunities, self._eclipse_catalog, now, zones, self.home, self.max_drive_hours))
+            opportunities.extend(await self.hass.async_add_executor_job(
+                self._lunar_opportunities, now, local_tz, _make_cloud_lookup(home_forecast)))
+        signals += weather_hazards.watch_signals(forecasts, [*zones, self.home_zone], now)
+        self._last_signals, self._last_birds = signals, bird_views
+        # Which categories a row is *shown* under is not which one *owns* its
+        # data. A crane fly-in is a rare-phenomena calendar row and also a
+        # bird spectacle; filtering on the owner alone erased it (and the live
+        # evidence merged into it) whenever Birds was on and Rare was off.
+        return [item for item in opportunities if eligibility.presentation_categories(item) & categories]
+
+    @staticmethod
+    def _usable(source: Source, now: datetime) -> bool:
+        """Healthy and within two of its own intervals: fit to change a result."""
+        return (not source.failures and source.fetched_at is not None
+                and now - source.fetched_at <= timedelta(minutes=2 * source.min_interval_minutes))
+
+    def _current_sunsetwx(self, now: datetime) -> tuple[list, str]:
+        """(predictions that may decide now, why SunsetWx is not deciding).
+
+        Two separate facts. Transport: the last fetch succeeded within
+        ``SUNSETWX_MAX_AGE_HOURS``. Model: each prediction's own update time
+        is current (``sunburst.current``). A fresh download of an old model
+        run fails the second test.
+        """
+        if not self.sunsetwx_credentials:
+            return [], ""
+        source = self._sources["sunsetwx"]
+        if source.failures or source.fetched_at is None:
+            return [], "SunsetWx unavailable; the built-in local model decided this sunset."
+        if now - source.fetched_at > timedelta(hours=SUNSETWX_MAX_AGE_HOURS):
+            return [], "SunsetWx not refreshed recently; the built-in local model decided this sunset."
+        predictions = sunburst.current(source.value or [], now)
+        if not predictions:
+            return [], "SunsetWx forecast model is not current; the built-in local model decided this sunset."
+        return predictions, ""
+
+    def _lunar_opportunities(self, now, tz, cloud_lookup):
+        """Full-Moon geometry once a day; cloud re-read against it every cycle."""
+        day = now.astimezone(tz).date()
+        if self._lunar_cache is None or self._lunar_cache[0] != (day, self.home):
+            rows = lunar.opportunities(now, self.home, tz, eclipse_catalog=self._eclipse_catalog)
+            self._lunar_cache = ((day, self.home), rows)
+        fresh = []
+        for item in self._lunar_cache[1]:
+            if (item.end or item.start) < now:
+                continue
+            copy = event_builder.Opportunity(**{**item.__dict__, "extra": dict(item.extra), "reasons": list(item.reasons)})
+            rise = datetime.fromisoformat(copy.extra["moonrise"])
+            cloud = cloud_lookup(rise) if cloud_lookup else None
+            lead = max(0.0, (rise - now).total_seconds() / 86400)
+            copy.extra["cloud_cover"] = round(cloud, 1) if cloud is not None else None
+            copy.extra["cloud_is_forecast"] = bool(cloud is not None and weather_scoring.cloud_is_scorable(lead))
+            copy.extra["cloud_confidence"] = weather_scoring.cloud_confidence(lead) if cloud is not None else None
+            copy.extra["conditions_unassessed"] = event_builder._cloud_unassessed(
+                cloud, weather_scoring.cloud_is_scorable(lead))
+            fresh.append(copy)
+        return fresh
+
+    async def _refresh(self, source: Source, now: datetime, fetcher: Callable[[], Awaitable[Any]]) -> None:
+        """Run a fetch if it is due, recording the outcome either way."""
+        if not source.due(now):
+            return
+        try:
+            source.succeed(now, await fetcher())
+        except Exception as err:  # noqa: BLE001 - one dead service must not stop the rest
+            if isinstance(err, PartialFetchError):
+                source.value = err.value
+            source.fail(now, f"{type(err).__name__}: {err}")
+            _LOGGER.warning("%s update failed (%s); keeping last known data", source.name, err)
+
+    # --- Reports handed in from outside ------------------------------------
+
+    async def async_add_ingested_reports(self, reports: list) -> None:
+        """Accept reports from the ingest service and rebuild immediately.
+
+        Refreshing rather than waiting for the next cycle is the point: an email
+        that says whales are in the channel today is worth acting on today, and
+        an hour is a long time when the animals are moving.
+        """
+        if not reports:
+            return
+        now = dt_util.utcnow()
+        # One report per source per zone. A daily digest arriving every morning
+        # should replace yesterday's, not stack up beside it.
+        keyed = {
+            (report.source_id, report.zone_id): report
+            for report in [*self._fresh_ingested(now), *reports]
+        }
+        self._ingested_reports = list(keyed.values())
+        _LOGGER.debug("Ingested %d report(s); %d held", len(reports), len(self._ingested_reports))
+        await self.async_request_refresh()
+
+    def _fresh_ingested(self, now: datetime) -> list:
+        """Drop what has gone stale, and keep the list from growing forever."""
+        cutoff = now - timedelta(days=INGESTED_REPORT_TTL_DAYS)
+        self._ingested_reports = [
+            report for report in self._ingested_reports
+            if report.fetched is None or report.fetched >= cutoff
+        ][-MAX_INGESTED_REPORTS:]
+        return list(self._ingested_reports)
+
+    async def _async_deferred_field_reports(self) -> None:
+        """Scrape the hotlines after setup has finished, then publish."""
+        await asyncio.sleep(GROUP_STAGGER_SECONDS * 5)
+        session = async_get_clientsession(self.hass)
+        now = dt_util.utcnow()
+        await self._refresh(self._sources["field_reports"], now, lambda: self._fetch_field_reports(session, now))
+        # Publish failures too. Otherwise the first scraper outage is invisible
+        # until an unrelated successful fetch happens to rebuild the sensor.
+        await self.async_request_refresh()
+
+    def _enabled_sources(self):
+        cats = self.enabled_categories
+        enabled = set()
+        if cats & {CATEGORY_ASTRO, CATEGORY_SUNSET, CATEGORY_RARE}:
+            enabled.add("weather")
+        if CATEGORY_ASTRO in cats:
+            enabled.add("aurora")
+        if CATEGORY_SUNSET in cats:
+            enabled.add("air_quality")
+        if CATEGORY_BIRDS in cats and self.ebird_key:
+            enabled.update(("ebird", "ebird_species"))
+        if CATEGORY_SUNSET in cats and self.sunsetwx_credentials:
+            enabled.add("sunsetwx")
+        enabled.add("surf_alerts")
+        if cats & {"marine", "mammals", "rare_phenomena", "birds"}:
+            enabled.add("inaturalist")
+        if CATEGORY_MARINE in cats:
+            enabled.add("condor_reports")
+        if CATEGORY_RARE in cats:
+            enabled.update(("grunion", "tides", "streamflow"))
+        if "waves" in cats:
+            enabled.update(("ndbc", "cdip", "tides"))
+        if self.park_alerts_needed:
+            enabled.add("park_alerts")
+        if self.google_key and self.routing_mode != ROUTING_OFF:
+            enabled.add("routing")
+        if self.field_reports_enabled:
+            enabled.update(s["id"] for s in reports_module.REPORT_SOURCES if s["category"] in cats)
+        return enabled
+
+    def _update_repairs(self, health):
+        for key, status in health.items():
+            issue_id = f"{self.entry.entry_id}_{key}"
+            if status["enabled"] and (status["failures"] >= 3 or status["stale"]):
+                ir.async_create_issue(
+                    self.hass, DOMAIN, issue_id, is_fixable=False, is_persistent=False,
+                    severity=ir.IssueSeverity.WARNING, translation_key="source_unavailable",
+                    translation_placeholders={"source": status["name"],
+                        "last_success": status["last_success"] or "Never during this session",
+                        "impact": status["impact"]},
+                )
+            else:
+                ir.async_delete_issue(self.hass, DOMAIN, issue_id)
+
+    async def async_shutdown(self):
+        await super().async_shutdown()
+        if self._deferred_task is not None:
+            self._deferred_task.cancel()
+            await asyncio.gather(self._deferred_task, return_exceptions=True)
+        for key in self._sources:
+            ir.async_delete_issue(self.hass, DOMAIN, f"{self.entry.entry_id}_{key}")
+
+    def _finish_batch(self, key, successful, failed, *, mapping=False):
+        cache = self._batch_cache.setdefault(key, {})
+        cache.update(successful)
+        value = dict(cache) if mapping else [row for rows in cache.values() for row in rows]
+        if failed:
+            raise PartialFetchError("Could not refresh: " + ", ".join(failed), value)
+        return value
+
+    # --- Fetchers -----------------------------------------------------------
+
+    async def _fetch_grunion(self, session):
+        raw = await self._get_text(session, grunion.URL)
+        if not raw:
+            raise ValueError("CDFW schedule unavailable")
+        rows = await self.hass.async_add_executor_job(grunion.parse_schedule, raw)
+        if not rows:
+            raise ValueError("CDFW schedule year or table could not be verified")
+        return rows
+
+    async def _fetch_wave_data(self, session, coastal, now):
+        if coastal:
+            metadata = await self._get_text(session, waves.CDIP_ROOT + "B1500_forecast.nc.das")
+            if not waves.recent_forecast_metadata(metadata, now):
+                raise ValueError("Coastal model run is older than 24 hours or has no issue timestamp")
+        url = (waves.CDIP_ROOT + "B1500_forecast.nc.ascii?" + waves.CDIP_FIELDS
+               if coastal else waves.NDBC_URL.format(station="46011"))
+        raw = await self._get_text(session, url, label="Coastal forecast" if coastal else "Buoy waves")
+        if not raw:
+            raise ValueError("Wave feed unavailable")
+        rows = await self.hass.async_add_executor_job(
+            waves.parse_cdip if coastal else waves.parse_ndbc, raw,
+            *((34.75812, -120.64311),) if coastal else ())
+        if not rows:
+            raise ValueError("Wave feed has no valid quality-controlled records")
+        return {"B1500" if coastal else "46011": rows}
+
+    async def _fetch_surf_alerts(self, session):
+        """Every active California alert, compacted to what the gates need.
+
+        A failed or malformed response raises, so source health says "failed"
+        and the Can't Miss rows say "alerts unavailable" - never "no warnings".
+        """
+        data = await self._get_json(session, "https://api.weather.gov/alerts/active?area=CA",
+                                   headers={"User-Agent": "PhotographyEvents/0.16 (+https://github.com/Tmatz27/Home-assistant-photography-events)",
+                                            "Accept": "application/geo+json"})
+        # An HTTP 200 is not a safety check. Every feature is validated; a
+        # collection with unusable features is kept (its readable warnings
+        # still block) but recorded as a failed, incomplete check.
+        collection = weather_hazards.parse_alert_collection(data, dt_util.utcnow())
+        if not collection["complete"]:
+            raise PartialFetchError(
+                f"NWS alerts incomplete: {collection['invalid']} of {collection['total']} features unusable "
+                f"({'; '.join(collection['problems'][:2])})", collection)
+        return collection
+
+    async def _fetch_sunsetwx(self, session, now):
+        """SunsetWx quality for the next home sunset and sunrise."""
+        client, secret = self.sunsetwx_credentials
+        if self._sunsetwx_token is None or self._sunsetwx_token[1] <= now:
+            url, headers, form = sunburst.login_request(client, secret)
+            payload = await self._request(session, "post", url, headers=headers, form=form,
+                                          label="SunsetWx login", as_json=True)
+            token = sunburst.parse_login(payload, now)
+            if token is None:
+                raise ValueError("SunsetWx login failed - check the client ID and secret")
+            self._sunsetwx_token = token
+        found = []
+        latitude, longitude = self.home
+        for kind in ("sunset", "sunrise"):
+            url, params, headers = sunburst.quality_request(latitude, longitude, kind, self._sunsetwx_token[0])
+            payload = await self._get_json(session, url, params=params, headers=headers, label=f"SunsetWx {kind}")
+            parsed = sunburst.parse_quality(payload)
+            if not parsed:
+                # An expired token looks like an empty answer; log in again next time.
+                self._sunsetwx_token = None
+                raise ValueError(f"SunsetWx returned no usable {kind} forecast")
+            found.extend(parsed)
+        # A successful download of an old model run is not a current forecast.
+        if not sunburst.current(found, now):
+            problem = sunburst.model_age_problem(found[0], now)
+            raise ValueError(f"SunsetWx forecast is not current ({problem}); the local model decides")
+        return found
+
+    async def _fetch_ebird_species(self, session) -> list:
+        """Recent reports of the iconic species at their viewing counties."""
+        headers = wildlife_module.build_ebird_headers(self.ebird_key)
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        successful, failed = {}, []
+        for index, (species, region) in enumerate(birds_module.EBIRD_SPECIES_QUERIES):
+            if index:
+                await asyncio.sleep(0.5)
+            payload = await self._get_json(session, wildlife_module.build_ebird_species_url(region, species),
+                                           params=wildlife_module.build_ebird_species_params(), headers=headers,
+                                           label=f"eBird {species} {region}")
+            if isinstance(payload, list):
+                successful[f"{species}-{region}"] = wildlife_module.parse_ebird(payload, local_tz, notable=False)
+            else:
+                failed.append(f"{species} {region}")
+        return self._finish_batch("ebird_species", successful, failed)
+
+    async def _fetch_condor(self, session, now):
+        raw = await self._get_text(session, spectacles.CONDOR_FEED)
+        if not raw or "<rss" not in raw:
+            raise ValueError("Operator report feed unavailable")
+        return await self.hass.async_add_executor_job(spectacles.condor_reports, raw, now)
+
+    async def _fetch_aurora(self, session):
+        data = await self._get_json(session, spectacles.AURORA_FEED)
+        if not isinstance(data, dict) or not data.get("coordinates"):
+            raise ValueError("OVATION feed unavailable")
+        return data
+
+    async def _fetch_forecasts(self, session, zones: list[dict], now: datetime) -> dict[str, dict]:
+        """Layered cloud at each zone *and* on its two light paths.
+
+        Three coordinates go out per zone in a single request: the zone itself,
+        the point 200km toward sunset, and the point 200km toward sunrise. The
+        upstream pair is what makes a sky score trustworthy - the deck sitting
+        offshore is what decides whether the light ever gets under the cirrus,
+        and it is invisible from the zone's own forecast.
+
+        Still one request per zone rather than one for everything, so a single
+        bad response costs one zone instead of the whole map.
+        """
+        semaphore = asyncio.Semaphore(WEATHER_CONCURRENCY)
+
+        async def fetch(zone: dict) -> tuple[str, dict | None]:
+            probes = weather_scoring.light_path_probes(zone["latitude"], zone["longitude"], now)
+            order = [key for key in ("sunset", "sunrise") if key in probes]
+            latitudes = [zone["latitude"]] + [probes[key][0] for key in order]
+            longitudes = [zone["longitude"]] + [probes[key][1] for key in order]
+            params = build_open_meteo_params(latitudes, longitudes)
+            async with semaphore:
+                payload = await self._get_json(session, OPEN_METEO_URL, params=params, label=zone["name"])
+            parts = weather_scoring.split_multi_location(payload)
+            if not parts or len(parts) != 1 + len(order):
+                return zone["id"], None, {name: False for name in ["", *order]}
+            # Each component is checked on its own: a Firefall reads the local
+            # sky and the sunset light path, so a broken sunrise probe in the
+            # same response must not take its valid inputs with it.
+            valid = {name: _usable_forecast(part) for name, part in zip(["", *order], parts)}
+            if not valid[""]:
+                return zone["id"], None, valid
+            bundle = {"local": parts[0], "upstream": {}}
+            for index, key in enumerate(order, start=1):
+                if valid[key]:
+                    bundle["upstream"][key] = parts[index]
+            return zone["id"], bundle, valid
+
+        results = await asyncio.gather(*(fetch(zone) for zone in zones))
+        # Per-point health: each point, and each upstream component of it,
+        # keeps its own last success, so one bad response degrades the rows
+        # that read that input and no others.
+        stamp = dt_util.utcnow()
+        for key, payload, valid in results:
+            for name, ok in valid.items():
+                record = self._weather_points.setdefault(f"{key}:{name}" if name else key,
+                                                         {"fetched_at": None, "failed": False})
+                if ok:
+                    record.update(fetched_at=stamp, failed=False)
+                else:
+                    record["failed"] = True
+        return self._finish_batch("weather",
+            {key: payload for key, payload, _ in results if payload},
+            [key for key, payload, _ in results if not payload], mapping=True)
+
+    async def _fetch_streamflow(self, session) -> dict:
+        """Measured discharge for the gauges a phenomenon depends on.
+
+        Allowed to fail entirely: a moonbow window is computed from geometry
+        and merely *annotated* with flow, so losing this costs a sentence
+        rather than the window.
+        """
+        found: dict = {}
+        served: list[str] = []
+        rejected = False
+        for key, gauge in streamflow_module.GAUGES.items():
+            for version in streamflow_module.USGS_OGC_VERSIONS:
+                url, params = streamflow_module.build_streamflow_request(
+                    gauge["site"], now=dt_util.utcnow(), version=version
+                )
+                payload = await self._get_json(session, url, params=params, label=f"USGS {gauge['site']} {version}")
+                if not payload:
+                    continue
+                served.append(version)
+                reading = streamflow_module.parse_streamflow(payload, gauge)
+                if reading is None:
+                    # The service answered and every feature failed the
+                    # station, unit, statistic or approval filters. That is a
+                    # schema change, not an outage, and the two need telling
+                    # apart: one is waited out, the other is a code fix.
+                    rejected = True
+                    continue
+                if reading.fresh(dt_util.utcnow()):
+                    found[key] = reading
+                break
+        if not found:
+            if rejected:
+                raise RuntimeError(
+                    "USGS answered but every reading failed validation - "
+                    "likely an OGC schema change rather than an outage"
+                )
+            raise RuntimeError(
+                "no gauge returned a reading"
+                + ("" if served else f" (no response from any of {streamflow_module.USGS_OGC_VERSIONS})")
+            )
+        return found
+
+    def _fresh_streamflow(self, now: datetime):
+        """The Yosemite gauge, only while its reading still describes today."""
+        readings = self._sources["streamflow"].value or {}
+        reading = readings.get("yosemite_valley")
+        return reading if reading is not None and reading.fresh(now) else None
+
+    async def _fetch_air_quality(self, session, zones: list[dict]) -> dict[str, dict]:
+        """Aerosol optical depth per zone - one request for the whole map.
+
+        This decides saturation rather than whether anything happens at all, so
+        unlike the forecast it is allowed to fail entirely: the score falls back
+        to visibility and humidity and carries on.
+        """
+        if not zones:
+            return {}
+        params = build_air_quality_params(
+            [zone["latitude"] for zone in zones],
+            [zone["longitude"] for zone in zones],
+        )
+        payload = await self._get_json(session, OPEN_METEO_AIR_QUALITY_URL, params=params, label="air quality")
+        parts = weather_scoring.split_multi_location(payload)
+        if len(parts) != len(zones) or any(not p.get("hourly", {}).get("time") for p in parts):
+            raise ValueError("Air quality returned incomplete forecast locations")
+        return {zone["id"]: parts[index] for index, zone in enumerate(zones)}
+
+    async def _fetch_ebird(self, session) -> list:
+        """Notable observations across the covered counties, one region at a time."""
+        headers = wildlife_module.build_ebird_headers(self.ebird_key)
+        params = wildlife_module.build_ebird_params()
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+
+        successful, failed = {}, []
+        for index, region in enumerate(EBIRD_REGIONS):
+            if index:
+                await asyncio.sleep(0.5)
+            payload = await self._get_json(
+                session,
+                wildlife_module.build_ebird_url(region),
+                params=params,
+                headers=headers,
+                label=f"eBird {region}",
+            )
+            # An empty array is a valid quiet county. A 401/error object is not.
+            if isinstance(payload, list):
+                successful[region] = wildlife_module.parse_ebird(payload, local_tz)
+            else:
+                failed.append(region)
+        return self._finish_batch("ebird", successful, failed)
+
+    async def _fetch_inaturalist(self, session, now: datetime) -> list:
+        """Recent observations, one taxon at a time and deliberately slowly.
+
+        The list is the union of the marine species worth a drive on their own
+        and every species some peak window is waiting on for corroboration. The
+        second half is derived from the windows themselves: a hand-kept list
+        drifted, and the result was four windows that advertised live
+        verification while nothing ever looked for them.
+        """
+        headers = wildlife_module.build_inaturalist_headers()
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        taxa = list(dict.fromkeys((*MARINE_TAXA, *phenomena_module.corroboration_taxa())))
+
+        successful, failed = {}, []
+        for index, taxon in enumerate(taxa):
+            if index:
+                await asyncio.sleep(INATURALIST_SPACING_SECONDS)
+            payload = await self._get_json(
+                session,
+                INATURALIST_URL,
+                params=wildlife_module.build_inaturalist_params(taxon, now),
+                headers=headers,
+                label=f"iNaturalist {taxon}",
+            )
+            if isinstance(payload, dict) and isinstance(payload.get("results"), list):
+                successful[taxon] = wildlife_module.parse_inaturalist(payload, local_tz)
+            else:
+                failed.append(str(taxon))
+        return self._finish_batch("inaturalist", successful, failed)
+
+    async def _fetch_field_reports(self, session, now: datetime) -> list:
+        """Scrape the three hotlines, one at a time, once a day."""
+        found: list = []
+        for index, source in enumerate(reports_module.REPORT_SOURCES):
+            if source["category"] not in self.enabled_categories:
+                continue
+            if index:
+                await asyncio.sleep(GROUP_STAGGER_SECONDS)
+            async def fetch(source=source):
+                markup = await self._get_text(session, source["url"], label=source["name"])
+                return await self.hass.async_add_executor_job(reports_module.checked_report, markup, source, now)
+            state = self._sources[source["id"]]
+            await self._refresh(state, now, fetch)
+            found.extend(state.value or [])
+        failed = [s.name for key, s in self._sources.items()
+                  if key in self._enabled_sources() and key in {r["id"] for r in reports_module.REPORT_SOURCES}
+                  and s.failures]
+        if failed:
+            raise PartialFetchError("Could not refresh: " + ", ".join(failed), found)
+        return found
+
+    async def _fetch_tides(self, session, now: datetime) -> list:
+        """High and low water for the stations the coastal plans depend on."""
+        local_tz = dt_util.DEFAULT_TIME_ZONE or timezone.utc
+        start = now.date() - timedelta(days=1)
+        end = start + timedelta(days=45)
+
+        found: list = []
+        for index, station in enumerate(verify_module.TIDE_STATIONS.values()):
+            if index:
+                await asyncio.sleep(0.5)
+            url, params = verify_module.build_tide_request(station["station"], start, end)
+            payload = await self._get_json(session, url, params=params, label=f"NOAA {station['name']}")
+            if payload:
+                found.extend(verify_module.parse_tide_predictions(payload, local_tz, station))
+        if not found:
+            raise RuntimeError("no tide predictions returned")
+        return sorted(found, key=lambda tide: tide.moment)
+
+    async def _fetch_park_alerts(self, session) -> list:
+        """Every current closure and warning for the covered parks.
+
+        Paginated to the response's own ``total``. The absence of a closure
+        is only a fact once every alert has been read; a first page of 50
+        says nothing about the 51st, so a short or inconsistent read raises
+        and access stays unknown.
+        """
+        pages = []
+        codes = list(verify_module.NPS_PARK_CODES.values())
+        for index in range(verify_module.NPS_MAX_PAGES):
+            url, params = verify_module.build_nps_alerts_request(codes, self.nps_key,
+                                                                start=index * verify_module.NPS_PAGE_SIZE)
+            payload = await self._get_json(session, url, params=params, label=f"NPS alerts page {index + 1}")
+            total = verify_module.nps_total(payload)
+            pages.append(payload)
+            read = sum(len(page["data"]) for page in pages)
+            if read >= total or not payload["data"]:
+                break
+        return verify_module.collect_nps_pages(pages, requested_codes=codes)
+
+    @property
+    def park_alerts_needed(self) -> bool:
+        """NPS alerts are fetched for the Parks view *or* for a phenomenon that depends on access.
+
+        Firefall, Yosemite moonbow and Yosemite/Sequoia snow need current park
+        access before Can't Miss may act, whether or not the Parks planner
+        view is enabled (curation.access_requirement).
+        """
+        return bool(self.nps_key) and bool(self.enabled_categories & {CATEGORY_PARKS, CATEGORY_RARE})
+
+    # --- Google routing -----------------------------------------------------
+
+    def _route_key(self, point) -> tuple:
+        origin = self.home
+        return (round(origin[0], 3), round(origin[1], 3), self.routing_mode, point)
+
+    @staticmethod
+    def route_basis(fetched_at: datetime | None, now: datetime) -> str:
+        """"current", "recent" or "expired" for a cached route of this age."""
+        if fetched_at is None:
+            return "expired"
+        age = now - fetched_at
+        if age <= timedelta(minutes=ROUTE_CURRENT_MINUTES):
+            return "current"
+        if age <= timedelta(days=ROUTE_RECENT_DAYS):
+            return "recent"
+        return "expired"
+
+    async def _apply_routing(self, session, now: datetime, opportunities: list) -> list:
+        """Replace estimated drive times with routed ones where it matters.
+
+        Every row says which basis its drive time has (``extra["drive_basis"]``):
+        ``current`` (routed within the hour; traffic-aware if the endpoint
+        gave traffic), ``recent`` (routed within a week; typical, not current
+        traffic), or ``estimate`` (calibrated straight-line). The Can't Miss
+        drive gate reads the same field.
+        """
+        for item in opportunities:
+            item.extra.setdefault("drive_basis", "estimate" if item.drive_source in ("estimate", "baseline") else "routed")
+        key = self.google_key
+        if not key or self.routing_mode == ROUTING_OFF or not opportunities:
+            return opportunities
+
+        horizon = now + timedelta(hours=ROUTING_HORIZON_HOURS)
+        candidates = [
+            item
+            for item in opportunities
+            if item.start <= horizon
+            and item.drive_hours <= self.max_drive_hours * ROUTING_SLACK
+            and _point(item) is not None
+        ]
+        if not candidates:
+            return opportunities
+
+        # Deduplicate before spending quota: a dozen opportunities at one zone
+        # is one billable element, not a dozen.
+        wanted = list(dict.fromkeys(_point(item) for item in candidates))
+        due = [point for point in wanted
+               if (entry := self._routing_cache.get(self._route_key(point))) is None
+               or now - entry[1] > timedelta(minutes=ROUTE_REFRESH_MINUTES)]
+        if due:
+            await self._refresh(
+                self._sources["routing"], now, lambda: self._fetch_routing(session, due, key, now)
+            )
+
+        for item in candidates:
+            entry = self._routing_cache.get(self._route_key(_point(item)))
+            basis = self.route_basis(entry[1] if entry else None, now)
+            if entry is None or basis == "expired":
+                # No route, or one too old to describe this trip: the estimate
+                # stands and says so. Never a month-old duration as "traffic".
+                item.extra["drive_basis"] = "estimate"
+                continue
+            routed, fetched = entry
+            current = basis == "current"
+            if item.drive_source in ("estimate", "baseline"):
+                # Kept beside the route: an old route and a fresh estimate
+                # that disagree across the drive limit is not a clearance.
+                item.extra["estimated_drive_hours"] = round(item.drive_hours, 2)
+            item.extra["route_age_hours"] = round((now - fetched).total_seconds() / 3600, 1)
+            item.drive_hours = round(routed.hours, 2)
+            item.drive_source = routed.source
+            item.drive_in_traffic = bool(routed.in_traffic and current)
+            item.extra["drive_basis"] = basis
+            item.extra["route_fetched_at"] = fetched.isoformat()
+            if current:
+                note = f"{routed.minutes} min by road" + (" in current traffic" if routed.in_traffic else "")
+            else:
+                hours = (now - fetched).total_seconds() / 3600
+                age = f"{hours:.0f} h" if hours < 48 else f"{hours / 24:.0f} days"
+                note = f"about {routed.minutes} min by road (routed {age} ago; not current traffic)"
+            item.reasons = [reason for reason in item.reasons if " min by road" not in reason]
+            item.reasons.append(note)
+        return opportunities
+
+    async def _fetch_routing(self, session, points: list[tuple[float, float]], key: str, now: datetime | None = None) -> int:
+        """Fill the routing cache, trying the modern endpoint before the legacy one.
+
+        Which endpoint a key can call is a property of the Google Cloud project,
+        not of this code: Distance Matrix cannot be enabled on projects created
+        after March 2025, and Routes may never have been enabled on older ones.
+        Rather than make you discover that by reading an error, both are tried
+        and whichever answers is remembered for next time. Each route is stored
+        with the time it was fetched.
+        """
+        now = now or dt_util.utcnow()
+        origin = self.home
+        order = {
+            ROUTING_AUTO: (ROUTING_ROUTES, ROUTING_LEGACY),
+            ROUTING_ROUTES: (ROUTING_ROUTES,),
+            ROUTING_LEGACY: (ROUTING_LEGACY,),
+        }.get(self.routing_mode, (ROUTING_ROUTES, ROUTING_LEGACY))
+        if self._routing_endpoint in order:
+            order = (self._routing_endpoint,) + tuple(e for e in order if e != self._routing_endpoint)
+
+        filled = 0
+        for batch in routing_module.chunk_destinations(points):
+            for endpoint in order:
+                results = await self._route_batch(session, endpoint, origin, batch, key)
+                if not results:
+                    continue
+                self._routing_endpoint = endpoint
+                for index, drive in results.items():
+                    if 0 <= index < len(batch):
+                        self._routing_cache[self._route_key(batch[index])] = (drive, now)
+                        filled += 1
+                break
+
+        if not filled:
+            raise RuntimeError(
+                "Google returned no usable routes - check the key and that either "
+                "the Routes API or the Distance Matrix API is enabled for it"
+            )
+        return filled
+
+    async def _route_batch(self, session, endpoint: str, origin, batch: list, key: str) -> dict:
+        if endpoint == ROUTING_ROUTES:
+            url, headers, body = routing_module.build_routes_request(origin, batch, key)
+            payload = await self._post_json(session, url, headers=headers, json_body=body, label="Routes API")
+            return routing_module.parse_routes_response(payload) if payload is not None else {}
+
+        url, params = routing_module.build_legacy_request(origin, batch, key)
+        payload = await self._get_json(session, url, params=params, label="Distance Matrix")
+        return routing_module.parse_legacy_response(payload) if payload is not None else {}
+
+    # --- HTTP helpers -------------------------------------------------------
+
+    async def _get_json(self, session, url: str, *, params=None, headers=None, label: str = "") -> Any:
+        return await self._request(session, "get", url, params=params, headers=headers, label=label, as_json=True)
+
+    async def _get_text(self, session, url: str, *, label: str = "") -> str | None:
+        return await self._request(session, "get", url, label=label, as_json=False)
+
+    async def _post_json(self, session, url: str, *, headers=None, json_body=None, label: str = "") -> Any:
+        return await self._request(
+            session, "post", url, headers=headers, json_body=json_body, label=label, as_json=True
+        )
+
+    async def _request(
+        self,
+        session,
+        method: str,
+        url: str,
+        *,
+        params=None,
+        headers=None,
+        json_body=None,
+        form=None,
+        label: str = "",
+        as_json: bool = True,
+    ) -> Any:
+        """One request, returning None on any failure rather than raising.
+
+        Individual requests fail quietly on purpose: one dead region or one
+        unreachable hotline should cost that one result, and the enclosing
+        ``Source`` decides whether the service as a whole counts as failed.
+        """
+        try:
+            async with asyncio.timeout(REQUEST_TIMEOUT):
+                if form is not None:
+                    response = await session.request(method, url, params=params, headers=headers, data=form)
+                else:
+                    response = await session.request(method, url, params=params, headers=headers, json=json_body)
+                if response.status != 200:
+                    _LOGGER.debug("%s returned HTTP %s", label or url, response.status)
+                    return None
+                if as_json:
+                    # Several of these answer with a JSON body under a
+                    # text/plain content type, so the check is waived.
+                    return await response.json(content_type=None)
+                return await response.text()
+        except TimeoutError:
+            _LOGGER.debug("%s timed out", label or url)
+            return None
+        except Exception:  # noqa: BLE001 - never let one request break a cycle
+            _LOGGER.debug("%s request failed", label or url, exc_info=True)
+            return None
+
+
+def _point(item) -> tuple[float, float] | None:
+    """Routing key for an opportunity: its coordinates, rounded.
+
+    Three decimal places is about 100 m - finer than any drive time is
+    meaningful at, and coarse enough that everything happening at one zone
+    collapses into a single billable element.
+    """
+    if item.latitude is None or item.longitude is None:
+        return None
+    return round(float(item.latitude), 3), round(float(item.longitude), 3)
+
+
+def _usable_forecast(part) -> bool:
+    """One location with interpretable chronology; event coverage is checked later."""
+    return (isinstance(part, dict) and isinstance(part.get("hourly"), dict)
+            and bool(weather_scoring.hourly_times(part)))
+
+
+def _make_cloud_lookup(forecast: dict | None):
+    """Cloud at an actually covered event, retaining value-to-hour alignment."""
+    if not forecast:
+        return None
+    hourly = forecast.get("hourly", {})
+    times = weather_scoring.hourly_times(forecast)
+    clouds = hourly.get("cloud_cover") or []
+
+    def lookup(moment: datetime) -> float | None:
+        index = weather_scoring.hourly_index(times, moment)
+        if index is None or not isinstance(clouds, list) or index >= len(clouds):
+            return None
+        value = clouds[index]
+        if (not isinstance(value, (int, float)) or isinstance(value, bool)
+                or not math.isfinite(value) or not 0 <= value <= 100):
+            return None
+        return float(value)
+
+    lookup.covers = lambda moment: weather_scoring.hourly_index(times, moment) is not None
+    return lookup

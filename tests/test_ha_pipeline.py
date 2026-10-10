@@ -20,14 +20,14 @@ HAS_HA = importlib.util.find_spec("homeassistant") is not None
 if HAS_HA:
     from homeassistant.core import HomeAssistant, State
     from homeassistant.util import dt as dt_util
-    from custom_components.photography_events import coordinator as module
-    from custom_components.photography_events import async_migrate_entry
-    from custom_components.photography_events.config_flow import _clean
-    from custom_components.photography_events.calendar import PhotographyCalendar
-    from custom_components.photography_events.email_reports import parse_email_report
-    from custom_components.photography_events.sensor import CantMissSensor, PlanningOutlookSensor
-    from custom_components.photography_events.event_state import event_id
-    from custom_components.photography_events.const import ZONES_BY_ID
+    from legacy_v16 import coordinator as module
+    from legacy_v16 import async_migrate_entry
+    from legacy_v16.config_flow import _clean
+    from legacy_v16.calendar import PhotographyCalendar
+    from legacy_v16.email_reports import parse_email_report
+    from legacy_v16.sensor import CantMissSensor, PlanningOutlookSensor
+    from legacy_v16.event_state import event_id
+    from legacy_v16.const import ZONES_BY_ID
 
 NOW = datetime(2026, 9, 27, 17, tzinfo=timezone.utc)
 FORECAST_KEYS = ("cloud_cover", "cloud_cover_low", "cloud_cover_mid", "cloud_cover_high", "relative_humidity_2m",
@@ -592,7 +592,7 @@ class PipelineContracts(unittest.IsolatedAsyncioTestCase):
     # --- M1 -------------------------------------------------------------------------
 
     async def test_grunion_and_moonbow_are_timed_calendar_entries_in_pacific_time(self):
-        from custom_components.photography_events import grunion, spectacles
+        from legacy_v16 import grunion, spectacles
         start = datetime(2027, 3, 14, 21, 50, tzinfo=dt_util.get_time_zone("America/Los_Angeles"))
         (run,) = grunion.opportunities([(start, start + timedelta(hours=2))], datetime(2027, 3, 1, tzinfo=timezone.utc),
                                        (34.742, -120.5724))

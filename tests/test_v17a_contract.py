@@ -253,7 +253,8 @@ class V17AContractTests(unittest.TestCase):
         # This does not assert that the existing parser meets the V17B leak gates.
         import test_integration
         test_integration._load_package()
-        from photography_events.core_client import CoreAssessment, CoreVersionError
+        import test_core_client  # Frozen scaffold; active v17 boundaries have their own tests.
+        from legacy_core.core_client import CoreAssessment, CoreVersionError
         for name in ('complete_empty','never_assessed','incomplete','degraded','approved_public',
                      'stale','withheld','unknown_safety_access'):
             with self.subTest(name=name):

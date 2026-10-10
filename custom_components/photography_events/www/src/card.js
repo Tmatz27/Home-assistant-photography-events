@@ -1,207 +1,86 @@
-const EVENT_REFRESH_MS = 5 * 60000;
-const WEATHER_REFRESH_MS = 30 * 60000;
-
 class PhotographyEventsCard extends HTMLElement {
   constructor() {
-    super();
-    this.attachShadow({ mode: "open" });
-    this._config = { ...DEFAULT_CONFIG };
-    this._events = null;
-    this._buildError = null;
-    this._forecast = null;
-    this._weatherMissing = false;
-    this._connected = false;
-    this._initialized = false;
-    this._eventInterval = null;
-    this._weatherInterval = null;
-    this._root = null;
-    this._lastHtml = "";
-    // Null until the first render knows which categories exist; a Set after.
-    this._activeFilters = null;
-    this._expanded = new Set();
-    this._collapsed = new Set();
-    this._openedBuckets = new Set();
-    this._moreBuckets = new Set();
-    this._calendarView = false;
-    this._calendarOffset = 0;
-    this._choiceGroups = new Map();
-    this._displayEvents = new Map();
-    this._showSkipped = false;
-    this._choicePending = false;
-    this._choiceError = "";
-    this._selectedView = null;
-    this._detailState = new Map();
-    this._anchorGeneration = 0;
+    super(); this.attachShadow({mode:"open"}); this._config={...DEFAULT_CONFIG};
+    this._connected=false; this._initialized=false; this._root=null; this._lastHtml="";
+    this._activeFilters=null; this._expanded=new Set(); this._collapsed=new Set(); this._openedBuckets=new Set();
+    this._moreBuckets=new Set(); this._calendarView=false; this._calendarOffset=0;
+    this._displayEvents=new Map(); this._detailState=new Map(); this._anchorGeneration=0;
+    this._views=new Map(); this._selectedView=null; this._requestGeneration=0;
   }
-
-  set hass(hass) {
-    const previous = this._hass;
-    this._hass = hass;
-    if (this._connected && !this._initialized) {
-      this._start();
-      return;
+  set hass(value) {
+    const previous=this._summaryRevision, previousUser=this._hass?.user?.id; this._hass=value;
+    const state=this._summaryState();
+    if (!this._explicitMode && !this._initialViewSelected && state?.attributes?.initial_view) {
+      this._selectedView=({cant_miss:MODE_HERO,watching:"watching",planner:MODE_OUTLOOK,birds:MODE_BIRDS})[state.attributes.initial_view] || MODE_HERO;
+      this._initialViewSelected=true;
     }
-    // The backend modes are push-driven: Home Assistant hands us a new state
-    // object whenever one of the entities we read changes, and identity
-    // comparison is enough to tell. The timeline mode ignores this entirely,
-    // because it recomputes on its own clock and re-rendering it on every
-    // unrelated state change in the house would be pure waste.
-    if (this._isBackendMode() && this._trackedStatesChanged(previous, hass)) this._render();
+    if ((previousUser && previousUser!==value?.user?.id) || ["auth_required","incompatible","invalid_response","connection_required"].includes(state?.attributes?.availability)) this._views.clear();
+    this._summaryRevision=`${state?.attributes?.entry_id || ""}:${state?.attributes?.snapshot_id || ""}:${state?.attributes?.availability || ""}:${value?.connected}`;
+    if (this._connected && (!this._initialized || previous!==this._summaryRevision)) { this._initialized=true; this._refreshCore(); }
+    this._render();
   }
-
-  _isBackendMode() {
-    return BACKEND_MODES.has(this._config?.mode) || Boolean(this._outlookEntityId());
+  _summaryState() {
+    const states=Object.values(this._hass?.states || {});
+    return states.find(s=>s.attributes?.projection_version==="ha.v17.1" && (!this._config.entry_id || s.attributes.entry_id===this._config.entry_id));
   }
-
-  /** Every entity this card reads, so changes to them (and only them) redraw. */
-  _trackedEntities() {
-    return [this._heroEntityId(), this._outlookEntityId(), this._cantMissEntityId()].filter(Boolean);
-  }
-
-  _trackedStatesChanged(previous, next) {
-    if (!previous || previous.connected !== next?.connected) return true;
-    return this._trackedEntities().some((id) => previous.states?.[id] !== next.states?.[id]);
-  }
-
-  _heroEntityId() {
-    if (this._config?.hero_entity) return this._config.hero_entity;
-    return findEntity(this._hass, "binary_sensor.", "action_opportunity");
-  }
-
-  _outlookEntityId() {
-    if (this._config?.outlook_entity) return this._config.outlook_entity;
-    return findEntity(this._hass, "sensor.", "planning_outlook");
-  }
-
+  _entryId() { return this._config.entry_id || this._summaryState()?.attributes?.entry_id; }
+  _isBackendMode() { return true; }
   setConfig(config) {
     if (!config) throw new Error("Photography Events Card configuration is required");
-    const weatherChanged = config.weather_entity !== this._config.weather_entity;
-    const mode = BACKEND_MODES.has(config.mode) || config.mode === MODE_TIMELINE
-      ? config.mode
-      : DEFAULT_CONFIG.mode;
-    this._config = {
-      ...DEFAULT_CONFIG,
-      ...config,
-      mode,
-      outlook_days: clamp(Number.parseInt(config.outlook_days, 10) || DEFAULT_CONFIG.outlook_days, 7, 30),
-      outlook_from_days: clamp(Number.parseInt(config.outlook_from_days, 10) || 0, 0, 365),
-      outlook_through_days: clamp(
-        Number.parseInt(config.outlook_through_days, 10) || DEFAULT_CONFIG.outlook_through_days, 1, 365),
-    };
-    this._selectedView = mode;
-    this._lastHtml = "";
-    if (this._connected && this._hass && this._initialized) {
-      if (weatherChanged) this._refreshWeather().then(() => this._recomputeAndRender());
-      else this._recomputeAndRender();
-    } else if (this._connected) {
-      this._render();
-    }
+    this._explicitMode=Object.hasOwn(CORE_VIEW,config.mode); this._initialViewSelected=false;
+    this._config={title:typeof config.title==="string"?config.title.slice(0,256):DEFAULT_CONFIG.title,
+                  mode:this._explicitMode?config.mode:MODE_HERO,
+                  entry_id:typeof config.entry_id==="string"?config.entry_id.slice(0,128):""};
+    this._selectedView=this._config.mode;
+    this._views.clear(); this._requestGeneration++; this._lastHtml="";
+    if (this._connected) this._refreshCore(); this._render();
   }
-
   connectedCallback() {
-    this._connected = true;
-    if (!this._hass) {
-      this._render();
-      return;
-    }
-    if (this._initialized) {
-      // Home Assistant detaches and re-attaches the element on a dashboard
-      // view switch; polling has to be restarted explicitly or data goes
-      // stale until a full reload.
-      if (this._isBackendMode()) {
-        this._render();
-        this._scheduleBackendRefresh();
-        return;
-      }
-      this._recomputeAndRender();
-      this._scheduleRefresh();
-      return;
-    }
-    this._start();
+    this._connected=true; this._initialized=true; this._refreshCore();
+    this._clearIntervals();
+    this._eventInterval=setInterval(()=>this._render(),1000);
+    this._fetchInterval=setInterval(()=>this._refreshCore(),5*60000);
+    this._render();
   }
-
   disconnectedCallback() {
-    this._connected = false;
-    this._anchorGeneration++;
-    this._cancelAnchor?.();
-    this._clearIntervals();
+    this._connected=false; this._requestGeneration++; this._anchorGeneration++;
+    this._cancelAnchor?.(); this._clearIntervals();
   }
-
-  async _start() {
-    if (this._initialized || !this._hass) return;
-    this._initialized = true;
-    // Nothing to fetch or compute in the backend modes - the integration has
-    // done it, and state arrives on its own.
-    if (this._isBackendMode()) {
-      this._render();
-      this._scheduleBackendRefresh();
-      return;
-    }
-    this._render();
-    await this._refreshWeather();
-    this._recomputeAndRender();
-    this._scheduleRefresh();
-  }
-
-  _clearIntervals() {
-    if (this._eventInterval) clearInterval(this._eventInterval);
-    if (this._weatherInterval) clearInterval(this._weatherInterval);
-    this._eventInterval = null;
-    this._weatherInterval = null;
-  }
-
-  _scheduleBackendRefresh() {
-    this._clearIntervals();
-    // The clock must keep aging cached data even when HA sends no updates.
-    if (this._connected) this._eventInterval = setInterval(() => this._render(), 60000);
-  }
-
-  _scheduleRefresh() {
-    this._clearIntervals();
-    if (!this._connected) return;
-    this._eventInterval = setInterval(() => this._recomputeAndRender(), EVENT_REFRESH_MS);
-    this._weatherInterval = setInterval(async () => {
-      await this._refreshWeather();
-      this._recomputeAndRender();
-    }, WEATHER_REFRESH_MS);
-  }
-
-  async _refreshWeather() {
-    if (this._isBackendMode()) return;
-    const entityId = this._config.weather_entity;
-    if (!entityId || !this._hass) {
-      this._forecast = null;
-      this._weatherMissing = false;
-      return;
-    }
-    if (!this._hass.states?.[entityId]) {
-      this._forecast = null;
-      this._weatherMissing = true;
-      return;
-    }
-    this._weatherMissing = false;
+  _clearIntervals() { clearInterval(this._eventInterval); clearInterval(this._fetchInterval); this._eventInterval=this._fetchInterval=null; }
+  async _refreshCore(append=false) {
+    if (!this._connected || !this._hass?.callWS || !this._entryId()) return;
+    if (this._requestPending) { this._refreshQueued=true; return; }
+    const view=CORE_VIEW[this._selectedView || this._config.mode] || "cant_miss";
+    const old=this._views.get(view), entry=this._entryId();
+    if (append && !old?.next_cursor) return;
+    this._requestPending=true;
+    const generation=this._requestGeneration;
     try {
-      const result = await this._hass.callWS({
-        type: "weather/get_forecasts",
-        entity_id: [entityId],
-        forecast_type: "hourly",
-      });
-      this._forecast = result?.[entityId]?.forecast || null;
+      // Coalesce view changes and summary pushes; one request at a time, <=1/s.
+      const pause=Math.max(0,1000-(Date.now()-(this._lastRead || 0)));
+      if (pause) await new Promise(resolve=>setTimeout(resolve,pause));
+      if (!this._connected || generation!==this._requestGeneration) return;
+      this._lastRead=Date.now();
+      const message={type:"photography_events/get_view",entry_id:entry,projection_version:"ha.v17.1",view,limit:50};
+      if (append) { message.cursor=old.next_cursor; message.snapshot_id=old.snapshot_id; }
+      const result=await this._hass.callWS(message);
+      if (!this._connected || generation!==this._requestGeneration || entry!==this._entryId()) return;
+      if (result?.projection_version!=="ha.v17.1" || result.entry_id!==entry || !Array.isArray(result.items) || result.items.length>50) { this._views.clear(); throw new Error("invalid_projection"); }
+      if (append) result.items=[...old.items,...result.items].slice(0,500);
+      this._views.set(view,result); this._transportError=null;
+      // Other view caches cannot retain an earlier generation or connection.
+      for (const [key,v] of this._views) if (v.snapshot_id!==result.snapshot_id) this._views.delete(key);
     } catch (error) {
-      console.error("Photography Events Card: weather forecast request failed", error);
-      this._forecast = null;
+      if (generation===this._requestGeneration && this._connected) {
+        this._transportError="Core view unavailable. Check the integration connection in Settings > Devices & services.";
+        if (error?.code==="snapshot_expired") { this._views.delete(view); this._refreshQueued=true; }
+        if (["unauthorized","unsupported_projection"].includes(error?.code)) this._views.clear();
+      }
+    } finally {
+      this._requestPending=false; this._render();
+      if (this._refreshQueued && this._connected) { this._refreshQueued=false; this._refreshCore(); }
     }
   }
-
-  _recomputeAndRender() {
-    if (!this._hass) return;
-    if (this._isBackendMode()) { this._scheduleBackendRefresh(); this._render(); return; }
-    const { events, error } = buildEvents(this._hass, this._config, this._forecast, new Date());
-    this._events = events;
-    this._buildError = error;
-    this._render();
-  }
-
   // Follow the composed tree: a slotted card's scroll owner can live inside
   // the slot host's shadow root, outside the parentElement chain.
   _scrollOwners(element) {
@@ -364,6 +243,7 @@ class PhotographyEventsCard extends HTMLElement {
         if (this._selectedView === button.dataset.tab) return;
         this._selectedView = button.dataset.tab;
         this._render(button);
+        this._refreshCore();
       });
     }
     for (const summary of this._root.querySelectorAll("summary")) {
@@ -423,70 +303,15 @@ class PhotographyEventsCard extends HTMLElement {
     }
   }
 
-  async _saveChoice(eventId, choice) {
-    if (!eventId || this._choicePending) return;
-    this._choicePending = true;
-    this._choiceError = "";
-    try {
-      const ids = this._choiceGroups.get(eventId) || [eventId];
-      for (const id of ids) await this._hass.callService("photography_events", "set_event_choice", { event_id: id, choice });
-      // The server publishes the updated state. Do not claim success locally
-      // before it has persisted the choice for the other dashboards too.
-    } catch (error) {
-      this._choiceError = "Could not save your event choice. Please try again.";
-    } finally {
-      this._choicePending = false;
-      this._render();
-    }
-  }
 
-  _eventControlsHtml(id, choice = "default") {
-    if (!id) return "";
-    return `<div class="event-controls">
-      <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "follow" ? "default" : "follow"}"
-        aria-pressed="${choice === "follow"}">${choice === "follow" ? "Following · Unfollow" : "Follow"}</button>
-      <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "skip" ? "default" : "skip"}">
-        ${choice === "skip" ? "Restore event" : "Not going · Skip"}</button>
-      <button type="button" data-eventid="${escapeHtml(id)}" data-choice="${choice === "seen" ? "default" : "seen"}"
-        title="Hides this occurrence. Next year's is a separate event and will be offered again.">
-        ${choice === "seen" ? "Seen it · Undo" : "Seen it · Got the shot"}</button>
-    </div>
-    ${choice === "seen" ? `<p class="event-note">Put away for this season. Next year's window is a separate event and comes back on its own.</p>` : ""}`;
+  async _saveChoice() { return; }
+  _eventControlsHtml() {
+    return `<div class="event-controls"><button disabled title="Core persistence is unavailable">Follow</button><button disabled title="Core persistence is unavailable">Skip</button><button disabled title="Core persistence is unavailable">Seen · Got the shot</button></div><p class="event-note">Choices are unavailable until Core supports persistence. Nothing is saved. Notifications are disabled.</p>`;
   }
-
-  _setHidden(hidden) {
-    if (this.style) this.style.display = hidden ? "none" : "";
-  }
-
-  _loadingHtml(label) {
-    return `<div class="loading"><span class="spinner"></span><span>${escapeHtml(label)}</span></div>`;
-  }
-
+  _setHidden(hidden) { if(this.style)this.style.display=hidden?"none":""; }
+  _loadingHtml(label) { return `<div class="loading"><span class="spinner"></span><span>${escapeHtml(label)}</span></div>`; }
   _styles() { return CARD_STYLES; }
-
-  getCardSize() {
-    // A hidden hero should not reserve space in a masonry column.
-    if (this._config?.mode === MODE_HERO) {
-      return this._cantMissEntityId() || this._outlookEntityId() ? 3 : this._hass && heroFromState(this._hass.states[this._heroEntityId()]) ? 6 : 1;
-    }
-    if (this._config?.mode === MODE_BIRDS) return 4;
-    if (this._config?.mode === MODE_OUTLOOK) return 12;
-    const categories = CATEGORY_TOGGLE_KEYS.filter((key) => this._config?.[key] !== false).length;
-    return Math.max(4, 2 + categories * 2);
-  }
-
-  static getConfigElement() {
-    return document.createElement("photography-events-card-editor");
-  }
-
-  static getStubConfig(hass) {
-    // When the integration is installed, the hero is the mode worth showing
-    // first: it is the one that changes what you do with your evening.
-    const heroEntity = findEntity(hass, "binary_sensor.", "action_opportunity");
-    if (heroEntity) {
-      return { ...DEFAULT_CONFIG, mode: MODE_HERO, hero_entity: heroEntity };
-    }
-    const weatherEntity = hass?.states ? Object.keys(hass.states).find((id) => id.startsWith("weather.")) : undefined;
-    return { ...DEFAULT_CONFIG, weather_entity: weatherEntity || "" };
-  }
+  getCardSize() { return 8; }
+  static getConfigElement() { return document.createElement("photography-events-card-editor"); }
+  static getStubConfig() { return {...DEFAULT_CONFIG}; }
 }

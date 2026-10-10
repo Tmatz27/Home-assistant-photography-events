@@ -1,0 +1,7 @@
+{
+  "reviewed": false,
+  "core_reference_commit": "b14014760beee2c18d02a2b1f36756f6faee93a0",
+  "policy_revision": "b140147-candidate-1",
+  "content_sha256": null,
+  "reason": "Independent public visitor destination and prose review is pending. No production locations are approved by this implementation."
+}

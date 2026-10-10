@@ -12,8 +12,8 @@ HAS_HA = importlib.util.find_spec("homeassistant") is not None
 if HAS_HA:
     from homeassistant.core import HomeAssistant
     from homeassistant.helpers.storage import Store
-    from custom_components.photography_events.core_bridge import CoreBridge
-    from custom_components.photography_events.core_client import CoreAssessment, CoreError
+    from legacy_core.core_bridge import CoreBridge
+    from legacy_core.core_client import CoreAssessment, CoreError
 
 
 @unittest.skipUnless(HAS_HA, "Real HA Store requires Home Assistant")

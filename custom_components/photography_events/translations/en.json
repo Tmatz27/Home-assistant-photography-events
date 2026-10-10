@@ -1,105 +1,82 @@
 {
+  "title": "Photography Events",
   "config": {
     "step": {
       "user": {
-        "title": "Photography Events",
-        "description": "Nothing here is required to start. Open-Meteo, iNaturalist and the wildflower hotlines need no account, so sunset scoring, meteor showers, whales and blooms all work straight away. The two API keys unlock rare birds and traffic-aware drive times, and can be added later.",
+        "title": "Private Core connection",
+        "description": "Read-only development build. Choices and notifications are unavailable. Legacy credentials remain inactive. Changing Core URL invalidates cached context and cannot map choices across instances. Enter a new token; it is never prefilled.",
         "data": {
-          "enabled_categories": "Categories to track",
-          "max_drive_hours": "Maximum drive time",
-          "sunset_score": "Local sunset model threshold",
-          "alert_score": "Legacy drop-everything score",
-          "ebird_api_key": "eBird API key",
-          "google_api_key": "Google Maps API key",
-          "routing_mode": "Drive time source",
-          "enable_field_reports": "Read the wildflower and autumn colour hotlines",
-          "nps_api_key": "National Park Service API key",
-          "sunset_drive_hours": "Maximum drive for a sunset",
-          "sunsetwx_client_id": "SunsetWx client ID",
-          "sunsetwx_client_secret": "SunsetWx client secret"
-        },
-        "data_description": {
-          "max_drive_hours": "The Can't Miss drive limit. Nothing further away reaches the main dashboard. The year planner still lists longer trips such as national parks.",
-          "sunset_score": "How good the built-in local model's sky score must be before a sunset is considered. SunsetWx's own top tier is used instead when configured.",
-          "alert_score": "Kept for existing automations on rows that were never assessed. The Can't Miss gate (significance, evidence, drive and safety) now decides what can turn the drop-everything sensor on.",
-          "ebird_api_key": "Free and instant from ebird.org/api/keygen. Without it the bird category simply produces nothing.",
-          "google_api_key": "Optional. Without it, drive times come from measured baselines and a calibrated distance estimate.",
-          "enable_field_reports": "Scrapes three public pages once a day. Bloom timing depends on winter rainfall and cannot be computed, so these are the only real source for it.",
-          "nps_api_key": "Free from nps.gov/subjects/developer. Used to warn you when a road or area in a park you were planning to visit is closed.",
-          "sunset_drive_hours": "Sunsets are decided on the afternoon's forecast, so they get their own, much shorter radius. Nobody drives six hours for one, and listing them at that range turns the whole category into noise.",
-          "sunsetwx_client_id": "Optional. A purpose-built sunrise/sunset quality forecast from sunsetwx.com (register there; choose the plan that fits your use). Without it the built-in model is used. Sunsets are assessed at home only.",
-          "sunsetwx_client_secret": "Optional. Stored by Home Assistant; never shown on the card or written to logs."
+          "core_url": "Private Core URL",
+          "core_token": "Private bearer token"
+        }
+      },
+      "reconfigure": {
+        "title": "Private Core connection",
+        "description": "Read-only development build. Choices and notifications are unavailable. Legacy credentials remain inactive. Changing Core URL invalidates cached context and cannot map choices across instances. A blank replacement token keeps the current token.",
+        "data": {
+          "core_url": "Private Core URL",
+          "core_token": "Private bearer token"
+        }
+      },
+      "reauth_confirm": {
+        "title": "Private Core connection",
+        "description": "Read-only development build. Choices and notifications are unavailable. Legacy credentials remain inactive. Changing Core URL invalidates cached context and cannot map choices across instances. Enter a new token; it is never prefilled.",
+        "data": {
+          "core_url": "Private Core URL",
+          "core_token": "Private bearer token"
         }
       }
     },
+    "error": {
+      "cannot_connect": "Cannot reach a ready Core service.",
+      "invalid_auth": "Core rejected the token.",
+      "unsupported_api_version": "Core API v1 and schema 0008 are required.",
+      "invalid_core_response": "Core returned an invalid normal response.",
+      "invalid_connection": "Enter an HTTP(S) origin and a nonempty token."
+    },
     "abort": {
-      "single_instance_allowed": "Photography Events is already set up. Use its Configure button to change settings.",
-      "already_configured": "Photography Events is already set up.",
-      "already_in_progress": "Setup is already open in another window. Finish or close it, then try again."
+      "single_instance_allowed": "Only one Photography Events entry is supported.",
+      "already_configured": "Already configured.",
+      "reauth_successful": "Authentication updated.",
+      "reconfigure_successful": "Connection updated."
     }
   },
   "options": {
     "step": {
       "init": {
-        "title": "Photography Events",
-        "description": "Changes take effect immediately; the integration reloads itself when you save.",
+        "title": "Presentation",
+        "description": "Legacy provider keys, thresholds and preferences are retained but inactive. Choices and all notifications are unavailable.",
         "data": {
-          "enabled_categories": "Categories to track",
-          "max_drive_hours": "Maximum drive time",
-          "sunset_score": "Local sunset model threshold",
-          "alert_score": "Legacy drop-everything score",
-          "ebird_api_key": "eBird API key",
-          "google_api_key": "Google Maps API key",
-          "routing_mode": "Drive time source",
-          "enable_field_reports": "Read the wildflower and autumn colour hotlines",
-          "nps_api_key": "National Park Service API key",
-          "sunset_drive_hours": "Maximum drive for a sunset",
-          "sunsetwx_client_id": "SunsetWx client ID",
-          "sunsetwx_client_secret": "SunsetWx client secret"
-        },
-        "data_description": {
-          "max_drive_hours": "The Can't Miss drive limit. Nothing further away reaches the main dashboard. The year planner still lists longer trips such as national parks.",
-          "sunset_score": "How good the built-in local model's sky score must be before a sunset is considered. SunsetWx's own top tier is used instead when configured.",
-          "alert_score": "Kept for existing automations on rows that were never assessed. The Can't Miss gate (significance, evidence, drive and safety) now decides what can turn the drop-everything sensor on.",
-          "ebird_api_key": "Free and instant from ebird.org/api/keygen. Without it the bird category simply produces nothing.",
-          "google_api_key": "Optional. Without it, drive times come from measured baselines and a calibrated distance estimate.",
-          "enable_field_reports": "Scrapes three public pages once a day. Bloom timing depends on winter rainfall and cannot be computed, so these are the only real source for it.",
-          "nps_api_key": "Free from nps.gov/subjects/developer. Used to warn you when a road or area in a park you were planning to visit is closed.",
-          "sunset_drive_hours": "Sunsets are decided on the afternoon's forecast, so they get their own, much shorter radius. Nobody drives six hours for one, and listing them at that range turns the whole category into noise.",
-          "sunsetwx_client_id": "Optional. A purpose-built sunrise/sunset quality forecast from sunsetwx.com (register there; choose the plan that fits your use). Without it the built-in model is used. Sunsets are assessed at home only.",
-          "sunsetwx_client_secret": "Optional. Stored by Home Assistant; never shown on the card or written to logs."
+          "initial_view": "Initial card view"
         }
       }
     }
   },
-  "selector": {
-    "category": {
-      "options": {
-        "astronomy": "Astronomy — meteor showers and Milky Way windows",
-        "sunset": "Skies — home sunrise and sunset colour",
-        "marine": "Whales — orca, blue, fin and humpback",
-        "mammals": "Land mammals — rut, pupping and elephant seals",
-        "birds": "Birds — spectacles, encounters and a Bird Chase list (needs an eBird key)",
-        "blooms": "Wildflower blooms",
-        "foliage": "Autumn colour",
-        "parks": "National parks and monuments",
-        "rare_phenomena": "Rare phenomena — firefall, moonbow, monarchs, crane fly-ins, glowing surf",
-        "waves": "Exceptional ocean swells"
-      }
-    },
-    "routing_mode": {
-      "options": {
-        "auto": "Automatic — try the Routes API, fall back to Distance Matrix",
-        "routes": "Routes API only",
-        "distance_matrix": "Distance Matrix API only (legacy)",
-        "off": "Off — use the built-in distance estimate"
-      }
-    }
-  },
   "issues": {
-    "source_unavailable": {
-      "title": "{source} is not updating",
-      "description": "Last successful update: {last_success}.\n\n{impact}\n\nCheck the source website and any configured API credentials. Retained reports keep their original observation dates; this issue clears after a successful update."
+    "core_connection_required": {
+      "title": "Connect Photography Events to Core",
+      "description": "Legacy settings are retained but inactive. Complete the private Core connection. No legacy provider requests or notifications run.",
+      "fix_flow": {
+        "step": {
+          "init": {
+            "title": "Private Core connection",
+            "data": {
+              "core_url": "Private Core URL",
+              "core_token": "Private bearer token"
+            }
+          }
+        },
+        "error": {
+          "cannot_connect": "Cannot reach a ready Core service.",
+          "invalid_auth": "Core rejected the token.",
+          "unsupported_api_version": "Core API v1 and schema 0008 are required.",
+          "invalid_core_response": "Core returned an invalid normal response.",
+          "invalid_connection": "Enter an HTTP(S) origin and a nonempty token."
+        },
+        "abort": {
+          "entry_missing": "This entry no longer exists."
+        }
+      }
     }
   }
 }

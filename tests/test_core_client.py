@@ -7,12 +7,17 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import AsyncMock
 
-import test_integration  # Registers the portable photography_events package.
-from photography_events.core_client import (
+import test_integration  # Registers shared historical helper modules.
+import sys
+import types
+legacy = types.ModuleType("legacy_core")
+legacy.__path__ = [str(Path(__file__).parent / "legacy_v16")]
+sys.modules["legacy_core"] = legacy
+from legacy_core.core_client import (
     PhotographyEventsCoreClient, CoreError, CoreAuthenticationError, CoreVersionError,
     CoreNotReady, CoreProtocolError, CoreAssessment,
 )
-from photography_events.core_bridge import CoreBridge
+from legacy_core.core_bridge import CoreBridge
 
 NOW = datetime(2026, 9, 27, 17, tzinfo=timezone.utc)
 PAYLOAD = json.loads((Path(__file__).parent / "fixtures/core-v1.json").read_text(encoding="utf-8"))

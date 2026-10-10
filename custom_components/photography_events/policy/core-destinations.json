@@ -1,0 +1,67 @@
+{
+  "format_version": "core.destinations.1",
+  "authority": "core_curated_definitions",
+  "synthetic": false,
+  "core_reference_commit": "b14014760beee2c18d02a2b1f36756f6faee93a0",
+  "schema_version": "0008",
+  "policy_revision": "b140147-candidate-1",
+  "sources": [
+    {
+      "path": "src/pec/definitions/tule_elk_rut.json",
+      "sha256": "7fd9e44aaed5b9b31bc7664dd41848e9e58222b6ed1e06e09b41cfee2d8ff21b"
+    },
+    {
+      "path": "src/pec/phenomena.py",
+      "sha256": "16e90b452eb1c0a827dcf97998aa3a6165e1151f197d393a6823866c459b661f"
+    },
+    {
+      "path": "src/pec/legacy_safety.py",
+      "sha256": "ff7d33600b7dea37b59733138a57846bd4d87eaa28f36c206b1b3f12c877c1df"
+    },
+    {
+      "path": "src/pec/spatial.py",
+      "sha256": "0afa238704e1d9437895c68498ec7eddb5d8526f50e98440aea7c90fba5bc32c"
+    },
+    {
+      "path": "src/pec/ingestion.py",
+      "sha256": "211c7e71137913d6217ad7734b168570688713e0dde08593aaf9cd8c18ead40e"
+    }
+  ],
+  "destinations": [
+    {
+      "key": "carrizo_plain_soda_lake",
+      "name": "Carrizo Plain, Soda Lake Road foothills",
+      "latitude": 35.1914,
+      "longitude": -119.7929,
+      "policy": "curated_public_site",
+      "public_visitor_listings": [
+        "https://www.blm.gov/visit/carrizo-plain-national-monument"
+      ],
+      "public_text": [
+        "1/1000 s or faster, f/6.3, auto ISO; animal-eye AF, continuous.",
+        "Beanbag on the car window or a gimbal head; stay in or beside the vehicle",
+        "Bugling, sparring and harem defence, and the whole thing runs on first light. Shoot from the vehicle where possible - it is a far better hide than standing, and keeps you the legal distance back. Backlit dust and breath in dawn light is the shot worth driving for.",
+        "Burst for sparring; backlit breath and dust at first light is the frame.",
+        "Carrizo roads are impassable clay when wet.",
+        "DJI Mini 3: not appropriate - wildlife is the subject, and a drone disturbs it.",
+        "DJI Osmo Pocket 3 for bugling audio",
+        "Dawn, 06:00-08:30",
+        "Sony FE 200-600mm f/5.6-6.3 G OSS",
+        "Sony FE 2x Teleconverter: dawn light and moving animals need shutter speed more than reach. The 2x costs two stops (f/12.6 on the 200-600), slows autofocus and magnifies shimmer and shake; an APS-C crop of the 61 MP file keeps about 26 MP.",
+        "Sony FE 70-200mm f/2.8 GM OSS II for animals in their landscape",
+        "Stay in or beside the vehicle; keep well back from bulls.",
+        "Tule elk rut",
+        "not_appropriate"
+      ],
+      "definitions": [
+        {
+          "key": "tule_elk_rut",
+          "version": "legacy-0.16.1-1",
+          "hash": "d068ce5090e83c7d32bd9ab667ce752a4d875735ea393972aec74c465cd20acf",
+          "path": "src/pec/definitions/tule_elk_rut.json",
+          "occurrence_pattern": "tule_elk_rut-\\d{4}-\\d{2}-\\d{2}"
+        }
+      ]
+    }
+  ]
+}

@@ -1,14 +1,9 @@
 [
   "header",
-  "astronomy",
-  "catalog",
-  "sky-scoring",
-  "timeline",
-  "formatting",
+  "presentation",
   "editor",
   "styles",
-  "modes",
-  "cant-miss",
   "card",
+  "core-view",
   "register"
 ]

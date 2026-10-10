@@ -1,0 +1,213 @@
+{
+  "46011": {
+    "percentile": 0.999,
+    "threshold_m": 6.5,
+    "training_episodes_by_year": {
+      "2020": 0,
+      "2021": 1,
+      "2022": 0,
+      "2023": 2
+    },
+    "min_period_s": 14,
+    "direction_deg": [
+      240,
+      330
+    ],
+    "episode_separation_hours": 48,
+    "candidates": [
+      {
+        "percentile": 0.99,
+        "threshold_m": 4.9,
+        "training_episodes_by_year": {
+          "2020": 4,
+          "2021": 6,
+          "2022": 2,
+          "2023": 10
+        }
+      },
+      {
+        "percentile": 0.995,
+        "threshold_m": 5.3,
+        "training_episodes_by_year": {
+          "2020": 2,
+          "2021": 4,
+          "2022": 1,
+          "2023": 5
+        }
+      },
+      {
+        "percentile": 0.9975,
+        "threshold_m": 5.9,
+        "training_episodes_by_year": {
+          "2020": 0,
+          "2021": 1,
+          "2022": 0,
+          "2023": 4
+        }
+      },
+      {
+        "percentile": 0.999,
+        "threshold_m": 6.5,
+        "training_episodes_by_year": {
+          "2020": 0,
+          "2021": 1,
+          "2022": 0,
+          "2023": 2
+        }
+      }
+    ],
+    "valid_observation_hours": {
+      "2020": 8622,
+      "2021": 8580,
+      "2022": 8652,
+      "2023": 8753,
+      "2024": 8782,
+      "2025": 8739
+    },
+    "missing_years": [],
+    "validation_episodes": [],
+    "validation_counts": {
+      "2024": 0,
+      "2025": 0
+    },
+    "limitations": "Counts cover available valid observations, not missing periods. This is offshore rarity, not breaker height or a guarantee of future event frequency."
+  },
+  "46042": {
+    "percentile": 0.9975,
+    "threshold_m": 5.6,
+    "training_episodes_by_year": {
+      "2020": 1,
+      "2021": 3,
+      "2022": 0,
+      "2023": 3
+    },
+    "min_period_s": 14,
+    "direction_deg": [
+      240,
+      330
+    ],
+    "episode_separation_hours": 48,
+    "candidates": [
+      {
+        "percentile": 0.99,
+        "threshold_m": 4.9,
+        "training_episodes_by_year": {
+          "2020": 7,
+          "2021": 8,
+          "2022": 5,
+          "2023": 8
+        }
+      },
+      {
+        "percentile": 0.995,
+        "threshold_m": 5.2,
+        "training_episodes_by_year": {
+          "2020": 4,
+          "2021": 6,
+          "2022": 3,
+          "2023": 7
+        }
+      },
+      {
+        "percentile": 0.9975,
+        "threshold_m": 5.6,
+        "training_episodes_by_year": {
+          "2020": 1,
+          "2021": 3,
+          "2022": 0,
+          "2023": 3
+        }
+      },
+      {
+        "percentile": 0.999,
+        "threshold_m": 6.2,
+        "training_episodes_by_year": {
+          "2020": 0,
+          "2021": 1,
+          "2022": 0,
+          "2023": 2
+        }
+      }
+    ],
+    "valid_observation_hours": {
+      "2020": 8624,
+      "2021": 8541,
+      "2022": 8367,
+      "2023": 7708
+    },
+    "missing_years": [
+      2024,
+      2025
+    ],
+    "validation_episodes": [],
+    "validation_counts": {},
+    "limitations": "Counts cover available valid observations, not missing periods. This is offshore rarity, not breaker height or a guarantee of future event frequency."
+  },
+  "B1500": {
+    "threshold_m": 5.2,
+    "percentile": 0.9975,
+    "training_episodes_by_year": {
+      "2020": 0,
+      "2021": 2,
+      "2022": 0,
+      "2023": 3
+    },
+    "candidates": [
+      {
+        "threshold_m": 4.0,
+        "percentile": 0.99,
+        "training_episodes_by_year": {
+          "2020": 4,
+          "2021": 6,
+          "2022": 0,
+          "2023": 9
+        }
+      },
+      {
+        "threshold_m": 4.5,
+        "percentile": 0.995,
+        "training_episodes_by_year": {
+          "2020": 1,
+          "2021": 3,
+          "2022": 0,
+          "2023": 4
+        }
+      },
+      {
+        "threshold_m": 5.2,
+        "percentile": 0.9975,
+        "training_episodes_by_year": {
+          "2020": 0,
+          "2021": 2,
+          "2022": 0,
+          "2023": 3
+        }
+      },
+      {
+        "threshold_m": 6.7,
+        "percentile": 0.999,
+        "training_episodes_by_year": {
+          "2020": 0,
+          "2021": 1,
+          "2022": 0,
+          "2023": 3
+        }
+      }
+    ],
+    "measurement": "CDIP nearshore model hindcast, not observations or breaker height",
+    "validation_counts": {
+      "2024": 2,
+      "2025": 0
+    },
+    "valid_observation_hours": {
+      "2020": 8784,
+      "2021": 8760,
+      "2022": 8760,
+      "2023": 8760,
+      "2024": 8784,
+      "2025": 2160
+    },
+    "calibration_last_time": "2025-03-31T23:00:00+00:00",
+    "limitations": "Hindcast rarity; forecast skill is not measured by this backtest. Coverage may be partial."
+  }
+}

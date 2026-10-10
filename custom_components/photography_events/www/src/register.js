@@ -1,73 +1,9 @@
-Object.assign(PhotographyEventsCard.prototype, CARD_MODES, CANT_MISS_MODES);
-
-// Test-only seam: the astronomy math is written as free functions (no `this`
-// juggling), so it is exposed here for direct unit testing the same way the
-// rest of this repo pokes at underscore-prefixed instance methods.
-PhotographyEventsCard.backend = {
-  driveLabel,
-  categoryColor,
-  confidenceColor,
-  confidenceBand,
-  driveProvenance,
-  parseEventDate,
-  heroFromState,
-  outlookFromState,
-  activeCategories,
-  filterOutlook,
-  groupByMonth,
-  groupByUrgency,
-  rollUpByPlace,
-  consolidateNights,
-  calendarSegments,
-  nightTradeoffs,
-  cloudLabel,
-  healthStripHtml,
-  reportLinkHtml,
-  rangeLabel,
-  findEntity,
-  cantMissFromState,
-  shortLens,
-  whereLabel,
-  CATEGORY_META,
-  DOG_META,
-  MODE_HERO,
-  MODE_OUTLOOK,
-  MODE_TIMELINE,
-  MODE_BIRDS,
-};
-
-PhotographyEventsCard.astro = {
-  daysSinceJ2000,
-  sunEquatorial,
-  moonEquatorial,
-  horizontalFromEquatorial,
-  findAltitudeCrossings,
-  moonIllumination,
-  moonPhaseInfo,
-  buildDayTable,
-  pruneRoutine,
-  buildEvents,
-  skyColorQuality,
-  meteorQuality,
-  planetGeocentric,
-  planetElongationDeg,
-  planetEvents,
-  customSkyEvents,
-  angularSeparation,
-  PLANETS,
-  lunarEclipseVisibility,
-  solarEclipseVisibility,
-  centralPathMargin,
-  METEOR_SHOWERS,
-  ECLIPSES,
-};
-
 window.customCards = window.customCards || [];
 if (!window.customCards.some((card) => card?.type === "photography-events-card")) {
   window.customCards.push({
     type: "photography-events-card",
     name: "Photography Events Card",
-    description: "Can't Miss photography opportunities within your drive limit, a year planner, and a bird view",
+    description: "Read-only Core-backed photography views with explicit coverage and connection status",
     preview: true,
     documentationURL: "https://github.com/Tmatz27/Home-assistant-photography-events",
   });

@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0-dev.1
+
+Development milestone only; no HACS release or tag. Core-only read-only coordinator, private connection/migration, sanitized authenticated WebSocket views and preserved card host/navigation. Legacy intelligence is disconnected. Coverage and destination review remain explicit; choices, calendar precision and all notifications are unavailable. See docs/v17b/IMPLEMENTATION.md.
+
 
 
 

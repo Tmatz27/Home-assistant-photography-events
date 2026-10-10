@@ -1,4 +1,4 @@
-"""Isolated async Core v1 client; unused by the default local engine.
+"""Private bounded Core v1 transport for the read-only v17 runtime.
 
 No token is part of a response object, log message, entity or websocket payload.
 The caller owns the aiohttp session (normally HA's async_get_clientsession).
@@ -10,6 +10,8 @@ import json
 from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlencode, urlsplit
+
+from .projection import InvalidProjection, validate_row, validate_envelope, text, timestamp, SAFE_SOURCES
 
 import aiohttp
 
@@ -65,37 +67,12 @@ class CoreProduct:
 
     @classmethod
     def parse(cls, row):
-        if not isinstance(row, dict):
-            raise CoreProtocolError()
-        for key in ("occurrence_key", "phenomenon_key", "title", "category", "presentation",
-                    "safety_state", "access_state", "evidence_state", "reason", "awaiting"):
-            if not isinstance(row.get(key), str):
-                raise CoreProtocolError()
-        for key in ("starts_at", "ends_at", "data_as_of", "valid_until"):
-            aware_timestamp(row.get(key))
-        if type(row.get("eligibility")) is not bool or type(row.get("held")) is not bool:
-            raise CoreProtocolError()
-        for key in ("significance", "confidence", "urgency"):
-            if type(row.get(key)) is not int or not 0 <= row[key] <= 100:
-                raise CoreProtocolError()
-        if row["presentation"] not in {"cant_miss", "watching", "planner", "held", "bird_spectacle", "bird_encounter"}:
-            raise CoreProtocolError()
-        if row["safety_state"] not in {"safe", "caution", "unsafe", "unknown"}:
-            raise CoreProtocolError()
-        if not isinstance(row.get("location"), dict) or not isinstance(row.get("gear"), dict):
-            raise CoreProtocolError()
-        allowed = {"occurrence_key", "phenomenon_key", "title", "category", "location", "starts_at", "ends_at",
-                   "presentation", "eligibility", "significance", "confidence", "urgency", "evidence_state",
-                   "access_state", "safety_state", "condition_state", "drive_minutes", "drive_basis", "reason",
-                   "awaiting", "blockers", "held", "watching", "bird_classification", "gear", "ethics",
-                   "safety_summary", "safety_notes", "best_time_of_day", "detail", "data_as_of", "valid_until",
-                   "definition_key", "definition_version", "definition_hash", "engine_version"}
-        payload = {k: row[k] for k in allowed if k in row}
-        # Nested whitelists prevent a future upstream raw-evidence field or
-        # connection metadata from being persisted and later sent to a card.
-        payload["location"] = {k: row["location"][k] for k in ("key", "name", "latitude", "longitude", "policy") if k in row["location"]}
-        payload["gear"] = {k: row["gear"][k] for k in ("take", "optional", "skip", "start", "support", "technique", "video", "drone", "drone_status") if k in row["gear"]}
-        return cls(row["occurrence_key"], row["phenomenon_key"], payload)
+        try:
+            payload = validate_row(row)
+        except InvalidProjection:
+            raise CoreProtocolError() from None
+        return cls(payload["occurrence_key"], payload["phenomenon_key"], payload)
+
 
 
 @dataclass(frozen=True)
@@ -106,27 +83,18 @@ class CoreAssessment:
     @classmethod
     def parse(cls, data):
         validate_version(data)
-        aware_timestamp(data.get("generated_at"))
-        if data.get("data_as_of") is not None:
-            aware_timestamp(data["data_as_of"])
-        if data.get("assessment_state") not in {"complete", "incomplete", "degraded"}:
-            raise CoreProtocolError()
-        for key in ("missing_required_sources", "degraded_sources"):
-            if not isinstance(data.get(key), list) or not all(isinstance(k, str) for k in data[key]):
-                raise CoreProtocolError()
-        rows = data.get("items")
-        if not isinstance(rows, list) or len(rows) > MAX_ITEMS:
-            raise CoreProtocolError()
-        items = tuple(CoreProduct.parse(row) for row in rows)
-        keys = ("core_version", "api_version", "schema_version", "generated_at", "data_as_of",
-                "assessment_state", "missing_required_sources", "degraded_sources")
-        return cls({**{k: data.get(k) for k in keys}, "items": [item.payload for item in items]}, items)
+        try:
+            payload = validate_envelope(data)
+        except InvalidProjection:
+            raise CoreProtocolError() from None
+        return cls(payload, tuple(CoreProduct(r["occurrence_key"], r["phenomenon_key"], r) for r in payload["items"]))
+
 
 
 def validate_version(data):
     if not isinstance(data, dict):
         raise CoreProtocolError()
-    if data.get("api_version") != "v1":
+    if data.get("api_version") != "v1" or data.get("schema_version") != "0008" or data.get("core_version") != "0.1.0-dev":
         raise CoreVersionError()
     if not all(isinstance(data.get(k), str) for k in ("core_version", "schema_version")):
         raise CoreProtocolError()
@@ -138,7 +106,7 @@ class PhotographyEventsCoreClient:
         if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
                 or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}):
             raise ValueError("Core URL must be an HTTP(S) origin without credentials")
-        if not token or not 0 < timeout <= 30:
+        if not isinstance(token, str) or not token.strip() or len(token) > 4096 or "\n" in token or "\r" in token or not 0 < timeout <= 30:
             raise ValueError("Core token and bounded timeout required")
         self._session, self._url, self._token, self._timeout = session, url.rstrip("/"), token, timeout
 
@@ -176,3 +144,27 @@ class PhotographyEventsCoreClient:
     async def opportunities(self, *, presentation=None, category=None):
         query = {k: v for k, v in (("presentation", presentation), ("category", category)) if v is not None}
         return CoreAssessment.parse(await self._get("/api/v1/opportunities" + ("?" + urlencode(query) if query else "")))
+
+    async def source_health(self):
+        data = await self._get("/api/v1/sources/health")
+        validate_version(data)
+        try:
+            generated = timestamp(data.get("generated_at")).isoformat()
+            rows = data.get("items")
+            if not isinstance(rows, list) or len(rows) > 64:
+                raise InvalidProjection("invalid_list")
+            safe = []
+            for row in rows:
+                if not isinstance(row, dict) or row.get("state") not in {"UP", "STALE", "DOWN"}:
+                    raise InvalidProjection("invalid_source")
+                key = text(row.get("key"), 256)
+                if row.get("error_code") is not None:
+                    text(row["error_code"], 256)
+                source = {"key": key if key in SAFE_SOURCES else "core", "state": row["state"],
+                          "error_code": None if row.get("error_code") is None else "source_unavailable"}
+                for stamp_key in ("last_attempt_at", "last_success_at", "provider_updated_at"):
+                    source[stamp_key] = timestamp(row[stamp_key]).isoformat() if row.get(stamp_key) is not None else None
+                safe.append(source)
+            return {"generated_at": generated, "items": safe}
+        except (InvalidProjection, TypeError, KeyError):
+            raise CoreProtocolError() from None

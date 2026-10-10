@@ -7,10 +7,14 @@
   "config_flow": true,
   "documentation": "https://github.com/Tmatz27/Home-assistant-photography-events",
   "integration_type": "service",
-  "iot_class": "cloud_polling",
+  "iot_class": "local_polling",
   "issue_tracker": "https://github.com/Tmatz27/Home-assistant-photography-events/issues",
   "requirements": [
     "beautifulsoup4>=4.12.0"
   ],
-  "version": "0.16.1"
+  "version": "0.17.0-dev.1",
+  "dependencies": [
+    "frontend",
+    "websocket_api"
+  ]
 }

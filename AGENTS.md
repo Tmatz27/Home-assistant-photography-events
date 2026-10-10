@@ -10,9 +10,8 @@ v0.16.1 is the frozen legacy backend. v0.17 is a Core-first rebuild in this
 same HACS repository: Core is the sole future owner of provider collection,
 intelligence, opportunity qualification, travel and safety decisions. HA owns
 presentation, private authenticated Core communication, integration entities
-and notification delivery. Follow `docs/v17a/` for the accepted new contract,
-subject to independent review. V17A and these corrections are design/tests only;
-do not begin V17B runtime cutover until authorized. Notifications remain disabled
+and presentation transport. Notification delivery remains cancelled; ownership is not authorization. Follow `docs/v17a/` for the accepted new contract,
+subject to independent review. V17B was explicitly authorized on 2026-10-10: the active path is now Core-only, read-only and pending independent implementation review. V17A remains the historical accepted design gate. Notifications remain disabled
 in V17A and initial V17B; owning delivery does not revive cancelled Tier 2 features.
 
 Legacy backend behavioral parity is no longer required. The versioned handoff
@@ -46,7 +45,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.16.1.** `main` is the working branch; there is no PR flow.
+**Current version: 0.17.0-dev.1.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 

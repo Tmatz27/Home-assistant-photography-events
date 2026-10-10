@@ -1,3 +1,17 @@
+# Photography Events 0.17.0-dev.1
+
+Development build for isolated Home Assistant testing only. No release or tag is published.
+
+The active integration now reads Photography Events Core v1/schema 0008 privately. It retains entry/entity identity and the familiar four-view card, while replacing local intelligence with explicit Core status and supported normal products. Coverage remains unverified. Public locations are withheld pending independent review; Birds/year-wide planning/calendar precision and choices are unavailable. All notifications remain cancelled.
+
+Back up the isolated HA configuration before migration. Config entries become version 3; rollback requires matching old code and the pre-migration configuration backup. Core failures never reactivate the old engine.
+
+See docs/v17b/IMPLEMENTATION.md for installation, supported limits and verification.
+
+---
+
+Historical release notes:
+
 # Photography Events 0.16.1
 
 A focused usability and bugfix release. Installed-Home-Assistant verification remains outstanding.

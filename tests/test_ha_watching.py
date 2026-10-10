@@ -23,7 +23,7 @@ class FoliageWatchingPipeline(unittest.IsolatedAsyncioTestCase):
             pipeline.Response(None, 500) if fail else page)
         # A current cached Google result goes through production routing. It
         # avoids an unrelated network failure deciding this presentation test.
-        from custom_components.photography_events import phenomena
+        from legacy_v16 import phenomena
         window = phenomena.WINDOWS_BY_KEY["aspen_tier1_high"]
         point = (window.latitude, window.longitude)
         f.coordinator._routing_cache[f.coordinator._route_key(point)] = (

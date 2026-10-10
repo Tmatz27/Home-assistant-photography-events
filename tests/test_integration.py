@@ -1301,7 +1301,7 @@ class TestConfigFlowSchema(unittest.TestCase):
     it can serialise.
     """
 
-    SOURCE = ROOT / "config_flow.py"
+    SOURCE = Path(__file__).parent / "legacy_v16/config_flow.py"
 
     def _schema_values(self):
         import ast
@@ -1369,8 +1369,8 @@ class TestConfigFlowSchema(unittest.TestCase):
         `already_in_progress`, which is what sent us looking here."""
         import json
 
-        strings = json.loads((ROOT / "strings.json").read_text())
-        english = json.loads((ROOT / "translations" / "en.json").read_text())
+        strings = json.loads((self.SOURCE.parent / "strings.json").read_text())
+        english = json.loads((self.SOURCE.parent / "translations" / "en.json").read_text())
         self.assertEqual(strings, english, "translations/en.json should match strings.json")
 
         # Field names reach the form as CONF_* constants, so a translated key

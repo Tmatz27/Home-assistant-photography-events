@@ -4,6 +4,32 @@ Standing context for any agent (Codex, Claude, Gemini) picking this up. Read it
 before changing anything: most of what is here was arrived at by getting it
 wrong first, and the invariants below are the corrections.
 
+## v0.17 architecture amendment — accepted V17A design gate
+
+v0.16.1 is the frozen legacy backend. v0.17 is a Core-first rebuild in this
+same HACS repository: Core is the sole future owner of provider collection,
+intelligence, opportunity qualification, travel and safety decisions. HA owns
+presentation, private authenticated Core communication, integration entities
+and notification delivery. Follow `docs/v17a/` for the accepted new contract,
+subject to independent review. V17A and these corrections are design/tests only;
+do not begin V17B runtime cutover until authorized. Notifications remain disabled
+in V17A and initial V17B; owning delivery does not revive cancelled Tier 2 features.
+
+Legacy backend behavioral parity is no longer required. The versioned handoff
+amendments, backend thresholds, provider policies, module map and scientific
+implementation rules below document historical v0.16.1 behavior; they are not
+instructions to rebuild that engine in HA. Preserve that history and its tests.
+Never silently fall back to the legacy decision engine, promote shadow output,
+or present missing assessment coverage as a confidently empty board.
+
+Still binding for the v0.17 frontend: preserve card appearance, accessible useful
+interactions, focus/scroll/anchor behavior, appropriate user-facing integration
+and entity identity, privacy, truthfulness and security. Show supplied date ranges,
+explicit unknown/stale states and source/provenance limits; never invent evidence,
+coordinates or eligibility. Workflow, LF/source-first card assembly, settled or
+cancelled features and version conventions below still apply, except where an
+explicit user instruction narrows the work (no version bump in V17A).
+
 ---
 
 ## What this is

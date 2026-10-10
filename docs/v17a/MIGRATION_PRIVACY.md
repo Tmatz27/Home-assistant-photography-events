@@ -120,13 +120,26 @@ withheld policy does not itself prohibit coordinates. Core's database validates
 products and integrity and shadow read redacts sensitive facts; HA must still
 enforce its output boundary, including cache and details.
 
-1. Only `policy='curated_public_site'` plus a key and exact coordinate pair in
-   a independently reviewed destination registry may emit usable coordinates.
-   For V17B registry entries come from audited Core definitions/public visitor
-   destinations (Carrizo Tule elk destination; Pismo is shadow context only).
-   Registry metadata includes public visitor listing/review and source version;
-   it is destination authorization, never an intelligence engine. A missing
-   registry entry or mismatch fails to withheld, not a guessed replacement.
+1. Core definitions and curated public destination policy are authoritative.
+   HA cannot invent, broaden or silently alter approved destinations. A location
+   claiming curated_public_site requires policy validation, not automatic trust.
+   V17B may use a generated/versioned independently reviewed allowlist derived
+   from pinned Core sources for defense in depth. Its manifest records Core source
+   commit/schema, definition paths/keys/versions/hashes, public visitor listings,
+   destination keys/names/exact pairs, policy revision and canonical SHA-256 of the
+   complete artifact. A separate review record pins digest/provenance; loading or
+   generating a changed artifact does not renew review. Check integrity/revision/
+   provenance on load/restart and bind each product's existing definition_key,
+   definition_version and definition_hash to reviewed destination entries.
+   Reproducible comparison against pinned Core definition sources plus product
+   provenance/pair checks detects drift. Missing review, unknown definition,
+   altered artifact/revision/source, malformed policy or coordinate mismatch
+   fails to withheld and requires independent policy review, not a guessed point.
+   No new Core destination API is implemented in these corrections. Core health
+   currently exposes versions, not source commit or destination-policy hash; it
+   alone cannot prove a running service matches a source export. This limitation
+   must remain explicit before production promotion. Carrizo's Core definition
+   and shadow-only Pismo context do not imply broader scope or eligibility.
 2. Emit key/name from the reviewed public registry, not arbitrary incoming text.
    A coordinate pair must be finite, in range, both present and matching the
    approved pair. Coordinates are public destination coordinates, never a
@@ -162,3 +175,11 @@ survive; altered/unapproved/nonfinite/partial pairs cannot survive. Known limits
 the current test-only model proves these rules on synthetic fixtures, not a
 deployed HA boundary; V17B must apply the same tests to its actual serializer,
 Store, authenticated WebSocket, calendar and diagnostics before activation.
+
+The former test-only PUBLIC dictionary is replaced by synthetic policy and
+separate review fixtures under `tests/fixtures/v17a/policy/`. They simulate a
+Core-derived artifact and independently pinned digest; they are not an actual
+Core export or production destination approval. Tests reject absent review,
+authority/revision/source/content drift, changed definition provenance and exact
+pair mismatch. Updating both artifact and review requires explicit review, never
+an automatic rehash after loading upstream changes.

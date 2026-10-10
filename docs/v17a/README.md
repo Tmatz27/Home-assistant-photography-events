@@ -6,6 +6,11 @@ main heads matched the supplied starting commits on 2026-10-09:
 - HA: `c76726ece1e485ece03810087927da344289fba7`
 - Core: `b14014760beee2c18d02a2b1f36756f6faee93a0`, API v1, schema 0008
 
+The design gate at c15abcb was independently accepted with required corrections.
+[CORRECTIONS.md](CORRECTIONS.md) records the five fixes, focused test evidence and
+remaining limitations. CONTRACT.md and MIGRATION_PRIVACY.md contain the corrected
+rules; RESULTS.md preserves the original audit run record. V17B is not started.
+
 | Acceptance item | Review artifact |
 | --- | --- |
 | 1. Verified dependency inventory | [DEPENDENCIES.md](DEPENDENCIES.md), exact imports and existing tests; [CONTRACT.md](CONTRACT.md), verified provider call paths and side effects. |
@@ -35,4 +40,4 @@ additional sanitization/freshness checks; migrating users keep the same entry an
 entity identity without reviving the old engine. This packet is not a deployed
 v17 integration or approval of full Core product breadth.
 
-READY FOR V17A INDEPENDENT CLAUDE REVIEW
+READY FOR V17A CORRECTION INDEPENDENT VERIFICATION

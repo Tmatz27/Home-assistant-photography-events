@@ -1,0 +1,8 @@
+{
+  "synthetic": true,
+  "reviewed": true,
+  "core_reference_commit": "b14014760beee2c18d02a2b1f36756f6faee93a0",
+  "policy_revision": "synthetic-core-policy-1",
+  "content_sha256": "b5c40cbd228eecd248265fbbe1b492d9c621cda80fc4fb36c082e114d1057fcd",
+  "review_basis": "Synthetic independent-review witness; not an actual Core export or production destination approval."
+}

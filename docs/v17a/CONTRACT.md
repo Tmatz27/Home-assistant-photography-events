@@ -115,14 +115,34 @@ the old `score` or invent precision/source-report text not supplied by Core.
   nested values without recursive type validation. Existing bridge treats a
   successful old complete response as fresh and can persist it. V17B must fix
   these before exposing data; this audit does not change the scaffold.
-- Set a HA presentation refresh age of 15 minutes (product transport policy,
-  not ecological freshness). Reject timestamps >60 seconds into HA's future as
-  clock error. Keep generated_at, data_as_of, fetched_at, saved_at distinct. Do
-  not renew evidence time by polling, cache reload, choice edit or source recovery.
-- Effective UI deadline is min(fetched_at +15m, all displayed item valid_until).
-  Empty scope requires reviewed coverage plus sufficiently recent data_as_of;
-  until Core exposes envelope validity, this is an additional conservative UI
-  bound, not a claim of Core evidence coverage. Missing data_as_of cannot be current.
+- Keep clocks distinct: `generated_at` is Core response-generation provenance,
+  never HA fetch age or ecological proof; `data_as_of` is Core's assessment input
+  time; `fetched_at` is HA time of the last successfully validated Core retrieval;
+  `saved_at` is sanitized-cache provenance only; `valid_until` is each row's Core
+  validity deadline. No timestamp is inferred from another clock.
+- Named development constants: `TRANSPORT_MAX_AGE = 15 minutes` from fetched_at,
+  `ASSESSMENT_MAX_AGE = 6 hours` from envelope data_as_of, and
+  `MAX_CLOCK_SKEW = 60 seconds` for future timestamps. Exactly 15 minutes expires
+  transport; exactly six hours expires assessment; exactly valid_until expires
+  that row. Missing assessment generation/data_as_of cannot establish a current
+  assessment; missing fetched_at cannot prove a validated HA retrieval. A valid
+  30-minute-old assessment may remain current after a recent fetch.
+- The common snapshot deadline is min(fetched_at + TRANSPORT_MAX_AGE,
+  data_as_of + ASSESSMENT_MAX_AGE). Each row is additionally limited by its own
+  valid_until, never another row's deadline. Do not impose the transport interval
+  on row data_as_of. Core owns phenomenon/evidence freshness. Expired rows stay
+  held context; valid siblings remain independently presentable. If all supplied
+  rows expire, show stale context rather than a successfully empty board.
+- A newly validated HTTP retrieval may renew fetched_at only; HTTP 200 alone
+  cannot renew data_as_of or valid_until. Cache reload, card interaction, source
+  recovery and HA state refresh cannot renew transport, assessment or evidence
+  timestamps. Source recovery counts as a new retrieval only if an authenticated
+  Core product passes validation; even then it renews only HA transport.
+- Empty assessments require verified scope and explicit current transport and
+  assessment clocks. The six-hour cap is provisional development policy: replace
+  or constrain it with reviewed Core assessment/phenomenon freshness semantics
+  before production promotion. Neither interim age limit grants production
+  eligibility or establishes biological evidence currency.
 - Persist only the sanitized projection of the last complete, validated normal
   snapshot. Preserve it through incomplete refreshes; retain up to seven days
   for clearly labelled historical context, never current action. Revalidate on
@@ -150,11 +170,13 @@ Response fields:
 | --- | --- |
 | projection_version | Exact `ha.v17.1`; mismatch -> unsupported_projection error, no rows. |
 | entry_id, snapshot_id | Existing HA entry and opaque connection+generation+projection revision. Repeated fetches of same material snapshot keep revision; no token/URL encoded in it. |
-| generated_at, data_as_of, fetched_at, expires_at | RFC3339 aware UTC; data_as_of nullable only for unassessed/error. Retain Core times; fetched_at is HA retrieval time. |
+| generated_at, data_as_of, fetched_at, saved_at, expires_at | RFC3339 aware UTC; absent retrieval/assessment/cache stamps are null. Keep Core times; fetched_at is last validated HA retrieval, saved_at is cache provenance only. expires_at is the common transport/assessment deadline, not the earliest row deadline. Rows retain valid_until. |
 | availability | online / offline / auth_required / connection_required / incompatible / invalid_response. |
-| assessment_state | complete / incomplete / degraded / not_assessed; first three preserve Core meaning. not_assessed derived from missing assessment_id/data_as_of. |
+| assessment_state | Preserve Core complete / incomplete / degraded independently of primary view_state; not_assessed only when no valid normal Core status is available. Missing assessment_id/data_as_of selects view_state not_assessed without erasing a supplied incomplete status or source problems. |
 | freshness | current / stale / unknown. Local aging can only reduce freshness. |
-| view_state | current / empty_assessed / not_assessed / incomplete / degraded / unsupported / coverage_unknown / shadow_only / offline_stale / unavailable. |
+| transport_freshness, assessment_freshness | Independent current / stale / unknown states from the explicit clocks. Fresh transport cannot repair expired assessment. Mixed valid/expired rows keep independent row freshness. |
+| error_code | Safe fixed connection/protocol code or null; orthogonal to assessment and coverage. |
+| view_state | current / empty_assessed / not_assessed / incomplete / degraded / unsupported / coverage_unknown / shadow_only / stale / offline_stale / unavailable. |
 | coverage | `{state: verified|unverified|unsupported|shadow, scope: [phenomenon keys], through: timestamp|null, basis: reviewed-capability|unknown}`. HA-derived declarations explicitly marked; never inferred from empty items or SourceHealth. Initial b140147 normal broad category coverage is unverified. |
 | problems | Bounded array of safe fixed source/error codes plus public explanations; no exception dumps, headers, SQL or URLs. |
 | counts | available, returned, suppressed; null available for unknown/incomplete scope. Zero only expresses the bounded successfully assessed scope, never all categories. |
@@ -162,7 +184,7 @@ Response fields:
 | choices | `{available:false, authority:'pending_core'}` initially; no fake durable successes. |
 
 Each row keeps **the same Core field names** for the reused fields above, and
-adds `event_id = occurrence_key`, `row_state`, `actionable` and `choice` (default
+adds `event_id = occurrence_key`, `row_state`, `row_freshness`, `actionable` and `choice` (default
 when persistence unavailable). Location is separately sanitized. No alias maps
 `confidence` to eligibility. Details may be a second bounded command
 `photography_events/get_detail` with entry_id/version/snapshot_id/occurrence_key;
@@ -223,15 +245,35 @@ catalog opportunity dates/qualifications must not supply missing Core output.
 
 ### State precedence and notification prohibition
 
-Availability error beats action; offline cached -> offline_stale, no cache ->
-unavailable. Incompatible/auth-required data never enters current rows. Shadow
-origin -> shadow_only regardless of alleged eligibility. Unsupported scope ->
-unsupported; unknown coverage -> coverage_unknown. Missing generation/evidence
-time -> not_assessed; noncomplete -> incomplete/degraded; expired -> stale.
-Only complete, current, verified scoped normal production data can use
-current/empty_assessed. Multiple conditions remain visible as orthogonal fields,
-not erased by the primary view_state. Empty assessed copy names scope and
-coverage period; it never says the whole week is clear when coverage is partial.
+Apply this precedence in order, preserving orthogonal fields:
+
+1. Auth, compatibility and availability failures determine connection state
+   first. offline_stale means connection unavailable with previously validated
+   normal cached context retained; unavailable means no usable cache or a
+   nonrecoverable auth/compatibility/protocol/configuration failure. Hide rich
+   cache on auth failure; debug content cannot supply a normal cache.
+2. Shadow origin is shadow_only and cannot become normal production content,
+   regardless of alleged eligibility or other assessment/coverage conditions.
+3. Explicit unsupported scope stays unsupported.
+4. Missing valid generation (assessment_id or data_as_of) is not_assessed.
+5. Core incomplete/degraded keeps that primary state even when coverage is
+   unverified or timestamps also expired.
+6. Expired otherwise-valid online transport/assessment is stale, never
+   offline_stale. Individually expired rows are stale/held and cannot act;
+   valid siblings remain valid. If all supplied rows expire, show stale context.
+7. Unverified coverage is coverage_unknown after the preceding checks.
+8. Only complete, current, verified scoped normal data can be current or
+   empty_assessed. Synthetic current/actionable examples are development
+   presentation gates, not production promotion.
+
+Availability/error codes, Core assessment state, coverage, transport freshness,
+assessment freshness and row freshness remain separate. For example an incomplete
+assessment with unverified coverage and expired input remains incomplete while
+all three problems stay explicit. A complete but unverified empty response must
+never say "Nothing worth changing plans for this week." Empty-assessed copy
+names the verified scope and coverage period; partial coverage cannot imply a
+confidently empty whole week. A validated fetch may repair transport expiry,
+but cannot repair old assessment input or a row's expired Core deadline.
 
 Notifications are disabled for all V17A and the initial V17B. Any future enablement
 must separately establish Core-owned deduplication/choices and reviewed product

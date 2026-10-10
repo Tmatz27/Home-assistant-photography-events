@@ -4,6 +4,12 @@ V17B's first functional increment is an authenticated read-only Core card with
 truthful coverage gaps. Four-view production breadth and durable choices remain
 blocked by the Core ledger. Do not fill gaps with HA providers or browser science.
 
+This plan remains future work; do not execute it during V17A corrections or until
+V17B is authorized. Apply the corrected contract's independent fetched_at
+transport clock, provisional six-hour assessment cap, per-row valid_until and
+state precedence. Core-derived destination artifacts require independently pinned
+provenance/digests and product-definition drift checks, never HA-invented sites.
+
 | File/path | Keep / replace / eventual removal | Exact next work and gate |
 | --- | --- | --- |
 | `core_client.py` | Adapt | Keep private aiohttp session ownership, bounded deadline/size, safe exception codes, no redirects. Preserve assessment_id, strict schema/field/identity validation; add authenticated source health method. Detail method can wait: use snapshot products first. Run existing client tests and new malformed/provenance/version/size tests. |

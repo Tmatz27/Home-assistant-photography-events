@@ -1,0 +1,24 @@
+{
+  "format_version": "v17a.destinations.1",
+  "authority": "core_curated_definitions",
+  "synthetic": true,
+  "core_reference_commit": "b14014760beee2c18d02a2b1f36756f6faee93a0",
+  "source_kind": "synthetic_core_definition",
+  "policy_revision": "synthetic-core-policy-1",
+  "destinations": [
+    {
+      "key": "synthetic_public",
+      "name": "Synthetic public visitor destination",
+      "latitude": 0.0,
+      "longitude": 0.0,
+      "policy": "curated_public_site",
+      "definitions": [
+        {
+          "key": "synthetic_spectacle",
+          "version": "synthetic-1",
+          "hash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        }
+      ]
+    }
+  ]
+}

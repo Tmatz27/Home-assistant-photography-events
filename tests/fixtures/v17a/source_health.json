@@ -1,0 +1,16 @@
+{
+  "core_version": "0.1.0-dev",
+  "api_version": "v1",
+  "schema_version": "0008",
+  "generated_at": "2026-10-09T19:59:00Z",
+  "items": [
+    {
+      "key": "nws_alerts",
+      "state": "UP",
+      "last_attempt_at": "2026-10-09T19:55:00Z",
+      "last_success_at": "2026-10-09T19:55:00Z",
+      "provider_updated_at": "2026-10-09T19:55:00Z",
+      "error_code": null
+    }
+  ]
+}

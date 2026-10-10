@@ -1,0 +1,15 @@
+{
+  "core_version": "0.1.0-dev",
+  "api_version": "v1",
+  "schema_version": "0008",
+  "assessment_id": null,
+  "generated_at": "2026-10-09T19:59:00Z",
+  "data_as_of": null,
+  "assessment_state": "incomplete",
+  "missing_required_sources": [
+    "fixture_observations",
+    "nws_alerts"
+  ],
+  "degraded_sources": [],
+  "items": []
+}

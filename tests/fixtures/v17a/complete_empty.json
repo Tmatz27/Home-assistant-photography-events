@@ -1,0 +1,12 @@
+{
+  "core_version": "0.1.0-dev",
+  "api_version": "v1",
+  "schema_version": "0008",
+  "assessment_id": 17,
+  "generated_at": "2026-10-09T19:59:00Z",
+  "data_as_of": "2026-10-09T19:55:00Z",
+  "assessment_state": "complete",
+  "missing_required_sources": [],
+  "degraded_sources": [],
+  "items": []
+}

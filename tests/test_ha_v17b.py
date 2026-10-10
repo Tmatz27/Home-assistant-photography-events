@@ -110,7 +110,8 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.hass.auth=await auth.auth_manager_from_config(self.hass,[{"type":"homeassistant"}],[])
         self.hass.config_entries.async_update_entry(self.entry,data=dict(entry.data))
         self.entry._async_set_state(self.hass,ConfigEntryState.NOT_LOADED,None)
-        self.assertTrue(await async_setup_component(self.hass,"photography_events",{}))
+        self.assertTrue(await async_setup_component(self.hass,"photography_events",{}),
+                        f"Loaded HA components: {sorted(self.hass.config.components)}")
         await self.hass.async_block_till_done()
         active=self.hass.data["photography_events"][self.entry.entry_id]
         self.assertEqual(active.bridge.availability,"online")
@@ -299,7 +300,8 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.hass.auth=await auth.auth_manager_from_config(self.hass,[{"type":"homeassistant"}],[])
         self.hass.config_entries.async_update_entry(self.entry,data={"enabled_categories":[],"ebird_api_key":"OLD_PRIVATE"},version=1)
         self.entry._async_set_state(self.hass,ConfigEntryState.NOT_LOADED,None)
-        self.assertTrue(await async_setup_component(self.hass,"photography_events",{}))
+        self.assertTrue(await async_setup_component(self.hass,"photography_events",{}),
+                        f"Loaded HA components: {sorted(self.hass.config.components)}")
         self.assertEqual(self.entry.state, ConfigEntryState.LOADED)
         self.assertTrue(self.hass.data.get("photography_events_card_registered"))
         await self.hass.async_block_till_done()

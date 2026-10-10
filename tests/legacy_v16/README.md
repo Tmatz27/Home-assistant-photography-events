@@ -25,7 +25,9 @@ weakening those assertions, their implementation targets are explicitly frozen:
   `v17b-card.test.mjs` tests the actual new shipped bundle.
 
 No original assertion or test method is removed. The only frozen implementation
-adjustments are the appended helper search path in `__init__.py`, and registering
+adjustments are a dependency-free helper search path in `__init__.py` (the
+unchanged historical lifecycle lives in `integration.py`, so portable unittest
+discovery does not import optional Home Assistant dependencies), and registering
 the old ConfigFlow under `photography_events_legacy_test` to prevent it replacing
 the active flow during test discovery. The other frozen files are byte-for-byte
 from the accepted baseline, including the card and calibration/eclipse data.

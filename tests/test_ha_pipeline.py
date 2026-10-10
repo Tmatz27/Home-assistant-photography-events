@@ -21,7 +21,7 @@ if HAS_HA:
     from homeassistant.core import HomeAssistant, State
     from homeassistant.util import dt as dt_util
     from legacy_v16 import coordinator as module
-    from legacy_v16 import async_migrate_entry
+    from legacy_v16.integration import async_migrate_entry
     from legacy_v16.config_flow import _clean
     from legacy_v16.calendar import PhotographyCalendar
     from legacy_v16.email_reports import parse_email_report

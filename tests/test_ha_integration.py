@@ -17,7 +17,7 @@ HAS_HA = importlib.util.find_spec("homeassistant") is not None
 if HAS_HA:
     from homeassistant.core import HomeAssistant
     from legacy_v16 import coordinator as module
-    from legacy_v16 import async_unload_entry
+    from legacy_v16.integration import async_unload_entry
     from legacy_v16.events import Opportunity
     from legacy_v16.event_state import event_id
     from legacy_v16.sensor import PlanningOutlookSensor, NextOpportunitySensor, BestSkyScoreSensor

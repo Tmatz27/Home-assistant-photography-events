@@ -1,5 +1,10 @@
 # Optional Core development scaffold (Milestone 1)
 
+**Historical scaffold record.** The v17 active runtime replaces this optional
+path; see [V17B implementation](docs/v17b/IMPLEMENTATION.md). The scaffold and
+its assertions are frozen under `tests/legacy_v16`, and cannot activate through
+the installed integration. No historical option here enables a legacy fallback.
+
 Independent-review correction: stale cache explanations, blockers, access and
 condition state are neutralized along with eligibility and safety. Historical
 reason text cannot imply that conditions are still current while Core is offline.

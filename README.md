@@ -1,5 +1,17 @@
 # Photography Events
 
+**Main is the read-only Core development build `0.17.0-dev.1`, pending independent
+implementation review. No v0.17 release or tag has been published.** The active
+HA integration now uses private Photography Events Core communication and
+authenticated HA WebSocket views. Legacy provider settings are retained but
+inactive; coverage gaps, withheld locations and unsupported features are explicit.
+Choices and all notifications are unavailable. Use only an isolated HA test
+instance until review and separate installation authorization.
+
+See [V17B implementation, test boundaries, installation and rollback](docs/v17b/IMPLEMENTATION.md).
+The v0.16 documentation below is historical; it does not authorize rebuilding
+the old intelligence engine or enabling its cancelled features.
+
 Photography Events is a Home Assistant integration and Lovelace card that acts as a regret-prevention system for photographers:
 
 > Is something happening soon enough, close enough, unusual enough, and well-supported enough that I would regret missing it?

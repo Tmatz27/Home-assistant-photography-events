@@ -64,7 +64,10 @@ class RuntimeProjectionTests(unittest.TestCase):
             other=copy.deepcopy(row); other.update(occurrence_key="tule_elk_rut-2027-09-15",valid_until=(NOW+timedelta(hours=1)).isoformat())
             data["items"].append(other)
             safe=self.sanitized(data)
-            all_rows=project(safe,now=NOW,fetched_at=NOW,coverage="verified",view="planner")["items"]
+            held_context=copy.deepcopy(safe)
+            for context_row in held_context["items"]:
+                context_row.update(eligibility=False,held=True,presentation="held")
+            all_rows=project(held_context,now=NOW,fetched_at=NOW,coverage="verified",view="watching")["items"]
             self.assertEqual(all_rows[0]["row_freshness"],state)
             self.assertEqual(all_rows[1]["row_freshness"],"current")
             cant=project(safe,now=NOW,fetched_at=NOW,coverage="verified")
@@ -102,6 +105,34 @@ class RuntimeProjectionTests(unittest.TestCase):
         data=payload(); data["data_as_of"]=None
         self.assertEqual(self.view(data=data)["view_state"],"not_assessed")
         self.assertEqual(self.view(fetch=None)["view_state"],"not_assessed")
+
+    def test_unsupported_views_never_reuse_mixed_products(self):
+        safe=self.sanitized()
+        for category in ("mammals", "insects", "birds"):
+            for presentation in ("cant_miss", "watching", "held", "planner"):
+                row=copy.deepcopy(safe["items"][0]);row.update(category=category,presentation=presentation)
+                for name in ("birds", "planner"):
+                    with self.subTest(category=category,presentation=presentation,view=name):
+                        result=project({**safe,"items":[row]},now=NOW,fetched_at=NOW,coverage="verified",view=name)
+                        self.assertEqual(result["items"],[])
+                        self.assertEqual(result["coverage"]["state"],"unsupported")
+                        self.assertEqual(result["view_state"],"unsupported")
+                        self.assertIsNone(result["counts"]["available"])
+
+    def test_unsupported_withheld_and_empty_preserve_assessment_states(self):
+        for state in ("complete", "incomplete", "degraded"):
+            data=payload();data["assessment_state"]=state
+            safe=sanitize_envelope(data,DestinationPolicy.load())
+            for items in (safe["items"],[]):
+                for name in ("birds","planner"):
+                    result=project({**safe,"items":items},now=NOW,fetched_at=NOW,view=name)
+                    self.assertEqual(result["items"],[])
+                    self.assertEqual(result["assessment_state"],state)
+                    self.assertEqual(result["view_state"],"unsupported")
+                    self.assertNotEqual(result["view_state"],"empty_assessed")
+        missing=project(None,now=NOW,fetched_at=None,view="birds")
+        self.assertEqual(missing["assessment_state"],"not_assessed")
+        self.assertEqual(missing["view_state"],"unsupported")
 
     def test_real_serializer_ignores_raw_additive_nested_data(self):
         data=payload(); data["bearer_token"]="PRIVATE_SENTINEL"

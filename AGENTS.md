@@ -21,6 +21,11 @@ instructions to rebuild that engine in HA. Preserve that history and its tests.
 Never silently fall back to the legacy decision engine, promote shadow output,
 or present missing assessment coverage as a confidently empty board.
 
+The legacy `photography_events_opportunity` event remains disabled. User-owned
+HA automations with unrestricted state triggers may react once when old entities
+become unavailable during migration; this integration cannot prevent those
+external automations. This does not authorize notification delivery.
+
 Still binding for the v0.17 frontend: preserve card appearance, accessible useful
 interactions, focus/scroll/anchor behavior, appropriate user-facing integration
 and entity identity, privacy, truthfulness and security. Show supplied date ranges,
@@ -45,7 +50,7 @@ Two halves, one HACS install:
 - `custom_components/photography_events/www/photography-events-card.js` - the
   card, served and auto-registered by the integration
 
-**Current version: 0.17.0-dev.1.** `main` is the working branch; there is no PR flow.
+**Current version: 0.17.0-dev.2.** `main` is the working branch; there is no PR flow.
 
 ### The one sentence that matters
 

@@ -272,7 +272,7 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("PRIVATE_TOKEN",str(result["data_schema"]))
         with patch.object(config_flow,"validate_connection",AsyncMock(return_value=None)) as validate,\
              patch.object(self.hass.config_entries,"async_schedule_reload"):
-            result=await flow.async_step_reconfigure({"core_url":"http://replacement.invalid","core_token":""})
+            result=await flow.async_step_reconfigure({"core_url":"http://CORE.INVALID:80/","core_token":""})
             self.assertEqual(result["type"],"abort");self.assertEqual(self.entry.data["core_token"],"PRIVATE_TOKEN")
             validate.assert_awaited_once()
         flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass;flow.context={"source":"reauth","entry_id":self.entry.entry_id}
@@ -294,6 +294,69 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         await second.initialize();self.assertIsNotNone(second.cached)
         wrong=CoreBridge(self.client,Store(self.hass,2,"v17b-test-cache"),lambda:NOW,namespace="changed",policy=self.policy)
         await wrong.initialize();self.assertIsNone(wrong.cached)
+
+    async def test_reconfigure_two_endpoints_never_forward_old_bearer(self):
+        ledgers=[[],[]]
+        async def endpoint(index, token):
+            async def handler(request):
+                header=request.headers.get("Authorization");ledgers[index].append(header)
+                if header != "Bearer " + token:return web.json_response({},status=401)
+                if request.path=="/health/ready":return web.json_response({"status":"ready","core_version":"0.1.0-dev","api_version":"v1","schema_version":"0008"})
+                data=payload(datetime.now(timezone.utc))
+                if request.path=="/api/v1/sources/health":data["items"]=[]
+                return web.json_response(data)
+            app=web.Application();app.router.add_get('/{tail:.*}',handler)
+            runner=web.AppRunner(app);await runner.setup();self.addAsyncCleanup(runner.cleanup)
+            site=web.TCPSite(runner,"127.0.0.1",0);await site.start()
+            return f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}"
+        first=await endpoint(0,"PRIVATE_TOKEN");second=await endpoint(1,"NEW_PRIVATE")
+        self.hass.config_entries.async_update_entry(self.entry,data={"core_url":first,"core_token":"PRIVATE_TOKEN"})
+        flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass;flow.context={"source":"reconfigure","entry_id":self.entry.entry_id}
+        original=dict(self.entry.data)
+        with patch.object(self.hass.config_entries,"async_schedule_reload"):
+            result=await flow.async_step_reconfigure({"core_url":second,"core_token":""})
+            self.assertEqual(result["errors"]["base"],"new_token_required")
+            self.assertEqual(ledgers,[[],[]]);self.assertEqual(dict(self.entry.data),original)
+            result=await flow.async_step_reconfigure({"core_url":first+"/","core_token":""})
+            self.assertEqual(result["type"],"abort");self.assertEqual(ledgers[0],["Bearer PRIVATE_TOKEN"]*3)
+            result=await flow.async_step_reconfigure({"core_url":second,"core_token":"BAD_NEW"})
+            self.assertEqual(result["errors"]["base"],"invalid_auth");self.assertEqual(self.entry.data["core_url"],first+"/")
+            result=await flow.async_step_reconfigure({"core_url":second,"core_token":"NEW_PRIVATE"})
+            self.assertEqual(result["type"],"abort");self.assertEqual(self.entry.data["core_token"],"NEW_PRIVATE")
+        self.assertNotIn("Bearer PRIVATE_TOKEN",ledgers[1]);self.assertEqual(self.entry.unique_id,"photography_events")
+
+    async def test_reconfigure_origin_identity_and_failure_before_http(self):
+        for same in ("http://CORE.INVALID/","http://core.invalid:80"):
+            self.assertEqual(config_flow.canonical_origin(same),config_flow.canonical_origin("http://core.invalid"))
+        for changed in ("https://core.invalid","http://other.invalid","http://core.invalid:8099"):
+            flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass;flow.context={"source":"reconfigure","entry_id":self.entry.entry_id}
+            with patch.object(config_flow,"validate_connection",AsyncMock()) as validate:
+                result=await flow.async_step_reconfigure({"core_url":changed,"core_token":""})
+                self.assertEqual(result["errors"]["base"],"new_token_required");validate.assert_not_awaited()
+                self.assertEqual(self.entry.data["core_url"],"http://core.invalid")
+                self.assertNotIn("PRIVATE_TOKEN",str(result))
+
+    async def test_cursor_rechecks_each_row_even_with_unchanged_revision(self):
+        data=payload();other=copy.deepcopy(data["items"][0]);other.update(occurrence_key="tule_elk_rut-2027-09-15",valid_until=(NOW+timedelta(seconds=2)).isoformat())
+        data["items"].append(other);self.client.opportunities.return_value=CoreAssessment.parse(data);await self.c._async_update_data()
+        immutable=self.c.view("watching")
+        with patch.object(self.c,"view",return_value=immutable):
+            await self.read(self.msg(limit=1));cursor=self.connection.send_result.call_args.args[1]["next_cursor"]
+            self.clock+=timedelta(seconds=2);self.hass.data[websocket.STATE_KEY]["rates"].clear();self.connection.send_result.reset_mock()
+            await self.read(self.msg(cursor=cursor))
+            self.assertEqual(self.connection.send_error.call_args.args[1],"snapshot_expired")
+            self.connection.send_result.assert_not_called()
+
+    async def test_two_same_user_connections_share_rate_limit_and_recover(self):
+        other=SimpleNamespace(user=self.connection.user,send_error=Mock(),send_result=Mock())
+        with patch.object(websocket.time,"monotonic",return_value=10):
+            await self.read(self.msg())
+            await websocket.get_view.__wrapped__(self.hass,other,self.msg())
+            self.assertEqual(other.send_error.call_args.args[1],"rate_limited");other.send_result.assert_not_called()
+        with patch.object(websocket.time,"monotonic",return_value=11.1):
+            await websocket.get_view.__wrapped__(self.hass,other,self.msg())
+            self.assertEqual(other.send_result.call_args.args[1]["availability"],"online")
+            self.assertEqual(other.send_result.call_args.args[1]["fetched_at"],self.connection.send_result.call_args.args[1]["fetched_at"])
 
     async def test_isolated_full_setup_real_entities_reload_and_unload(self):
         # A disposable configuration, never the user's running HA installation.

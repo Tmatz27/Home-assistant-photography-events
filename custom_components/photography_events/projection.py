@@ -300,7 +300,9 @@ def project(data, *, now, fetched_at, saved_at=None, availability="online", erro
         primary = "current" if data["items"] else "empty_assessed"
     rows = []
     hidden = availability != "online" and not (availability == "offline" and cached_context)
-    if data and not hidden:
+    # Unsupported coverage is not permission to reuse another view's products.
+    # Core v1 has no reviewed Birds or Planner scope; neither may publish M1.
+    if data and not hidden and scope != "unsupported":
         for row in data["items"]:
             expired = timestamp(row["valid_until"]) <= now
             current = primary in {"current", "empty_assessed"} and not expired

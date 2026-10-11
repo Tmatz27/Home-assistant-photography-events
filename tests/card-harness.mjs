@@ -130,6 +130,7 @@ function baseSandbox() {
     setInterval: (...args) => { const timer = setInterval(...args); timer.unref(); return timer; },
     clearInterval,
     setTimeout,
+    clearTimeout,
     Promise,
     URL,
   };
@@ -137,4 +138,4 @@ function baseSandbox() {
 
 
 export { FakeNode };
-export function loadCoreCard() { const context=baseSandbox(); vm.runInNewContext(source,context); return { Card:context.customElements.get('photography-events-card'), Editor:context.customElements.get('photography-events-card-editor'), context, source }; }
+export function loadCoreCard(overrides={}) { const context=Object.assign(baseSandbox(),overrides); vm.runInNewContext(source,context); return { Card:context.customElements.get('photography-events-card'), Editor:context.customElements.get('photography-events-card-editor'), context, source }; }

@@ -1,5 +1,7 @@
 """Secure singleton Core connection; legacy preferences remain inactive."""
 import voluptuous as vol
+from urllib.parse import urlsplit
+from yarl import URL
 from homeassistant.config_entries import ConfigFlow, OptionsFlow
 from homeassistant.core import callback
 from homeassistant.helpers import selector
@@ -8,6 +10,18 @@ from homeassistant.helpers import issue_registry as ir
 
 from .const import DOMAIN
 from .core_client import PhotographyEventsCoreClient, CoreAuthenticationError, CoreVersionError, CoreProtocolError, CoreError
+
+
+def canonical_origin(value):
+    """Match aiohttp's scheme, normalized host and effective-port identity."""
+    if not isinstance(value, str) or any(ord(c) < 32 for c in value) or "\\" in value:
+        raise ValueError("Invalid Core origin")
+    parsed = urlsplit(value)
+    if (parsed.scheme not in {"http", "https"} or not parsed.hostname or parsed.username
+            or parsed.password or parsed.query or parsed.fragment or parsed.path not in {"", "/"}):
+        raise ValueError("Invalid Core origin")
+    origin = URL(value).origin()
+    return origin.scheme, origin.raw_host, origin.port
 
 
 def connection_schema(url="", *, optional_token=False):
@@ -73,9 +87,19 @@ class PhotographyEventsConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             token = (user_input.get("core_token") or "").strip()
             if not token and retain:
-                token = entry.data.get("core_token", "")
+                try:
+                    same_origin = canonical_origin(user_input["core_url"].strip()) == canonical_origin(entry.data.get("core_url", ""))
+                except (ValueError, TypeError):
+                    errors["base"] = "invalid_connection"
+                else:
+                    if same_origin:
+                        token = entry.data.get("core_token", "")
+                    else:
+                        errors["base"] = "new_token_required"
             updates = {"core_url": user_input["core_url"].strip(), "core_token": token, "connection_state": "configured"}
-            if error := await validate_connection(self.hass, updates):
+            if errors:
+                pass  # Enforce origin binding before even readiness can send a bearer.
+            elif error := await validate_connection(self.hass, updates):
                 errors["base"] = error
             else:
                 ir.async_delete_issue(self.hass, DOMAIN, f"core_connection_required_{entry.entry_id}")

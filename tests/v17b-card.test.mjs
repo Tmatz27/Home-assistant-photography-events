@@ -121,7 +121,7 @@ test("modal content is stable between unchanged ticks",()=>{
   card._updateEventDialog();card._updateEventDialog();assert.equal(writes,1);assert.equal(card._dialog.scrollTop,37);
 });
 test("month view draws supplied duration bars without inventing appointments",()=>{
-  const {card}=fixture("calendar_outlook",view({view_state:"unsupported"}));card._calendarView=true;
+  const {card}=fixture("calendar_outlook",view({view_state:"current"}));card._calendarView=true;
   const html=card._bodyHtml();assert.match(html,/core-duration-bar/);assert.match(html,/not timed appointments/);
   assert.match(html,/data-open="tule_elk_rut-2026-09-15"/);
 });
@@ -129,4 +129,85 @@ test("card config accepts presentation fields and drops credential/source extras
   const {Card}=loadCoreCard();const card=new Card();card.setConfig({title:"Camera",mode:"__proto__",core_token:"PRIVATE_SENTINEL",core_url:"http://private"});
   assert.equal(card._config.mode,"action_hero");assert.ok(!JSON.stringify(card._config).includes("PRIVATE_SENTINEL"));
   assert.equal(card._config.title,"Camera");
+});
+
+function scheduledFixture({cached=true, responder}={}) {
+  let clock=Date.now(),serial=0;const timers=new Map(),calls=[];
+  class Clock extends Date { static now(){return clock;} }
+  const runtime=loadCoreCard({Date:Clock,setTimeout:(fn,ms)=>{const id=++serial;timers.set(id,{fn,at:clock+ms});return id;},clearTimeout:id=>timers.delete(id)});
+  const card=new runtime.Card();card.setConfig({mode:"watching",entry_id:"entry"});
+  const v=view();card.hass={connected:true,user:{id:"shared-user"},states:{},callWS:async msg=>{calls.push(msg);return responder?responder(msg):Promise.reject({code:"rate_limited"});}};
+  if(cached)card._views.set("watching",v);card._connected=true;card._render();
+  async function settle(){for(let i=0;i<15;i++)await Promise.resolve();}
+  async function advance(ms){clock+=ms;const due=[...timers].filter(([,t])=>t.at<=clock);for(const [id,t] of due){timers.delete(id);t.fn();}await settle();}
+  return {card,v,timers,calls,advance,settle,runtime,get now(){return clock;}};
+}
+
+test("unsupported Birds and Planner never render mixed or withheld ordinary rows",()=>{
+  const mixed=view();mixed.items=["mammals","insects","birds"].flatMap(category=>["cant_miss","watching","held","planner"].map(presentation=>({...mixed.items[0],category,presentation,location:{policy:"withheld"}})));
+  for(const mode of ["birds","calendar_outlook"]){
+    const {card}=fixture(mode,{...mixed,view_state:"unsupported",coverage:{state:"unsupported"}});
+    assert.equal(card._agedView().items.length,0);assert.doesNotMatch(card._bodyHtml(),/Synthetic test window|data-open="tule_elk/);
+    assert.match(card._bodyHtml(),/no reviewed Core coverage/);assert.doesNotMatch(card._bodyHtml(),/No products in this verified scope/);
+  }
+  const {card}=fixture("birds",mixed);assert.ok(card._agedView().items.every(r=>r.category==="birds"));
+});
+
+test("two dashboards on one user recover from shared rate limit without an outage",async()=>{
+  let previous=-Infinity;const responder=()=>{const now=a.now;if(now-previous<1000)throw {code:"rate_limited"};previous=now;return structuredClone(a.v);};
+  const a=scheduledFixture({responder}),b=scheduledFixture({responder});
+  await Promise.all([a.card._refreshCore(),b.card._refreshCore()]);
+  assert.equal(b.card._readBusy,true);assert.equal(b.card._agedView().availability,"online");
+  assert.doesNotMatch(b.card._bodyHtml(),/Core is offline|Core view unavailable/);
+  await a.advance(3000);await b.advance(3000);
+  assert.equal(b.calls.length,2);assert.equal(b.card._readBusy,false);assert.equal(b.card._agedView().availability,"online");
+  assert.equal(b.card._views.get("watching").fetched_at,a.v.fetched_at);
+  a.card.disconnectedCallback();b.card.disconnectedCallback();
+});
+
+test("no-cache rate limit shows busy and retries are bounded and coalesced",async()=>{
+  const f=scheduledFixture({cached:false});await f.card._refreshCore();
+  assert.equal(f.card._agedView().view_state,"busy");assert.match(f.card._bodyHtml(),/View read is busy/);assert.doesNotMatch(f.card._bodyHtml(),/Core is offline|Core is unavailable/);
+  for(let i=0;i<20;i++)await f.card._refreshCore();assert.equal(f.calls.length,1);assert.equal(f.timers.size,1);
+  for(let i=0;i<6;i++)await f.advance(4000);
+  assert.equal(f.calls.length,5);assert.equal(f.timers.size,0);assert.equal(f.card._requestPending,false);
+  f.card.disconnectedCallback();
+});
+
+test("retained rate-limited data keeps original stamps and ages expired rows",async()=>{
+  const f=scheduledFixture();f.v.items[0].valid_until=new Date(f.now+500).toISOString();
+  const stamps=[f.v.fetched_at,f.v.data_as_of,f.v.expires_at];await f.card._refreshCore();await f.advance(1000);
+  const aged=f.card._agedView();assert.equal(aged.availability,"online");assert.equal(aged.items[0].actionable,false);assert.equal(aged.items[0].safety_state,"unknown");assert.equal(aged.items[0].eligibility,false);
+  assert.deepEqual([aged.fetched_at,aged.data_as_of,aged.expires_at],stamps);
+  await f.advance(15*60000);assert.equal(f.card._agedView().view_state,"stale");f.card.disconnectedCallback();
+});
+
+test("retry timers cancel on disconnect, entry and view changes or incompatibility",async()=>{
+  for(const kind of ["disconnect","entry","view","incompatible"]){
+    const f=scheduledFixture();await f.card._refreshCore();const retry=f.card._retryTimer;assert.ok(f.timers.has(retry));
+    if(kind==="disconnect")f.card.disconnectedCallback();
+    if(kind==="entry")f.card.setConfig({mode:"watching",entry_id:"other"});
+    if(kind==="view")f.card._root.querySelectorAll("[data-tab]").find(b=>b.dataset.tab==="birds").click();
+    if(kind==="incompatible")f.card.hass={...f.card._hass,states:{"sensor.connection":{attributes:{projection_version:"ha.v17.1",entry_id:"entry",availability:"incompatible"}}}};
+    assert.equal(f.timers.has(retry),false);assert.equal(f.card._retryCount,0);
+    f.card.disconnectedCallback();await f.settle();assert.equal(f.timers.size,0);
+  }
+});
+
+test("an incompatible retry response clears caches and cannot schedule another read",async()=>{
+  let reads=0;const f=scheduledFixture({responder:()=>{if(++reads===1)throw {code:"rate_limited"};return {projection_version:"ha.v99",items:[]};}});
+  await f.card._refreshCore();await f.advance(4000);assert.equal(f.card._views.size,0);assert.equal(f.timers.size,0);assert.equal(f.card._readBusy,false);
+  f.card.disconnectedCallback();
+});
+
+test("busy recovery preserves the card host, expansion, focus and inner scroll",async()=>{
+  let reads=0;const f=scheduledFixture({responder:()=>{if(++reads===1)throw {code:"rate_limited"};return structuredClone(f.v);}});
+  const root=f.card._root,id=f.v.items[0].occurrence_key;f.card._expanded.add(id);f.card._moreBuckets.add("watching");
+  let inner={scrollTop:37},writes=root.writes,focused=0;const query=root.querySelectorAll.bind(root);
+  root.querySelector=()=>{if(root.writes!==writes){inner={scrollTop:0};writes=root.writes;}return inner;};
+  root.querySelectorAll=selector=>query(selector).map(el=>{el.focus=()=>{focused++;f.card.shadowRoot.activeElement=el;};return el;});
+  f.card.shadowRoot.activeElement=root.querySelectorAll("[data-expand]")[0];
+  await f.card._refreshCore();await f.advance(4000);
+  assert.equal(f.card._root,root);assert.ok(f.card._expanded.has(id));assert.ok(f.card._moreBuckets.has("watching"));
+  assert.ok(focused>=2);assert.equal(root.querySelector().scrollTop,37);f.card.disconnectedCallback();
 });

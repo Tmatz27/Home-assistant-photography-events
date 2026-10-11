@@ -6,7 +6,8 @@ const CORE_COPY = {
   offline_stale:"Core is offline. Cached context is historical and cannot authorize travel.",
   not_assessed:"A current Core assessment is not available.", unsupported:"This view has no reviewed Core coverage.",
   unavailable:"Core is unavailable. Complete or repair the private connection in Settings > Devices & services.",
-  shadow_only:"Shadow diagnostics cannot authorize opportunities."
+  shadow_only:"Shadow diagnostics cannot authorize opportunities.",
+  busy:"View read is busy. Waiting for a bounded retry or the next refresh."
 };
 const CORE_VIEWS = {
   _navigationHtml() {
@@ -16,7 +17,7 @@ const CORE_VIEWS = {
   _agedView() {
     const key=CORE_VIEW[this._selectedView || this._config.mode] || "cant_miss";
     const original=this._views.get(key);
-    if (!original) return {items:[],view_state:"unavailable",availability:"connection_required",coverage:{state:"unverified"}};
+    if (!original) return {items:[],view_state:this._readBusy?"busy":"unavailable",availability:this._readBusy?(this._summaryState()?.attributes?.availability || "unknown"):"connection_required",coverage:{state:"unverified"}};
     const v={...original,items:original.items.map(row=>({...row}))};
     const now=Date.now();
     const transportExpired=!v.fetched_at || now>=Date.parse(v.fetched_at)+CORE_TRANSPORT_MS;
@@ -26,17 +27,21 @@ const CORE_VIEWS = {
     else if ((transportExpired || assessmentExpired) && ["current","empty_assessed","coverage_unknown"].includes(v.view_state)) v.view_state="stale";
     for (const row of v.items) if (disconnected || transportExpired || assessmentExpired || now>=Date.parse(row.valid_until)) {
       row.actionable=false; row.held=true; row.row_state="stale"; row.row_freshness="stale";
+      row.eligibility=false; row.watching=false; row.presentation="held";
       row.safety_state=row.access_state=row.condition_state="unknown";
       row.reason="Current scoped Core assessment unavailable.";row.awaiting="A current reviewed Core assessment.";
     }
     if (v.view_state==="shadow_only" || !["online","offline"].includes(v.availability)) v.items=[];
+    if (v.view_state==="unsupported" || v.coverage?.state==="unsupported") v.items=[];
+    if (key==="birds") v.items=v.coverage?.state==="verified" ? v.items.filter(r=>r.category==="birds") : [];
+    if (key==="planner" && v.coverage?.state!=="verified") v.items=[];
     if (key==="cant_miss") v.items=v.view_state==="current" && v.coverage?.state==="verified" && v.availability==="online" ? v.items.filter(r=>r.actionable===true && r.row_state==="current") : [];
     return v;
   },
   _bodyHtml() {
     const v=this._agedView(), key=CORE_VIEW[this._selectedView || this._config.mode] || "cant_miss";
     const labels={cant_miss:"Can't Miss",watching:"Watching",planner:"Year Planner",birds:"Birds"};
-    const status=this._transportError || CORE_COPY[v.view_state] || CORE_COPY.unavailable;
+    const status=this._transportError || (this._readBusy?CORE_COPY.busy:null) || CORE_COPY[v.view_state] || CORE_COPY.unavailable;
     let rows=v.items;
     const categories=[...new Set(rows.map(r=>r.category))];
     if(this._activeFilters===null)this._activeFilters=new Set(categories);

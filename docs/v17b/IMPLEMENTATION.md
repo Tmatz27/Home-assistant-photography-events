@@ -1,3 +1,5 @@
+Current correction build: **0.17.0-dev.2**. See [CORRECTIONS.md](CORRECTIONS.md); the implementation record below describes the reviewed dev.1 baseline. Birds/Planner no longer return unsupported rows, and cross-origin reconfiguration requires a new bearer.
+
 # V17B read-only Core development build
 
 Starting HA main: `63dcc0ab46f8e2d3ad23a0ce2b1623357963430b`.

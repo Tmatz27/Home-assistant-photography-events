@@ -1,6 +1,6 @@
 # Photography Events
 
-**Main is the read-only Core development build `0.17.0-dev.1`, pending independent
+**Main is the read-only Core development build `0.17.0-dev.2`, pending independent
 implementation review. No v0.17 release or tag has been published.** The active
 HA integration now uses private Photography Events Core communication and
 authenticated HA WebSocket views. Legacy provider settings are retained but

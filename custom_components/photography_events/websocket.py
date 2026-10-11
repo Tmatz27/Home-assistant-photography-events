@@ -92,9 +92,15 @@ async def get_view(hass, connection, msg):
                 or cursor["view"] != msg["view"] or cursor["snapshot_id"] != result["snapshot_id"]):
             connection.send_error(msg["id"], "snapshot_expired", "Cursor expired")
             return
-        deadline = cursor["snapshot"].get("expires_at")
-        if (deadline and cursor["snapshot"]["freshness"] == "current" and coordinator.bridge
-                and timestamp(deadline) <= coordinator.bridge.clock()):
+        snapshot = cursor["snapshot"]
+        deadline = snapshot.get("expires_at")
+        now = coordinator.bridge.clock() if coordinator.bridge else None
+        row_expired = now is not None and any(
+            (r.get("row_freshness") != "stale" and timestamp(r["valid_until"]) <= now)
+            or (r.get("actionable") and timestamp(r["ends_at"]) <= now)
+            for r in snapshot["items"])
+        if row_expired or (deadline and snapshot["freshness"] == "current" and now is not None
+                           and timestamp(deadline) <= now):
             # A later fetch can retain material revision while renewing transport.
             # It cannot extend the retrieval clock of an immutable earlier page.
             connection.send_error(msg["id"], "snapshot_expired", "Snapshot deadline expired")

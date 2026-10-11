@@ -1,3 +1,7 @@
+# Photography Events 0.17.0-dev.2
+
+See `docs/v17b/CORRECTIONS.md` for the narrow independent-review fixes. This is not a production release or live installation.
+
 # Photography Events 0.17.0-dev.1
 
 Development build for isolated Home Assistant testing only. No release or tag is published.

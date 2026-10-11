@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Travis Matzdorf. SPDX-License-Identifier: MIT
  * No browser provider requests or opportunity calculation.
  */
-const CARD_VERSION = "0.17.0-dev.1";
+const CARD_VERSION = "0.17.0-dev.2";
 
 // Cosmetic constants only. No catalogs, providers, sky math or fallback engine.
 const MODE_HERO = "action_hero", MODE_OUTLOOK = "calendar_outlook", MODE_BIRDS = "birds", MODE_TIMELINE = "timeline";
@@ -651,15 +651,18 @@ class PhotographyEventsCard extends HTMLElement {
     this._moreBuckets=new Set(); this._calendarView=false; this._calendarOffset=0;
     this._displayEvents=new Map(); this._detailState=new Map(); this._anchorGeneration=0;
     this._views=new Map(); this._selectedView=null; this._requestGeneration=0;
+    this._retryCount=0; this._retryTimer=null; this._readDelay=null; this._readBusy=false;
   }
   set hass(value) {
-    const previous=this._summaryRevision, previousUser=this._hass?.user?.id; this._hass=value;
+    const previous=this._summaryRevision, previousUser=this._hass?.user?.id, previousEntry=this._entryId(); this._hass=value;
     const state=this._summaryState();
     if (!this._explicitMode && !this._initialViewSelected && state?.attributes?.initial_view) {
       this._selectedView=({cant_miss:MODE_HERO,watching:"watching",planner:MODE_OUTLOOK,birds:MODE_BIRDS})[state.attributes.initial_view] || MODE_HERO;
       this._initialViewSelected=true;
     }
-    if ((previousUser && previousUser!==value?.user?.id) || ["auth_required","incompatible","invalid_response","connection_required"].includes(state?.attributes?.availability)) this._views.clear();
+    if ((previousUser && previousUser!==value?.user?.id) || (previousEntry && previousEntry!==this._entryId()) || ["auth_required","incompatible","invalid_response","connection_required"].includes(state?.attributes?.availability)) {
+      this._cancelReadWork(); this._views.clear();
+    }
     this._summaryRevision=`${state?.attributes?.entry_id || ""}:${state?.attributes?.snapshot_id || ""}:${state?.attributes?.availability || ""}:${value?.connected}`;
     if (this._connected && (!this._initialized || previous!==this._summaryRevision)) { this._initialized=true; this._refreshCore(); }
     this._render();
@@ -677,7 +680,7 @@ class PhotographyEventsCard extends HTMLElement {
                   mode:this._explicitMode?config.mode:MODE_HERO,
                   entry_id:typeof config.entry_id==="string"?config.entry_id.slice(0,128):""};
     this._selectedView=this._config.mode;
-    this._views.clear(); this._requestGeneration++; this._lastHtml="";
+    this._cancelReadWork(); this._views.clear(); this._lastHtml="";
     if (this._connected) this._refreshCore(); this._render();
   }
   connectedCallback() {
@@ -688,13 +691,24 @@ class PhotographyEventsCard extends HTMLElement {
     this._render();
   }
   disconnectedCallback() {
-    this._connected=false; this._requestGeneration++; this._anchorGeneration++;
+    this._connected=false; this._cancelReadWork(); this._anchorGeneration++;
     this._cancelAnchor?.(); this._clearIntervals();
   }
   _clearIntervals() { clearInterval(this._eventInterval); clearInterval(this._fetchInterval); this._eventInterval=this._fetchInterval=null; }
-  async _refreshCore(append=false) {
+  _cancelReadWork() {
+    this._requestGeneration++; clearTimeout(this._retryTimer); this._retryTimer=null;
+    if (this._readDelay) { clearTimeout(this._readDelay.timer); this._readDelay.resolve(false); this._readDelay=null; }
+    this._refreshQueued=false; this._retryCount=0; this._readBusy=false;
+  }
+  _waitRead(ms) {
+    return new Promise(resolve=>{ this._readDelay={resolve,timer:setTimeout(()=>{this._readDelay=null;resolve(true);},ms)}; });
+  }
+  async _refreshCore(append=false, retry=false) {
     if (!this._connected || !this._hass?.callWS || !this._entryId()) return;
+    if (["auth_required","incompatible","invalid_response","connection_required"].includes(this._summaryState()?.attributes?.availability)) return;
+    if (this._retryTimer) return; // Summary pushes share the existing scheduled retry.
     if (this._requestPending) { this._refreshQueued=true; return; }
+    if (!retry) this._retryCount=0;
     const view=CORE_VIEW[this._selectedView || this._config.mode] || "cant_miss";
     const old=this._views.get(view), entry=this._entryId();
     if (append && !old?.next_cursor) return;
@@ -702,24 +716,39 @@ class PhotographyEventsCard extends HTMLElement {
     const generation=this._requestGeneration;
     try {
       // Coalesce view changes and summary pushes; one request at a time, <=1/s.
-      const pause=Math.max(0,1000-(Date.now()-(this._lastRead || 0)));
-      if (pause) await new Promise(resolve=>setTimeout(resolve,pause));
+      const pause=Math.min(1000,Math.max(0,1000-(Date.now()-(this._lastRead || 0))));
+      if (pause && !await this._waitRead(pause)) return;
       if (!this._connected || generation!==this._requestGeneration) return;
       this._lastRead=Date.now();
       const message={type:"photography_events/get_view",entry_id:entry,projection_version:"ha.v17.1",view,limit:50};
       if (append) { message.cursor=old.next_cursor; message.snapshot_id=old.snapshot_id; }
       const result=await this._hass.callWS(message);
       if (!this._connected || generation!==this._requestGeneration || entry!==this._entryId()) return;
-      if (result?.projection_version!=="ha.v17.1" || result.entry_id!==entry || !Array.isArray(result.items) || result.items.length>50) { this._views.clear(); throw new Error("invalid_projection"); }
+      if (result?.projection_version!=="ha.v17.1" || result.entry_id!==entry || !Array.isArray(result.items) || result.items.length>50) { this._views.clear(); throw {code:"unsupported_projection"}; }
       if (append) result.items=[...old.items,...result.items].slice(0,500);
-      this._views.set(view,result); this._transportError=null;
+      this._views.set(view,result); this._transportError=null; this._readBusy=false; this._retryCount=0;
       // Other view caches cannot retain an earlier generation or connection.
       for (const [key,v] of this._views) if (v.snapshot_id!==result.snapshot_id) this._views.delete(key);
     } catch (error) {
       if (generation===this._requestGeneration && this._connected) {
-        this._transportError="Core view unavailable. Check the integration connection in Settings > Devices & services.";
-        if (error?.code==="snapshot_expired") { this._views.delete(view); this._refreshQueued=true; }
-        if (["unauthorized","unsupported_projection"].includes(error?.code)) this._views.clear();
+        if (error?.code==="rate_limited") {
+          // The limit is shared across this HA user's dashboards/devices. Jitter
+          // separates contenders; four retries bound each scheduled read series.
+          this._transportError=null; this._readBusy=true; this._refreshQueued=false;
+          if (this._retryCount<4) {
+            const delay=1100+Math.floor(Math.random()*500)+this._retryCount*500;
+            this._retryCount++;
+            this._retryTimer=setTimeout(()=>{
+              this._retryTimer=null;
+              if (this._connected && generation===this._requestGeneration && entry===this._entryId()) this._refreshCore(append,true);
+            },delay);
+          }
+        } else {
+          this._readBusy=false;
+          this._transportError="Core view unavailable. Check the integration connection in Settings > Devices & services.";
+          if (error?.code==="snapshot_expired") { this._views.delete(view); this._refreshQueued=true; }
+          if (["unauthorized","unsupported_projection"].includes(error?.code)) { this._cancelReadWork(); this._views.clear(); }
+        }
       }
     } finally {
       this._requestPending=false; this._render();
@@ -886,6 +915,7 @@ class PhotographyEventsCard extends HTMLElement {
     for (const button of this._root.querySelectorAll("[data-tab]")) {
       button.addEventListener("click", () => {
         if (this._selectedView === button.dataset.tab) return;
+        this._cancelReadWork();
         this._selectedView = button.dataset.tab;
         this._render(button);
         this._refreshCore();
@@ -969,7 +999,8 @@ const CORE_COPY = {
   offline_stale:"Core is offline. Cached context is historical and cannot authorize travel.",
   not_assessed:"A current Core assessment is not available.", unsupported:"This view has no reviewed Core coverage.",
   unavailable:"Core is unavailable. Complete or repair the private connection in Settings > Devices & services.",
-  shadow_only:"Shadow diagnostics cannot authorize opportunities."
+  shadow_only:"Shadow diagnostics cannot authorize opportunities.",
+  busy:"View read is busy. Waiting for a bounded retry or the next refresh."
 };
 const CORE_VIEWS = {
   _navigationHtml() {
@@ -979,7 +1010,7 @@ const CORE_VIEWS = {
   _agedView() {
     const key=CORE_VIEW[this._selectedView || this._config.mode] || "cant_miss";
     const original=this._views.get(key);
-    if (!original) return {items:[],view_state:"unavailable",availability:"connection_required",coverage:{state:"unverified"}};
+    if (!original) return {items:[],view_state:this._readBusy?"busy":"unavailable",availability:this._readBusy?(this._summaryState()?.attributes?.availability || "unknown"):"connection_required",coverage:{state:"unverified"}};
     const v={...original,items:original.items.map(row=>({...row}))};
     const now=Date.now();
     const transportExpired=!v.fetched_at || now>=Date.parse(v.fetched_at)+CORE_TRANSPORT_MS;
@@ -989,17 +1020,21 @@ const CORE_VIEWS = {
     else if ((transportExpired || assessmentExpired) && ["current","empty_assessed","coverage_unknown"].includes(v.view_state)) v.view_state="stale";
     for (const row of v.items) if (disconnected || transportExpired || assessmentExpired || now>=Date.parse(row.valid_until)) {
       row.actionable=false; row.held=true; row.row_state="stale"; row.row_freshness="stale";
+      row.eligibility=false; row.watching=false; row.presentation="held";
       row.safety_state=row.access_state=row.condition_state="unknown";
       row.reason="Current scoped Core assessment unavailable.";row.awaiting="A current reviewed Core assessment.";
     }
     if (v.view_state==="shadow_only" || !["online","offline"].includes(v.availability)) v.items=[];
+    if (v.view_state==="unsupported" || v.coverage?.state==="unsupported") v.items=[];
+    if (key==="birds") v.items=v.coverage?.state==="verified" ? v.items.filter(r=>r.category==="birds") : [];
+    if (key==="planner" && v.coverage?.state!=="verified") v.items=[];
     if (key==="cant_miss") v.items=v.view_state==="current" && v.coverage?.state==="verified" && v.availability==="online" ? v.items.filter(r=>r.actionable===true && r.row_state==="current") : [];
     return v;
   },
   _bodyHtml() {
     const v=this._agedView(), key=CORE_VIEW[this._selectedView || this._config.mode] || "cant_miss";
     const labels={cant_miss:"Can't Miss",watching:"Watching",planner:"Year Planner",birds:"Birds"};
-    const status=this._transportError || CORE_COPY[v.view_state] || CORE_COPY.unavailable;
+    const status=this._transportError || (this._readBusy?CORE_COPY.busy:null) || CORE_COPY[v.view_state] || CORE_COPY.unavailable;
     let rows=v.items;
     const categories=[...new Set(rows.map(r=>r.category))];
     if(this._activeFilters===null)this._activeFilters=new Set(categories);

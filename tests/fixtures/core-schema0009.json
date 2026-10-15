@@ -1,0 +1,158 @@
+{
+  "provenance": {
+    "repository": "Tmatz27/photography-events-core",
+    "commit": "1b59779831e96bbff32e8a4547a4f0d577fdb537",
+    "tag": "v0.1.0-rc.2",
+    "capture": "Actual FastAPI ASGI routes and response models; upstream FakeDatabase and M1 fixture; no PostgreSQL, lifespan, collectors or deployed service",
+    "source_sha256": {
+      "src/pec/__init__.py": "f03cc16b0fd5da98c51c89149eda5c08ec8b8f1b643f4df2493bfe2a85ee3917",
+      "src/pec/api.py": "99e1a339ed919a3b9a28acee8bc49aa17b7a9cb2d417f408adc862c96e975324",
+      "src/pec/schemas.py": "fff32618aff66e0da34e0e4b93935943b04064c40bfbd53f01c345f32f282001",
+      "src/pec/database.py": "bcfcac34c425c9b98f299c1ceea7938dbe9c3f2f5daf1196370e581dfd4bc41e",
+      "src/pec/phenomena.py": "16e90b452eb1c0a827dcf97998aa3a6165e1151f197d393a6823866c459b661f",
+      "src/pec/definitions/tule_elk_rut.json": "7fd9e44aaed5b9b31bc7664dd41848e9e58222b6ed1e06e09b41cfee2d8ff21b",
+      "tests/test_api.py": "4084f5dfb5a383cff681386f7ea36a093b0fc3747744f52d93b84870f956ad4e",
+      "tests/fixtures/legacy_tule_elk.json": "c4611054ad11fc231a253cc314d490664c86ed27046b2636d0de427779441631",
+      "migrations/versions/0009_collector_operations.sql": "bb90e5ef602dffbd75d030f2952f8292ed77154cf4244750403ab1cf1f5b4671"
+    },
+    "authentication": "Missing and incorrect bearer rejected with 401 on both normal data endpoints",
+    "synthetic_test_data": true
+  },
+  "responses": {
+    "health": {
+      "core_version": "0.1.0-dev",
+      "api_version": "v1",
+      "schema_version": "0009",
+      "status": "ready"
+    },
+    "opportunities": {
+      "core_version": "0.1.0-dev",
+      "api_version": "v1",
+      "schema_version": "0009",
+      "assessment_id": null,
+      "generated_at": "2026-09-27T17:00:00Z",
+      "data_as_of": "2026-09-27T17:00:00Z",
+      "assessment_state": "complete",
+      "missing_required_sources": [],
+      "degraded_sources": [],
+      "items": [
+        {
+          "assessment_id": null,
+          "pattern_episode_id": null,
+          "occurrence_key": "tule_elk_rut-2026-09-15",
+          "phenomenon_key": "tule_elk_rut",
+          "title": "Tule elk rut",
+          "category": "mammals",
+          "location": {
+            "key": "carrizo_plain_soda_lake",
+            "name": "Carrizo Plain, Soda Lake Road foothills",
+            "latitude": 35.1914,
+            "longitude": -119.7929,
+            "policy": "curated_public_site"
+          },
+          "starts_at": "2026-09-15T00:00:00Z",
+          "ends_at": "2026-10-10T23:59:59.999999Z",
+          "presentation": "cant_miss",
+          "eligibility": true,
+          "significance": 85,
+          "confidence": 78,
+          "urgency": 85,
+          "evidence_state": "calendar_presence",
+          "access_state": "public",
+          "safety_state": "safe",
+          "condition_state": "not_required",
+          "drive_minutes": 81.0,
+          "drive_basis": "estimate",
+          "reason": "Peak of the documented annual cycle, with a recent report near the site.",
+          "awaiting": "Documented annual cycle and a recent report near the site. Conditions and access on the day still matter.",
+          "blockers": [],
+          "held": false,
+          "watching": false,
+          "bird_classification": null,
+          "gear": {
+            "take": "Sony FE 200-600mm f/5.6-6.3 G OSS",
+            "optional": [
+              "Sony FE 70-200mm f/2.8 GM OSS II for animals in their landscape"
+            ],
+            "skip": [
+              "Sony FE 2x Teleconverter: dawn light and moving animals need shutter speed more than reach. The 2x costs two stops (f/12.6 on the 200-600), slows autofocus and magnifies shimmer and shake; an APS-C crop of the 61 MP file keeps about 26 MP."
+            ],
+            "start": "1/1000 s or faster, f/6.3, auto ISO; animal-eye AF, continuous.",
+            "support": "Beanbag on the car window or a gimbal head; stay in or beside the vehicle",
+            "technique": "Burst for sparring; backlit breath and dust at first light is the frame.",
+            "video": "DJI Osmo Pocket 3 for bugling audio",
+            "drone": "DJI Mini 3: not appropriate - wildlife is the subject, and a drone disturbs it.",
+            "drone_status": "not_appropriate"
+          },
+          "ethics": "Stay in or beside the vehicle; keep well back from bulls.",
+          "safety_summary": "No NWS warnings for this place and time.",
+          "safety_notes": [
+            "Carrizo roads are impassable clay when wet."
+          ],
+          "best_time_of_day": "Dawn, 06:00-08:30",
+          "detail": "Bugling, sparring and harem defence, and the whole thing runs on first light. Shoot from the vehicle where possible - it is a far better hide than standing, and keeps you the legal distance back. Backlit dust and breath in dawn light is the shot worth driving for.",
+          "data_as_of": "2026-09-27T17:00:00Z",
+          "valid_until": "2026-09-27T20:00:00Z",
+          "definition_key": "tule_elk_rut",
+          "definition_version": "legacy-0.16.1-1",
+          "definition_hash": "d068ce5090e83c7d32bd9ab667ce752a4d875735ea393972aec74c465cd20acf",
+          "engine_version": "0.1.0-dev"
+        }
+      ]
+    },
+    "sources": {
+      "core_version": "0.1.0-dev",
+      "api_version": "v1",
+      "schema_version": "0009",
+      "generated_at": "2026-09-27T17:00:00Z",
+      "items": [
+        {
+          "key": "nws_alerts",
+          "state": "UP",
+          "last_attempt_at": "2026-09-27T17:00:00Z",
+          "last_success_at": "2026-09-27T17:00:00Z",
+          "provider_updated_at": "2026-09-27T17:00:00Z",
+          "error_code": null
+        },
+        {
+          "key": "fixture_observations",
+          "state": "UP",
+          "last_attempt_at": "2026-09-27T17:00:00Z",
+          "last_success_at": "2026-09-27T17:00:00Z",
+          "provider_updated_at": "2026-09-27T17:00:00Z",
+          "error_code": null
+        }
+      ]
+    },
+    "empty": {
+      "core_version": "0.1.0-dev",
+      "api_version": "v1",
+      "schema_version": "0009",
+      "assessment_id": null,
+      "generated_at": "2026-09-27T17:00:00Z",
+      "data_as_of": "2026-09-27T17:00:00Z",
+      "assessment_state": "complete",
+      "missing_required_sources": [],
+      "degraded_sources": [],
+      "items": []
+    },
+    "incomplete": {
+      "core_version": "0.1.0-dev",
+      "api_version": "v1",
+      "schema_version": "0009",
+      "assessment_id": null,
+      "generated_at": "2026-09-27T17:00:00Z",
+      "data_as_of": "2026-09-27T17:00:00Z",
+      "assessment_state": "incomplete",
+      "missing_required_sources": [
+        "fixture_observations",
+        "nws_alerts"
+      ],
+      "degraded_sources": [
+        "fixture_observations",
+        "nws_alerts"
+      ],
+      "items": []
+    }
+  }
+}

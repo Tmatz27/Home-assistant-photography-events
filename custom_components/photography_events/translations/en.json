@@ -30,7 +30,7 @@
     "error": {
       "cannot_connect": "Cannot reach a ready Core service.",
       "invalid_auth": "Core rejected the token.",
-      "unsupported_api_version": "Core API v1 and schema 0008 are required.",
+      "unsupported_api_version": "Core API v1 with schema 0008 or 0009 and engine 0.1.0-dev is required.",
       "invalid_core_response": "Core returned an invalid normal response.",
       "invalid_connection": "Enter an HTTP(S) origin and a nonempty token.",
       "new_token_required": "Enter a new bearer token for the changed Core origin. No request was sent."
@@ -70,7 +70,7 @@
         "error": {
           "cannot_connect": "Cannot reach a ready Core service.",
           "invalid_auth": "Core rejected the token.",
-          "unsupported_api_version": "Core API v1 and schema 0008 are required.",
+          "unsupported_api_version": "Core API v1 with schema 0008 or 0009 and engine 0.1.0-dev is required.",
           "invalid_core_response": "Core returned an invalid normal response.",
           "invalid_connection": "Enter an HTTP(S) origin and a nonempty token."
         },

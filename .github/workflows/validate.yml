@@ -75,5 +75,5 @@ jobs:
         run: |
           npm test
           python -m pyflakes custom_components/photography_events/*.py tools/*.py
-          python -m pyflakes tests/test_v17b_runtime.py tests/test_ha_v17b.py tests/v17b_fixtures.py
+          python -m pyflakes tests/test_v17b_runtime.py tests/test_ha_v17b.py tests/v17b_fixtures.py tests/test_core_schema_compatibility.py
           python tools/verify_v17b_boundaries.py

@@ -267,7 +267,7 @@ class RuntimeTransportBridgeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(b.store.async_save.await_count,1);await b.refresh();self.assertEqual(len(b.view("watching")["items"]),1)
 
     async def test_auth_and_protocol_failures_hide_rich_cache(self):
-        for failure in (Response({},401),Response({**HEALTH,"schema_version":"0009"}),Response({})):
+        for failure in (Response({},401),Response({**HEALTH,"schema_version":"0010"}),Response({})):
             client,_=self.client(Response(HEALTH),Response(payload()),Response(SOURCES),failure)
             b=self.bridge(client);await b.refresh();await b.refresh()
             self.assertIsNone(b.payload);self.assertEqual(b.view("watching")["items"],[])

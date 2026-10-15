@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0-dev.3
+
+Accept verified Core API v1 schemas 0008 and 0009 through transport, response and cache validators. Preserve explicit rejection of other schemas, private authentication, origin binding, destination review and read-only behavior. No dashboard behavior change, release or tag. See docs/v17b/SCHEMA_COMPATIBILITY.md.
+
 ## 0.17.0-dev.2
 
 Correct unsupported view isolation, shared-user read scheduling, bearer origin binding and paginated row expiry. Engineering correction only; notifications and choices remain disabled.

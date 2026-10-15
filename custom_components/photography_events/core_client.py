@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from urllib.parse import urlencode, urlsplit
 
-from .projection import InvalidProjection, validate_row, validate_envelope, text, timestamp, SAFE_SOURCES
+from .projection import InvalidProjection, validate_row, validate_envelope, text, timestamp, SAFE_SOURCES, SUPPORTED_CORE_SCHEMAS
 
 import aiohttp
 
@@ -94,7 +94,7 @@ class CoreAssessment:
 def validate_version(data):
     if not isinstance(data, dict):
         raise CoreProtocolError()
-    if data.get("api_version") != "v1" or data.get("schema_version") != "0008" or data.get("core_version") != "0.1.0-dev":
+    if data.get("api_version") != "v1" or data.get("schema_version") not in SUPPORTED_CORE_SCHEMAS or data.get("core_version") != "0.1.0-dev":
         raise CoreVersionError()
     if not all(isinstance(data.get(k), str) for k in ("core_version", "schema_version")):
         raise CoreProtocolError()

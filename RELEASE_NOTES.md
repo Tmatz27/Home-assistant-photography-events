@@ -1,3 +1,9 @@
+# Photography Events 0.17.0-dev.3
+
+Engineering compatibility fix only; no release or tag is published. Private Core connection now accepts API v1 with schema 0008 or 0009 and engine 0.1.0-dev. Future schemas remain rejected. Bearer authentication, URL-origin binding, strict response/privacy validation, pending destination review and all read-only boundaries remain active. Dashboard changes are limited to the synchronized build version.
+
+See `docs/v17b/SCHEMA_COMPATIBILITY.md` for pinned Core response verification and test reproduction. Existing entries can reconnect or reauthenticate without adding another integration. No PostgreSQL, Core service, collector or live HA changes are required by this code change.
+
 # Photography Events 0.17.0-dev.2
 
 See `docs/v17b/CORRECTIONS.md` for the narrow independent-review fixes. This is not a production release or live installation.

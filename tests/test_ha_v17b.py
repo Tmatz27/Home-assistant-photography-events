@@ -123,6 +123,83 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.hass.data.get("photography_events_card_registered"))
         self.assertTrue(await self.hass.config_entries.async_unload(self.entry.entry_id))
 
+    async def schema0009_endpoint(self):
+        responses=json.loads((Path(__file__).parent/"fixtures/core-schema0009.json").read_text(encoding="utf-8"))["responses"]
+        state={"token":"PRIVATE_TOKEN","offline":False,"bad_endpoint":None,"schema":"0010"}
+        requests=[]
+        endpoints={"/health/ready":"health","/api/v1/opportunities":"opportunities","/api/v1/sources/health":"sources"}
+        async def handler(request):
+            requests.append((request.path,request.headers.get("Authorization")))
+            if request.path not in endpoints:return web.json_response({},status=404)
+            if request.path!="/health/ready" and request.headers.get("Authorization")!="Bearer "+state["token"]:
+                return web.json_response({},status=401)
+            if state["offline"]:return web.json_response({},status=503)
+            data=copy.deepcopy(responses[endpoints[request.path]])
+            if request.path==state["bad_endpoint"]:data["schema_version"]=state["schema"]
+            return web.json_response(data)
+        app=web.Application();app.router.add_get('/{tail:.*}',handler)
+        runner=web.AppRunner(app);await runner.setup();self.addAsyncCleanup(runner.cleanup)
+        site=web.TCPSite(runner,"127.0.0.1",0);await site.start()
+        return f"http://127.0.0.1:{site._server.sockets[0].getsockname()[1]}",state,requests
+
+    async def test_schema0009_private_flow_reconfigure_reconnect_and_reauth(self):
+        origin,state,requests=await self.schema0009_endpoint()
+        values={"core_url":origin,"core_token":"PRIVATE_TOKEN"}
+        # Exercise the real user flow with no existing entry, then restore the
+        # fixture entry for all existing-entry paths. No validation is mocked.
+        self.hass.config_entries._entries.pop(self.entry.entry_id)
+        try:
+            flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass;flow.context={"source":"user"}
+            result=await flow.async_step_user(values)
+            self.assertEqual(result["type"],"create_entry")
+            self.assertEqual(result["data"]["core_token"],"PRIVATE_TOKEN")
+        finally:
+            self.hass.config_entries._entries[self.entry.entry_id]=self.entry
+        self.hass.config_entries.async_update_entry(self.entry,data=values)
+        await self.c.async_initialize();await self.c._async_update_data()
+        self.assertEqual(self.c.bridge.payload["schema_version"],"0009")
+        self.assertEqual(self.c.view()["availability"],"online")
+        self.assertFalse(self.c.view()["notifications_enabled"])
+        state["offline"]=True;await self.c._async_update_data()
+        self.assertEqual(self.c.view()["availability"],"offline")
+        state["offline"]=False;await self.c._async_update_data()
+        self.assertEqual(self.c.view()["availability"],"online")
+        with patch.object(self.hass.config_entries,"async_schedule_reload"):
+            flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass
+            flow.context={"source":"reconfigure","entry_id":self.entry.entry_id}
+            result=await flow.async_step_reconfigure({"core_url":origin+"/","core_token":""})
+            self.assertEqual(result["reason"],"reconfigure_successful")
+            self.assertEqual(self.entry.data["core_token"],"PRIVATE_TOKEN")
+            state["token"]="REPLACEMENT_TOKEN"
+            with self.assertRaises(ConfigEntryAuthFailed):await self.c._async_update_data()
+            self.assertEqual(self.c.view()["availability"],"auth_required")
+            self.assertEqual(self.c.view("watching")["items"],[])
+            flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass
+            flow.context={"source":"reauth","entry_id":self.entry.entry_id}
+            result=await flow.async_step_reauth_confirm({"core_url":origin,"core_token":"REPLACEMENT_TOKEN"})
+            self.assertEqual(result["reason"],"reauth_successful")
+        await self.c.async_initialize();await self.c._async_update_data()
+        self.assertEqual(self.c.view()["availability"],"online")
+        self.assertEqual(self.entry.unique_id,"photography_events")
+        self.assertEqual(len(self.hass.config_entries.async_entries("photography_events")),1)
+        self.assertNotIn("REPLACEMENT_TOKEN",json.dumps(self.c.view("watching")))
+        self.assertTrue(all(path in {"/health/ready","/api/v1/opportunities","/api/v1/sources/health"} for path,_ in requests))
+        self.assertTrue(any(header=="Bearer REPLACEMENT_TOKEN" for _,header in requests))
+
+    async def test_schema0009_flow_rejects_future_schema_on_each_endpoint(self):
+        origin,state,_=await self.schema0009_endpoint()
+        original=dict(self.entry.data)
+        for endpoint in ("/health/ready","/api/v1/opportunities","/api/v1/sources/health"):
+            state["bad_endpoint"]=endpoint
+            flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass
+            flow.context={"source":"reconfigure","entry_id":self.entry.entry_id}
+            result=await flow.async_step_reconfigure({"core_url":origin,"core_token":"PRIVATE_TOKEN"})
+            self.assertEqual(result["errors"]["base"],"unsupported_api_version")
+            self.assertEqual(dict(self.entry.data),original)
+            self.assertNotIn("PRIVATE_TOKEN",str(result))
+        state["bad_endpoint"]=None
+        self.assertEqual(await config_flow.validate_connection(self.hass,{"core_url":origin,"core_token":"WRONG"}),"invalid_auth")
+
     async def test_v1_and_v2_migration_preserve_credentials_options_and_ids(self):
         for version in (1,2):
             original={"ebird_api_key":"OLD_PRIVATE","enabled_categories":[]}

@@ -14,6 +14,9 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 VERSION = "ha.v17.1"
+# Reviewed wire compatibility only; database migrations do not authorize new
+# response fields, product identities or destination policy. Never use a range.
+SUPPORTED_CORE_SCHEMAS = ("0008", "0009")
 TRANSPORT_MAX_AGE = timedelta(minutes=15)
 ASSESSMENT_MAX_AGE = timedelta(hours=6)
 MAX_CLOCK_SKEW = timedelta(seconds=60)
@@ -213,7 +216,7 @@ def validate_row(row):
 def validate_envelope(data):
     if not isinstance(data, dict) or data.get("mode") in {"shadow", "off"} or "preview_opportunities" in data:
         raise InvalidProjection("normal_endpoint_required")
-    if data.get("api_version") != "v1" or data.get("schema_version") != "0008" or data.get("core_version") != "0.1.0-dev":
+    if data.get("api_version") != "v1" or data.get("schema_version") not in SUPPORTED_CORE_SCHEMAS or data.get("core_version") != "0.1.0-dev":
         raise InvalidProjection("unsupported_api_version")
     out = {k: text(data.get(k), 256) for k in ("core_version", "api_version", "schema_version")}
     out["generated_at"] = timestamp(data.get("generated_at")).isoformat()

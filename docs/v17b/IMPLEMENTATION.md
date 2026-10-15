@@ -1,4 +1,4 @@
-Current correction build: **0.17.0-dev.2**. See [CORRECTIONS.md](CORRECTIONS.md); the implementation record below describes the reviewed dev.1 baseline. Birds/Planner no longer return unsupported rows, and cross-origin reconfiguration requires a new bearer.
+Current engineering build: **0.17.0-dev.3**. See [SCHEMA_COMPATIBILITY.md](SCHEMA_COMPATIBILITY.md) for verified Core API v1/schema 0008 and 0009 support, and [CORRECTIONS.md](CORRECTIONS.md) for the dev.2 corrections. The implementation record below describes the reviewed dev.1 baseline. Birds/Planner do not return unsupported rows, and cross-origin reconfiguration requires a new bearer.
 
 # V17B read-only Core development build
 

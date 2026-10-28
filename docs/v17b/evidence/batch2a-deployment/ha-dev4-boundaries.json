@@ -1,0 +1,67 @@
+{
+  "active_local_modules": [
+    "__init__",
+    "binary_sensor",
+    "calendar",
+    "config_flow",
+    "const",
+    "coordinator",
+    "core_bridge",
+    "core_client",
+    "projection",
+    "repairs",
+    "sensor",
+    "websocket"
+  ],
+  "imports": {
+    "__init__": [
+      "const",
+      "coordinator",
+      "websocket"
+    ],
+    "coordinator": [
+      "core_bridge",
+      "projection"
+    ],
+    "projection": [],
+    "core_bridge": [
+      "core_client",
+      "projection"
+    ],
+    "core_client": [
+      "projection"
+    ],
+    "websocket": [
+      "const",
+      "projection"
+    ],
+    "const": [],
+    "calendar": [
+      "const"
+    ],
+    "repairs": [
+      "config_flow",
+      "const"
+    ],
+    "config_flow": [
+      "const",
+      "core_client"
+    ],
+    "binary_sensor": [
+      "const"
+    ],
+    "sensor": [
+      "const"
+    ]
+  },
+  "legacy_side_effect_calls": 0,
+  "assembled_sources": [
+    "header",
+    "presentation",
+    "editor",
+    "styles",
+    "card",
+    "core-view",
+    "register"
+  ]
+}

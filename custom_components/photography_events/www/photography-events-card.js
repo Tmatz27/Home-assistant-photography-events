@@ -2,7 +2,7 @@
  * Copyright (c) 2026 Travis Matzdorf. SPDX-License-Identifier: MIT
  * No browser provider requests or opportunity calculation.
  */
-const CARD_VERSION = "0.17.0-dev.3";
+const CARD_VERSION = "0.17.0-dev.4";
 
 // Cosmetic constants only. No catalogs, providers, sky math or fallback engine.
 const MODE_HERO = "action_hero", MODE_OUTLOOK = "calendar_outlook", MODE_BIRDS = "birds", MODE_TIMELINE = "timeline";

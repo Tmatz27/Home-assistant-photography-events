@@ -1,3 +1,16 @@
+# Photography Events 0.17.0-dev.4
+
+Prepared beta candidate for independent review; not published or installed.
+
+- Accept explicitly validated Core API v1/engine 0.1.0-dev schemas 0008, 0009 and 0010.
+- Preserve strict response/identity validation, bearer authentication, origin binding, privacy redaction, evidence clocks and cache behavior. Future schemas remain rejected.
+- Keep destination approval separate and pending. No new opportunities, destinations, coverage, source collection, notifications or legacy opportunity events are enabled in HA.
+- Development release publication selects GitHub prerelease and cannot replace stable latest. The card changes only its synchronized build version.
+
+After independent review and explicit approval, install this HA beta first while Core still runs schema 0009; then update Core through its existing Compose Manager stack using Pull & Up. Back up both installations beforehand. Core schema 0010 is forward-only: rollback to a 0009 image requires restoring the matching verified pre-upgrade database backup.
+
+Private endpoint reachability, installed collection and the operator's databases are not verified or changed by these development tests. See docs/v17b/BATCH_2A_DEPLOYMENT.md for the candidate pair, tests and approval gates.
+
 # Photography Events 0.17.0-dev.3
 
 Engineering compatibility fix only; no release or tag is published. Private Core connection now accepts API v1 with schema 0008 or 0009 and engine 0.1.0-dev. Future schemas remain rejected. Bearer authentication, URL-origin binding, strict response/privacy validation, pending destination review and all read-only boundaries remain active. Dashboard changes are limited to the synchronized build version.

@@ -26,7 +26,7 @@ class CoreSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         return PhotographyEventsCoreClient(session, "http://core.invalid", "PRIVATE_TEST_TOKEN"), session
 
     async def test_both_explicit_schemas_validate_all_normal_endpoints(self):
-        for schema in ("0008", "0009"):
+        for schema in ("0008", "0009", "0010"):
             with self.subTest(schema=schema):
                 data = [{**copy.deepcopy(RESPONSES[k]), "schema_version": schema} for k in ("health", "opportunities", "sources")]
                 client, session = self.client(*data)
@@ -52,7 +52,7 @@ class CoreSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(validate_envelope(result.payload)["schema_version"], "0009")
 
     async def test_unverified_schemas_and_api_versions_fail_at_every_endpoint(self):
-        changes = [{"schema_version": value} for value in ("0007", "0010", "9999", "9", "0009 ", 9, None, [], {})]
+        changes = [{"schema_version": value} for value in ("0007", "0011", "9999", "9", "0010 ", 10, None, [], {})]
         changes += [{"api_version": value} for value in ("v2", "v1.1", None)]
         changes += [{"core_version": "0.2.0"}]
         for change in changes:
@@ -101,7 +101,7 @@ class CoreSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(restored.cached["schema_version"], "0009")
         self.assertEqual(timestamp(saved["fetched_at"]), NOW)
         self.assertEqual(saved["payload"]["data_as_of"], data9["data_as_of"])
-        client, _ = self.client({**health, "schema_version": "0010"})
+        client, _ = self.client({**health, "schema_version": "0011"})
         bridge.client = client
         await bridge.refresh()
         self.assertEqual(bridge.availability, "incompatible")
@@ -114,5 +114,5 @@ class CoreSchemaCompatibilityTests(unittest.IsolatedAsyncioTestCase):
             strings = json.loads((root / name).read_text(encoding="utf-8"))
             message = strings["config"]["error"]["unsupported_api_version"]
             self.assertIn("v1", message)
-            self.assertIn("0008 or 0009", message)
+            self.assertIn("0008, 0009 or 0010", message)
             self.assertEqual(message, strings["issues"]["core_connection_required"]["fix_flow"]["error"]["unsupported_api_version"])

@@ -123,9 +123,9 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.hass.data.get("photography_events_card_registered"))
         self.assertTrue(await self.hass.config_entries.async_unload(self.entry.entry_id))
 
-    async def schema0009_endpoint(self):
-        responses=json.loads((Path(__file__).parent/"fixtures/core-schema0009.json").read_text(encoding="utf-8"))["responses"]
-        state={"token":"PRIVATE_TOKEN","offline":False,"bad_endpoint":None,"schema":"0010"}
+    async def schema0009_endpoint(self,schema="0009"):
+        responses=json.loads((Path(__file__).parent/f"fixtures/core-schema{schema}.json").read_text(encoding="utf-8"))["responses"]
+        state={"token":"PRIVATE_TOKEN","offline":False,"bad_endpoint":None,"schema":"0011"}
         requests=[]
         endpoints={"/health/ready":"health","/api/v1/opportunities":"opportunities","/api/v1/sources/health":"sources"}
         async def handler(request):
@@ -199,6 +199,34 @@ class V17BHomeAssistantTests(unittest.IsolatedAsyncioTestCase):
             self.assertNotIn("PRIVATE_TOKEN",str(result))
         state["bad_endpoint"]=None
         self.assertEqual(await config_flow.validate_connection(self.hass,{"core_url":origin,"core_token":"WRONG"}),"invalid_auth")
+
+    async def test_schema0010_private_setup_coordinator_cache_and_read_only_status(self):
+        origin,state,requests=await self.schema0009_endpoint('0010')
+        values={'core_url':origin,'core_token':'PRIVATE_TOKEN'}
+        self.assertEqual(await config_flow.validate_connection(self.hass,values),None)
+        self.hass.config_entries.async_update_entry(self.entry,data=values)
+        await self.c.async_initialize();await self.c._async_update_data()
+        self.assertEqual(self.c.bridge.payload['schema_version'],'0010')
+        self.assertEqual(self.c.view()['availability'],'online')
+        self.assertFalse(self.c.view()['notifications_enabled'])
+        self.assertEqual(self.entry.unique_id,'photography_events')
+        state['offline']=True;await self.c._async_update_data()
+        self.assertEqual(self.c.view()['availability'],'offline')
+        state['offline']=False;await self.c._async_update_data()
+        self.assertEqual(self.c.view()['availability'],'online')
+        self.assertTrue(all(path in {'/health/ready','/api/v1/opportunities','/api/v1/sources/health'} for path,_ in requests))
+        self.assertNotIn('PRIVATE_TOKEN',json.dumps(self.c.view('watching')))
+
+    async def test_schema0010_rejects_future_schema_at_each_endpoint_without_reconfiguration(self):
+        origin,state,_=await self.schema0009_endpoint('0010')
+        original=dict(self.entry.data)
+        for endpoint in ('/health/ready','/api/v1/opportunities','/api/v1/sources/health'):
+            state['bad_endpoint']=endpoint
+            flow=config_flow.PhotographyEventsConfigFlow();flow.hass=self.hass
+            flow.context={'source':'reconfigure','entry_id':self.entry.entry_id}
+            result=await flow.async_step_reconfigure({'core_url':origin,'core_token':'PRIVATE_TOKEN'})
+            self.assertEqual(result['errors']['base'],'unsupported_api_version')
+            self.assertEqual(dict(self.entry.data),original)
 
     async def test_v1_and_v2_migration_preserve_credentials_options_and_ids(self):
         for version in (1,2):

@@ -10,6 +10,28 @@ on:
   workflow_dispatch:
 
 jobs:
+  core-wire-compatibility:
+    name: Pinned Core schema 0010 routes
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: Tmatz27/photography-events-core
+          ref: 10bde5f0dcb57821f36a971af9e3dc4183271202
+          path: evidence/core-schema0010
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install isolated Core verification dependencies
+        run: python -m pip install -r evidence/core-schema0010/requirements-dev.lock
+      - name: Reproduce accepted API routes and authentication boundaries
+        run: python tools/verify_core_schema0010.py --core-source evidence/core-schema0010 > evidence/core-schema0010-verification.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: core-schema0010-verification
+          path: evidence/core-schema0010-verification.json
+
   ha-contracts:
     name: Home Assistant contracts
     runs-on: ubuntu-latest
@@ -76,4 +98,5 @@ jobs:
           npm test
           python -m pyflakes custom_components/photography_events/*.py tools/*.py
           python -m pyflakes tests/test_v17b_runtime.py tests/test_ha_v17b.py tests/v17b_fixtures.py tests/test_core_schema_compatibility.py
+          python -m pyflakes tests/test_core_schema0010.py tests/test_ha_release_policy.py
           python tools/verify_v17b_boundaries.py

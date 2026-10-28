@@ -1,4 +1,11 @@
-# Core schema compatibility: 0.17.0-dev.3
+# Core schema compatibility: 0.17.0-dev.4
+
+Current explicit support is Core API v1, engine 0.1.0-dev and schemas
+0008/0009/0010. See [the Batch 2A compatibility review](BATCH_2A_DEPLOYMENT.md)
+for accepted-source hashes, pinned route verification, regression coverage and
+the unpublished candidate pair. Destination approval remains separately pinned.
+
+## Historical 0.17.0-dev.3 verification record
 
 Starting HA main: `95a746cbcc3c97b95dd05774481cc13fad2c6955`.
 Core API remains `v1`, engine `0.1.0-dev`. Only schema strings `0008` and

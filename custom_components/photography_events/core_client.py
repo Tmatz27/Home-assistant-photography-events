@@ -92,6 +92,8 @@ class CoreAssessment:
 
 
 def validate_version(data):
+    # Projection/cache admission shares this reviewed wire allowlist. It does
+    # not approve Core debug products or the separately pinned destinations.
     if not isinstance(data, dict):
         raise CoreProtocolError()
     if data.get("api_version") != "v1" or data.get("schema_version") not in SUPPORTED_CORE_SCHEMAS or data.get("core_version") != "0.1.0-dev":

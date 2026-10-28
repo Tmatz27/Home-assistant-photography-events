@@ -48,4 +48,4 @@ jobs:
             exit 0
           fi
           cp RELEASE_NOTES.md release-notes.md
-          gh release create "$tag" custom_components/photography_events/www/photography-events-card.js --target "$(git rev-parse HEAD)" --title "Photography Events $tag" --notes-file release-notes.md --latest
+          python tools/ha_release_policy.py --version "$version" --commit "$(git rev-parse HEAD)"

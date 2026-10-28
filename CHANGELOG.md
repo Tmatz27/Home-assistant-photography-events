@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.17.0-dev.4
+
+Explicitly validate accepted Core API v1/schema 0010 through transport, projection and cache while retaining 0008/0009 compatibility. Future schemas, debug products and unreviewed destinations remain rejected. Prepare the next beta with prerelease-only release policy; no tag, release or deployment is performed.
+
 ## 0.17.0-dev.3
 
 Accept verified Core API v1 schemas 0008 and 0009 through transport, response and cache validators. Preserve explicit rejection of other schemas, private authentication, origin binding, destination review and read-only behavior. No dashboard behavior change, release or tag. See docs/v17b/SCHEMA_COMPATIBILITY.md.

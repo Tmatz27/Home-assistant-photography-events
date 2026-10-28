@@ -16,7 +16,9 @@ from pathlib import Path
 VERSION = "ha.v17.1"
 # Reviewed wire compatibility only; database migrations do not authorize new
 # response fields, product identities or destination policy. Never use a range.
-SUPPORTED_CORE_SCHEMAS = ("0008", "0009")
+# 0010 was checked against accepted Core 10bde5f: normal public models are
+# unchanged. Its ingestion tables/debug routes grant no presentation authority.
+SUPPORTED_CORE_SCHEMAS = ("0008", "0009", "0010")
 TRANSPORT_MAX_AGE = timedelta(minutes=15)
 ASSESSMENT_MAX_AGE = timedelta(hours=6)
 MAX_CLOCK_SKEW = timedelta(seconds=60)
